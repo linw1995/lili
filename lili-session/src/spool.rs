@@ -17,7 +17,7 @@ const METRICS_FILE_NAME: &str = "metrics.json";
 const LOCK_DIRECTORY_NAME: &str = ".lock";
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
 const MAX_METRICS_BYTES: u64 = 4 * 1024;
-const LOCK_RETRY_COUNT: usize = 50;
+const LOCK_RETRY_COUNT: usize = 250;
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(2);
 const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
@@ -131,6 +131,10 @@ impl SpoolStore {
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".write-") && name.ends_with(".tmp") {
+                remove_unsafe_record(&entry.path())?;
+                continue;
+            }
             if !name.contains(".claim-") {
                 continue;
             }
@@ -368,13 +372,17 @@ impl SpoolLock {
     fn acquire(directory: &Path) -> Result<Self, SpoolError> {
         let path = directory.join(LOCK_DIRECTORY_NAME);
         for _ in 0..LOCK_RETRY_COUNT {
-            match fs::create_dir(&path) {
+            match create_lock_directory(&path) {
                 Ok(()) => {
                     configure_private_directory(&path, &fs::symlink_metadata(&path)?)?;
                     return Ok(Self { path });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let metadata = fs::symlink_metadata(&path)?;
+                    let metadata = match fs::symlink_metadata(&path) {
+                        Ok(metadata) => metadata,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                    };
                     if metadata.file_type().is_symlink() || !metadata.is_dir() {
                         return Err(SpoolError::UnsafePath);
                     }
@@ -395,6 +403,19 @@ impl SpoolLock {
         }
         Err(SpoolError::Busy)
     }
+}
+
+#[cfg(unix)]
+fn create_lock_directory(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_lock_directory(path: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir(path)
 }
 
 impl Drop for SpoolLock {
@@ -739,5 +760,75 @@ mod tests {
             .unwrap();
         assert!(store.claim_next(111).unwrap().is_none());
         assert_eq!(store.metrics().unwrap().expired_drops, 1);
+    }
+
+    #[test]
+    fn symlinked_spool_directory_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let target = temp.0.join("target");
+        fs::create_dir(&target).unwrap();
+        let linked = temp.0.join("linked");
+        symlink(&target, &linked).unwrap();
+        let store = SpoolStore::new(linked, SpoolLimits::default());
+        assert!(matches!(
+            store.enqueue(&event("event-1", "turn_completed"), 100),
+            Err(SpoolError::UnsafePath)
+        ));
+        assert_eq!(fs::read_dir(target).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn interrupted_temporary_write_is_removed_during_recovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        store
+            .enqueue(&event("event-1", "turn_completed"), 100)
+            .unwrap();
+        let temporary = temp.0.join(".write-crashed.tmp");
+        fs::write(&temporary, b"partial").unwrap();
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+        store.recover_claims().unwrap();
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn concurrent_forwarders_preserve_bounds_and_valid_records() {
+        use std::sync::{Arc, Barrier};
+
+        let temp = TempDir::new();
+        let store = Arc::new(SpoolStore::new(
+            &temp.0,
+            SpoolLimits::new(8, 1024 * 1024, 10_000),
+        ));
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .enqueue(
+                            &event(&format!("event-{index}"), "turn_completed"),
+                            100 + index,
+                        )
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), SpoolEnqueueOutcome::Stored);
+        }
+
+        let mut ids = std::collections::BTreeSet::new();
+        while let Some(claim) = store.claim_next(200).unwrap() {
+            ids.insert(claim.event().event_id.as_str().to_owned());
+            claim.commit().unwrap();
+        }
+        assert_eq!(ids.len(), 8);
     }
 }

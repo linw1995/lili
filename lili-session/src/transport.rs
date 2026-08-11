@@ -344,13 +344,19 @@ impl PlatformListener {
 
     async fn accept(&self) -> Result<ForwardingConnection, ForwardingTransportError> {
         let (stream, _) = self.listener.accept().await?;
-        if stream.peer_cred()?.uid() != self.expected_uid {
-            return Err(ForwardingTransportError::WrongPeerOwner);
-        }
+        validate_peer_owner(self.expected_uid, stream.peer_cred()?.uid())?;
         Ok(ForwardingConnection {
             stream: Box::new(stream),
         })
     }
+}
+
+#[cfg(unix)]
+fn validate_peer_owner(expected_uid: u32, actual_uid: u32) -> Result<(), ForwardingTransportError> {
+    if expected_uid != actual_uid {
+        return Err(ForwardingTransportError::WrongPeerOwner);
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -632,5 +638,62 @@ mod tests {
         assert!(!store.path().exists());
         let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
         assert_ne!(first_id, endpoint.credentials().instance_id());
+    }
+
+    #[test]
+    fn mismatched_peer_owner_is_rejected() {
+        assert!(validate_peer_owner(1_000, 1_000).is_ok());
+        assert!(matches!(
+            validate_peer_owner(1_000, 1_001),
+            Err(ForwardingTransportError::WrongPeerOwner)
+        ));
+    }
+
+    #[tokio::test]
+    async fn partial_and_oversized_frames_are_rejected_before_payload_processing() {
+        use tokio::io::AsyncWriteExt;
+
+        let temp = TempDir::new();
+        let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
+        let path = endpoint.endpoint().unix_path().unwrap().to_owned();
+        let (accepted_sender, accepted_receiver) = tokio::sync::oneshot::channel();
+
+        let partial_server = async {
+            let mut connection = endpoint.accept().await.unwrap();
+            accepted_sender.send(()).unwrap();
+            assert!(matches!(
+                connection.read_payload().await,
+                Err(ForwardingTransportError::Io(error))
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof
+            ));
+        };
+        let partial_client = async {
+            let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+            accepted_receiver.await.unwrap();
+            stream.write_all(&8_u32.to_be_bytes()).await.unwrap();
+            stream.write_all(b"half").await.unwrap();
+            stream.shutdown().await.unwrap();
+        };
+        tokio::join!(partial_server, partial_client);
+
+        let (accepted_sender, accepted_receiver) = tokio::sync::oneshot::channel();
+        let oversized_server = async {
+            let mut connection = endpoint.accept().await.unwrap();
+            accepted_sender.send(()).unwrap();
+            assert!(matches!(
+                connection.read_payload().await,
+                Err(ForwardingTransportError::FrameTooLarge)
+            ));
+        };
+        let oversized_client = async {
+            let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+            accepted_receiver.await.unwrap();
+            stream
+                .write_all(&((MAX_FORWARDING_FRAME_BYTES + 1) as u32).to_be_bytes())
+                .await
+                .unwrap();
+            stream.shutdown().await.unwrap();
+        };
+        tokio::join!(oversized_server, oversized_client);
     }
 }
