@@ -101,8 +101,11 @@ pub fn complete_desktop_acceptance(
         && window.show().is_ok()
         && window.is_visible().is_ok_and(|visible| visible);
     let transport_contract = codex_home.as_deref().is_some_and(private_transport_is_live);
-    let passed = cfg!(any(target_os = "macos", target_os = "windows"))
-        && report.transparent
+    let passed = cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    )) && report.transparent
         && report.pinned_content
         && report.hook_delivered
         && report.action_timed_out

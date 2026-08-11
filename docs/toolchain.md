@@ -2,6 +2,12 @@
 
 Lili uses Nix Flakes as the only supported toolchain entry point.
 
+## Linux desktop support
+
+The Web application and Tauri desktop are supported on X11 and on Wayland compositors that implement the layer, activation, tray, transparency, and pointer behavior used by GTK/WebKit. Run `nix run .#linux-acceptance` inside a graphical session to validate the installed compositor and desktop environment.
+
+Linux window managers remain authoritative. A compositor may ignore always-on-top hints, omit the legacy tray protocol, restrict programmatic window positioning, or render transparent windows differently. Lili treats these as compositor capabilities: session ingestion and the Web application remain available, while unavailable desktop affordances are reported by acceptance instead of bypassing compositor policy. Headless CI must provide a virtual X11 session and a tray host.
+
 - `Cargo.toml` `workspace.package.version` owns the application release version.
 - `flake.lock` pins Nix inputs and system/build tools.
 - `Cargo.lock` pins Rust dependencies.

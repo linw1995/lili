@@ -41,6 +41,7 @@ in
         e2e = mkApp "e2e" "Run browser end-to-end tests";
         desktop-smoke = mkApp "desktop-smoke" "Run the desktop smoke verifier";
         macos-acceptance = mkApp "macos-acceptance" "Run packaged macOS acceptance";
+        linux-acceptance = mkApp "linux-acceptance" "Run supported Linux acceptance";
       };
     in {
       inherit apps packages;

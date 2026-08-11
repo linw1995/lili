@@ -22,6 +22,7 @@
     "prek"
     "e2e"
     "macos-acceptance"
+    "linux-acceptance"
   ];
   missingApps = builtins.filter (name: !(builtins.hasAttr name apps)) requiredApps;
 in {

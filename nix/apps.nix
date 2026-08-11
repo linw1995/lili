@@ -126,4 +126,24 @@ in {
         exit 2
       '';
   };
+
+  linux-acceptance = mkWorkspaceApp {
+    name = "linux-acceptance";
+    text =
+      if toolchain.isLinux
+      then ''
+        cargo tauri build --bundles deb -- --locked
+        cargo build --locked --release --package lili --bin lili-hook --bin lili-linux-acceptance
+        bundle="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
+        test -n "$bundle"
+        exec target/release/lili-linux-acceptance \
+          target/release/lili \
+          target/release/lili-hook \
+          "$bundle"
+      ''
+      else ''
+        echo "Linux acceptance requires Linux" >&2
+        exit 2
+      '';
+  };
 }

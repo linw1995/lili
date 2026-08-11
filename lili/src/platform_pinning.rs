@@ -354,7 +354,58 @@ mod windows {
 #[cfg(target_os = "windows")]
 pub use windows::install_and_navigate;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+mod linux {
+    use gio::prelude::TlsCertificateExt;
+    use sha2::{Digest, Sha256};
+    use tauri::WebviewWindow;
+    use webkit2gtk::prelude::{WebContextExt, WebViewExt};
+
+    pub fn install_and_navigate(
+        window: &WebviewWindow,
+        bootstrap_url: tauri::Url,
+        certificate_sha256: [u8; 32],
+    ) -> Result<(), String> {
+        let expected_origin = bootstrap_url.origin().ascii_serialization();
+        let host = bootstrap_url
+            .host_str()
+            .ok_or_else(|| "loopback URL has no host".to_owned())?
+            .to_owned();
+        let url = bootstrap_url.to_string();
+        window
+            .with_webview(move |platform_webview| {
+                let webview = platform_webview.inner();
+                let retry_url = url.clone();
+                webview.connect_load_failed_with_tls_errors(
+                    move |webview, failing_uri, certificate, _| {
+                        let origin_matches = tauri::Url::parse(failing_uri)
+                            .is_ok_and(|uri| uri.origin().ascii_serialization() == expected_origin);
+                        let certificate_matches = certificate.certificate().is_some_and(|der| {
+                            let actual: [u8; 32] = Sha256::digest(der.as_ref()).into();
+                            actual == certificate_sha256
+                        });
+                        if !(origin_matches && certificate_matches) {
+                            return false;
+                        }
+                        let Some(context) = webview.context() else {
+                            crate::diagnostics::error("tls_pinning", "install", "missing_context");
+                            return false;
+                        };
+                        context.allow_tls_certificate_for_host(certificate, &host);
+                        webview.load_uri(&retry_url);
+                        true
+                    },
+                );
+                webview.load_uri(&url);
+            })
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux::install_and_navigate;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn install_and_navigate(
     _window: &tauri::WebviewWindow,
     _bootstrap_url: tauri::Url,
