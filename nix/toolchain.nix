@@ -2,6 +2,8 @@
   inherit (pkgs.stdenv) isDarwin isLinux;
   rustVersion = "1.97.0";
   wasmBindgenVersion = "0.2.126";
+  cargoTauriVersion = pkgs.cargo-tauri.version;
+  nodeMajor = 24;
   rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
     extensions = [
       "clippy"
@@ -49,9 +51,11 @@ in
   assert pkgs.wasm-bindgen-cli_0_2_126.version == wasmBindgenVersion; {
     inherit
       darwinEnv
+      cargoTauriVersion
       fuzzRustToolchain
       isDarwin
       isLinux
+      nodeMajor
       rustToolchain
       rustVersion
       trunk

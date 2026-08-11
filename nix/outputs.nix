@@ -35,8 +35,15 @@ in
         build-app = mkApp "build-app" "Build the Lili desktop app bundle";
         build-css = mkApp "build-css" "Build the Lili stylesheet";
         format = mkApp "format" "Format the Lili workspace";
+        format-check = mkApp "format-check" "Check workspace formatting";
         lint = mkApp "lint" "Lint the Lili workspace";
+        test = mkApp "test" "Run workspace tests";
+        audit = mkApp "audit" "Audit Rust dependencies";
+        web-build = mkApp "web-build" "Build the release Web application";
+        spec-validate = mkApp "spec-validate" "Validate the OpenSpec change strictly";
+        workflow-lint = mkApp "workflow-lint" "Lint GitHub Actions workflows";
         fuzz = mkApp "fuzz" "Run a bounded parser fuzz target";
+        fuzz-smoke = mkApp "fuzz-smoke" "Run the bounded fuzz smoke corpus";
         prek = mkApp "prek" "Run repository hooks";
         e2e = mkApp "e2e" "Run browser end-to-end tests";
         desktop-smoke = mkApp "desktop-smoke" "Run the desktop smoke verifier";

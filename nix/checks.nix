@@ -8,6 +8,7 @@
   cargo = builtins.fromTOML (builtins.readFile (root + /Cargo.toml));
   package = builtins.fromJSON (builtins.readFile (root + /package.json));
   tauri = builtins.fromJSON (builtins.readFile (root + /lili/tauri.conf.json));
+  windowsToolchain = builtins.fromJSON (builtins.readFile (root + /nix/windows-toolchain.json));
   version = cargo.workspace.package.version;
   wasmBindgenDependency = cargo.workspace.dependencies."wasm-bindgen";
   requiredApps = [
@@ -17,8 +18,15 @@
     "build-app"
     "build-css"
     "format"
+    "format-check"
     "lint"
+    "test"
+    "audit"
+    "web-build"
+    "spec-validate"
+    "workflow-lint"
     "fuzz"
+    "fuzz-smoke"
     "prek"
     "e2e"
     "macos-acceptance"
@@ -35,6 +43,13 @@ in {
   output-contract = assert missingApps == [];
   assert supportedSystems == ["aarch64-darwin" "aarch64-linux" "x86_64-linux"];
     pkgs.runCommand "lili-output-contract" {} ''
+      touch "$out"
+    '';
+
+  windows-toolchain-contract = assert windowsToolchain.rust == toolchain.rustVersion;
+  assert windowsToolchain.node == toolchain.nodeMajor;
+  assert windowsToolchain.tauriCli == toolchain.cargoTauriVersion;
+    pkgs.runCommand "lili-windows-toolchain-contract" {} ''
       touch "$out"
     '';
 

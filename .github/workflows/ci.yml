@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        system:
+          - aarch64-darwin
+          - aarch64-linux
+          - x86_64-linux
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Evaluate declared system
+        run: |
+          nix eval ".#apps.${{ matrix.system }}" --apply builtins.attrNames --json
+          nix eval ".#checks.${{ matrix.system }}" --apply builtins.attrNames --json
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Evaluate checks without building
+        run: nix flake check --no-build --all-systems
+      - run: nix run .#format-check
+      - run: nix run .#lint
+      - run: nix run .#test
+      - run: nix run .#audit
+      - run: nix run .#web-build
+      - run: nix run .#fuzz-smoke
+      - run: nix run .#e2e
+      - run: nix run .#spec-validate
+      - run: nix run .#workflow-lint
+
+  linux-desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Run Linux desktop acceptance
+        run: LILI_ACCEPTANCE_HEADLESS=1 nix run .#linux-acceptance
+
+  macos-desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Run macOS desktop acceptance
+        run: nix run .#macos-acceptance
+
+  windows-desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read pinned tool versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = Get-Content nix/windows-toolchain.json | ConvertFrom-Json
+          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          package-manager-cache: false
+      - name: Install pinned Rust and Tauri CLI
+        shell: pwsh
+        run: |
+          $versions = Get-Content nix/windows-toolchain.json | ConvertFrom-Json
+          rustup toolchain install $versions.rust --profile minimal --component clippy,rustfmt
+          rustup default $versions.rust
+          cargo install tauri-cli --version $versions.tauriCli --locked
+      - name: Run Windows desktop acceptance
+        shell: pwsh
+        run: ./scripts/windows-acceptance.ps1
