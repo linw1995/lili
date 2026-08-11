@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "required": [
+    {
+      "codexVersion": "0.147.0",
+      "sourceTag": "rust-v0.147.0",
+      "fixtures": {
+        "agent-turn-complete": "agent-turn-complete.json",
+        "SessionStart": "session-start.json",
+        "UserPromptSubmit": "user-prompt-submit.json",
+        "PermissionRequest": "permission-request.json",
+        "Stop": "stop.json",
+        "SessionEnd": "session-end.json"
+      }
+    }
+  ]
+}

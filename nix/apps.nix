@@ -121,6 +121,16 @@ in {
     '';
   };
 
+  codex-matrix = mkWorkspaceApp {
+    name = "codex-matrix";
+    text = ''
+      cargo build --locked --release --package lili --bin lili-hook --bin lili-codex-matrix
+      exec target/release/lili-codex-matrix \
+        "$(pwd -P)/target/release/lili-hook" \
+        "$(pwd -P)/lili-session/tests/fixtures/codex"
+    '';
+  };
+
   fuzz = mkWorkspaceApp {
     name = "fuzz";
     runtimeInputs = [pkgs.cargo-fuzz toolchain.fuzzRustToolchain];

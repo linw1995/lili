@@ -25,6 +25,7 @@
     "web-build"
     "spec-validate"
     "workflow-lint"
+    "codex-matrix"
     "fuzz"
     "fuzz-smoke"
     "prek"

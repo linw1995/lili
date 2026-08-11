@@ -42,6 +42,7 @@ in
         web-build = mkApp "web-build" "Build the release Web application";
         spec-validate = mkApp "spec-validate" "Validate the OpenSpec change strictly";
         workflow-lint = mkApp "workflow-lint" "Lint GitHub Actions workflows";
+        codex-matrix = mkApp "codex-matrix" "Verify the supported Codex installation matrix";
         fuzz = mkApp "fuzz" "Run a bounded parser fuzz target";
         fuzz-smoke = mkApp "fuzz-smoke" "Run the bounded fuzz smoke corpus";
         prek = mkApp "prek" "Run repository hooks";
