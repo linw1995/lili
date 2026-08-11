@@ -543,34 +543,58 @@ debounce_ms = 0
     }
 
     #[tokio::test]
-    async fn presentation_stream_is_snapshot_first_on_every_webview_load() {
-        let router = build_router(AppState::default(), None);
-        for _ in 0..2 {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::get("/presentation-events")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response.headers().get(header::CONTENT_TYPE),
-                Some(&HeaderValue::from_static("text/event-stream"))
-            );
-            let mut body = response.into_body().into_data_stream();
-            let first = tokio::time::timeout(Duration::from_secs(1), body.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-            let first = String::from_utf8(first.to_vec()).unwrap();
-            assert!(first.starts_with("event: snapshot\n"));
-            assert!(first.contains("id: 0\n"));
-            assert_eq!(first.matches("event: snapshot").count(), 1);
-        }
+    async fn failure_injection_during_webview_reload_replays_latest_snapshot() {
+        let state = AppState::default();
+        let router = build_router(state.clone(), None);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/presentation-events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/event-stream"))
+        );
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let first = String::from_utf8(first.to_vec()).unwrap();
+        assert!(first.starts_with("event: snapshot\n"));
+        assert!(first.contains("id: 0\n"));
+        drop(body);
+
+        state
+            .replace_settings(UserSettings {
+                always_on_top: false,
+                reduced_motion: true,
+            })
+            .await;
+        let response = router
+            .oneshot(
+                Request::get("/presentation-events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut body = response.into_body().into_data_stream();
+        let reloaded = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let reloaded = String::from_utf8(reloaded.to_vec()).unwrap();
+        assert!(reloaded.starts_with("event: snapshot\n"));
+        assert!(reloaded.contains("id: 1\n"));
+        assert_eq!(reloaded.matches("event: snapshot").count(), 1);
     }
 
     #[tokio::test]

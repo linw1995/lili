@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_failure_rolls_back_every_configuration_file() {
+    fn failure_injection_during_config_replacement_rolls_back_every_file() {
         let temp = TempDir::new();
         let original = "model = \"gpt-5\"\n";
         fs::write(temp.0.join(crate::CONFIG_FILE_NAME), original).unwrap();

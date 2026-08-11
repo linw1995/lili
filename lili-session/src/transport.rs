@@ -65,6 +65,13 @@ pub struct ForwardingCredentialStore {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportFault {
+    None,
+    AfterListenerBind,
+    BeforeCredentialReplace,
+}
+
 impl ForwardingCredentialStore {
     pub fn for_runtime_dir(runtime_dir: &Path) -> Self {
         Self {
@@ -98,7 +105,11 @@ impl ForwardingCredentialStore {
         Ok(record)
     }
 
-    fn save(&self, record: &ForwardingCredentialRecord) -> Result<(), ForwardingTransportError> {
+    fn save_inner(
+        &self,
+        record: &ForwardingCredentialRecord,
+        fault: TransportFault,
+    ) -> Result<(), ForwardingTransportError> {
         record.credentials()?;
         let mut payload = serde_json::to_vec(record)
             .map_err(|_| ForwardingTransportError::MalformedCredentialFile)?;
@@ -126,6 +137,9 @@ impl ForwardingCredentialStore {
         let mut file = options.open(&temporary)?;
         file.write_all(&payload)?;
         file.sync_all()?;
+        if fault == TransportFault::BeforeCredentialReplace {
+            return Err(std::io::Error::other("injected credential replacement failure").into());
+        }
         fs::rename(&temporary, &self.path)?;
         guard.commit();
         sync_directory(directory)?;
@@ -150,17 +164,35 @@ pub struct BoundForwardingEndpoint {
 
 impl BoundForwardingEndpoint {
     pub fn bind(runtime_dir: &Path) -> Result<Self, ForwardingTransportError> {
+        Self::bind_inner(runtime_dir, TransportFault::None)
+    }
+
+    fn bind_inner(
+        runtime_dir: &Path,
+        fault: TransportFault,
+    ) -> Result<Self, ForwardingTransportError> {
         ensure_private_runtime_dir(runtime_dir)?;
         let credentials = ForwardingCredentials::generate()?;
         let listener = PlatformListener::bind(runtime_dir, credentials.instance_id())?;
+        if fault == TransportFault::AfterListenerBind {
+            return Err(std::io::Error::other("injected listener restart failure").into());
+        }
         let credential_store = ForwardingCredentialStore::for_runtime_dir(runtime_dir);
         let record = ForwardingCredentialRecord::new(&credentials, listener.endpoint().clone());
-        credential_store.save(&record)?;
+        credential_store.save_inner(&record, fault)?;
         Ok(Self {
             listener,
             credentials,
             credential_store,
         })
+    }
+
+    #[cfg(test)]
+    fn bind_with_fault(
+        runtime_dir: &Path,
+        fault: TransportFault,
+    ) -> Result<Self, ForwardingTransportError> {
+        Self::bind_inner(runtime_dir, fault)
     }
 
     pub fn credentials(&self) -> ForwardingCredentials {
@@ -638,6 +670,48 @@ mod tests {
         assert!(!store.path().exists());
         let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
         assert_ne!(first_id, endpoint.credentials().instance_id());
+    }
+
+    #[tokio::test]
+    async fn failure_injection_during_credential_rotation_preserves_previous_record() {
+        let temp = TempDir::new();
+        let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
+        let store = ForwardingCredentialStore::for_runtime_dir(&temp.0);
+        let previous = store.load().unwrap();
+        let replacement = ForwardingCredentials::generate().unwrap();
+        let replacement =
+            ForwardingCredentialRecord::new(&replacement, endpoint.endpoint().clone());
+
+        assert!(
+            store
+                .save_inner(&replacement, TransportFault::BeforeCredentialReplace)
+                .is_err()
+        );
+        assert_eq!(store.load().unwrap().instance_id(), previous.instance_id());
+        assert!(
+            fs::read_dir(&temp.0)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
+        );
+    }
+
+    #[tokio::test]
+    async fn failure_injection_during_socket_restart_cleans_partial_listener() {
+        let temp = TempDir::new();
+        assert!(
+            BoundForwardingEndpoint::bind_with_fault(&temp.0, TransportFault::AfterListenerBind)
+                .is_err()
+        );
+        assert!(
+            fs::read_dir(&temp.0)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".sock"))
+        );
+
+        let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
+        assert!(endpoint.endpoint().unix_path().unwrap().exists());
     }
 
     #[test]

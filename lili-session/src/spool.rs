@@ -704,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_is_removed_only_after_commit_and_drop_releases_it() {
+    fn failure_injection_during_spool_claim_releases_uncommitted_record() {
         let temp = TempDir::new();
         let store = SpoolStore::new(&temp.0, SpoolLimits::default());
         store

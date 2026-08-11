@@ -97,7 +97,7 @@ impl NativeIngestionHandle {
             .map_err(|_| IngestionError::Unavailable)?;
         response_receiver
             .await
-            .map_err(|_| IngestionError::Unavailable)
+            .map_err(|_| IngestionError::Unavailable)?
     }
 
     pub async fn set_spool_metrics(&self, metrics: SpoolMetrics) -> Result<(), IngestionError> {
@@ -156,7 +156,14 @@ impl NativeIngestionActor {
                     self.publish_diagnostics().await;
                 }
                 IngestionCommand::IngestSpooled { event, response } => {
-                    let outcome = self.reduce_event(event).await;
+                    let outcome = if event.validate().is_ok() {
+                        Ok(self.reduce_event(event).await)
+                    } else {
+                        self.diagnostics
+                            .record_rejection(RejectionCategory::Malformed);
+                        self.publish_diagnostics().await;
+                        Err(IngestionError::InvalidEvent)
+                    };
                     let _ = response.send(outcome);
                 }
                 IngestionCommand::SetSpoolMetrics(metrics) => {
@@ -230,7 +237,7 @@ enum IngestionCommand {
     TransportRejected,
     IngestSpooled {
         event: NormalizedSessionEvent,
-        response: oneshot::Sender<ReductionOutcome>,
+        response: oneshot::Sender<Result<ReductionOutcome, IngestionError>>,
     },
     SetSpoolMetrics(SpoolMetrics),
 }
@@ -261,6 +268,8 @@ pub enum IngestionError {
     Unavailable,
     #[error("native ingestion rejected the forwarding message: {0}")]
     Protocol(#[from] ForwardingProtocolError),
+    #[error("native ingestion rejected an invalid normalized event")]
+    InvalidEvent,
 }
 
 #[cfg(test)]
@@ -390,6 +399,26 @@ mod tests {
             ReductionOutcome::Applied { revision: 1 }
         );
         assert_eq!(state.snapshot().await.revision, 1);
+
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failure_injection_before_reducer_acceptance_preserves_state() {
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let (handle, actor) = NativeIngestionActor::channel(state.clone(), credentials, 1).await;
+        let task = tokio::spawn(actor.run());
+        let mut invalid = event();
+        invalid.version = lili_session::SESSION_SCHEMA_VERSION + 1;
+
+        assert_eq!(
+            handle.ingest_spooled(invalid).await,
+            Err(IngestionError::InvalidEvent)
+        );
+        assert_eq!(state.snapshot().await.revision, 0);
+        assert_eq!(state.ingestion_diagnostics().await.malformed_rejections, 1);
 
         drop(handle);
         task.await.unwrap();

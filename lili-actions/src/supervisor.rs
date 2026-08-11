@@ -692,7 +692,7 @@ debounce_ms = 0
     }
 
     #[tokio::test]
-    async fn executable_removed_after_load_is_a_bounded_spawn_failure() {
+    async fn failure_injection_during_child_spawn_is_bounded() {
         let temp = TempDir::new();
         let executable = temp.0.join("removed-executable");
         let target = if Path::new("/usr/bin/true").is_file() {
@@ -729,7 +729,7 @@ debounce_ms = 0
     }
 
     #[tokio::test]
-    async fn application_shutdown_cancels_the_entire_action_process_group() {
+    async fn failure_injection_during_shutdown_cancels_the_process_group() {
         let temp = TempDir::new();
         let pid_file = temp.0.join("grandchild.pid");
         let pid_file_string = pid_file.to_string_lossy();
