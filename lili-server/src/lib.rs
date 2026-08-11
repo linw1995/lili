@@ -1,4 +1,4 @@
-use std::{convert::Infallible, path::PathBuf};
+use std::{convert::Infallible, path::PathBuf, time::Duration};
 
 use axum::{
     Json, Router,
@@ -6,7 +6,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response, Sse, sse::Event},
+    response::{Html, IntoResponse, Response, Sse, sse::Event, sse::KeepAlive},
     routing::{get, post, put},
 };
 use leptos::prelude::*;
@@ -66,6 +66,7 @@ pub fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/pet-assets/{asset_id}", get(pet_asset))
+        .route("/presentation-events", get(events))
         .nest("/api/v1", api)
         .fallback(get(ssr_shell))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
@@ -136,15 +137,51 @@ async fn pet_asset(State(state): State<AppState>, Path(asset_id): Path<String>) 
         .expect("approved pet asset response must be valid")
 }
 
-async fn events(State(state): State<AppState>) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
-    let snapshot = state.snapshot().await;
-    let data = serde_json::to_string(&snapshot).expect("view snapshots must serialize");
-    let (sender, receiver) = mpsc::channel(1);
-    sender
-        .send(Ok(Event::default().event("snapshot").data(data)))
-        .await
-        .expect("new event receiver must remain open");
-    Sse::new(ReceiverStream::new(receiver))
+async fn events(
+    State(state): State<AppState>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let mut presentations = state.subscribe_pet_presentation();
+    let snapshot = presentations.borrow_and_update().clone();
+    let (sender, receiver) = mpsc::channel(8);
+    tokio::spawn(async move {
+        let mut last_revision = snapshot.revision;
+        if sender
+            .send(Ok(presentation_event("snapshot", &snapshot)))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        while presentations.changed().await.is_ok() {
+            let presentation = presentations.borrow_and_update().clone();
+            if presentation.revision <= last_revision {
+                continue;
+            }
+            last_revision = presentation.revision;
+            if sender
+                .send(Ok(presentation_event("presentation", &presentation)))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    Sse::new(ReceiverStream::new(receiver)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+fn presentation_event(
+    event: &'static str,
+    presentation: &lili_core::PetPresentationState,
+) -> Event {
+    Event::default()
+        .event(event)
+        .id(presentation.revision.to_string())
+        .data(serde_json::to_string(presentation).expect("pet presentations must serialize"))
 }
 
 async fn ssr_shell(State(state): State<AppState>) -> Html<String> {
@@ -186,6 +223,7 @@ mod tests {
 
     use axum::body::to_bytes;
     use http::Request;
+    use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
     use super::*;
@@ -258,6 +296,37 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("data-ssr-marker=\"lili-ready\""));
+    }
+
+    #[tokio::test]
+    async fn presentation_stream_is_snapshot_first_on_every_webview_load() {
+        let router = build_router(AppState::default(), None);
+        for _ in 0..2 {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get("/presentation-events")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE),
+                Some(&HeaderValue::from_static("text/event-stream"))
+            );
+            let mut body = response.into_body().into_data_stream();
+            let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let first = String::from_utf8(first.to_vec()).unwrap();
+            assert!(first.starts_with("event: snapshot\n"));
+            assert!(first.contains("id: 0\n"));
+            assert_eq!(first.matches("event: snapshot").count(), 1);
+        }
     }
 
     #[tokio::test]

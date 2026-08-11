@@ -11,7 +11,7 @@ use lili_session::{
     SessionReducer, SessionViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use uuid::Uuid;
 
 pub use ingestion::{
@@ -45,6 +45,7 @@ pub struct AppState {
     pet_catalog: Arc<PetCatalog>,
     pet_asset: Arc<ApprovedPetAsset>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
+    presentation_sender: Arc<watch::Sender<PetPresentationState>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,17 +86,23 @@ impl AppState {
         let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
         let selected_pet = Some(PetSummary::from(pet_catalog.active().definition()));
         let pet_asset_id = Some(pet_asset.id().to_owned());
+        let session_state = reducer.snapshot();
+        let initial_snapshot = ViewSnapshot {
+            revision: session_state.revision,
+            selected_pet,
+            pet_asset_id,
+            session_state,
+            actions: Vec::new(),
+        };
+        let (presentation_sender, _) = watch::channel(presentation_from_view(&initial_snapshot));
         Self {
-            snapshot: Arc::new(RwLock::new(ViewSnapshot {
-                selected_pet,
-                pet_asset_id,
-                ..ViewSnapshot::default()
-            })),
+            snapshot: Arc::new(RwLock::new(initial_snapshot)),
             settings: Arc::new(RwLock::new(UserSettings::default())),
             session_reducer: Arc::new(Mutex::new(reducer)),
             pet_catalog: Arc::new(pet_catalog),
             pet_asset: Arc::new(pet_asset),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
+            presentation_sender: Arc::new(presentation_sender),
         }
     }
 
@@ -116,26 +123,11 @@ impl AppState {
 
     pub async fn pet_presentation(&self) -> PetPresentationState {
         let snapshot = self.snapshot().await;
-        PetPresentationState {
-            revision: snapshot.revision,
-            lifecycle: match snapshot.session_state.presentation {
-                PresentationState::Idle => PetLifecycleState::Idle,
-                PresentationState::Running => PetLifecycleState::Running,
-                PresentationState::Review => PetLifecycleState::Review,
-                PresentationState::Failed => PetLifecycleState::Failed,
-                PresentationState::Waiting => PetLifecycleState::Waiting,
-            },
-            pet_asset_id: snapshot.pet_asset_id,
-            pet_label: snapshot
-                .selected_pet
-                .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name),
-            unread_notification_count: snapshot
-                .session_state
-                .notifications
-                .iter()
-                .filter(|notification| notification.state == NotificationState::Unread)
-                .count(),
-        }
+        presentation_from_view(&snapshot)
+    }
+
+    pub fn subscribe_pet_presentation(&self) -> watch::Receiver<PetPresentationState> {
+        self.presentation_sender.subscribe()
     }
 
     pub async fn settings(&self) -> UserSettings {
@@ -148,7 +140,11 @@ impl AppState {
     }
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
-        self.session_reducer.lock().await.reduce(event)
+        let outcome = self.session_reducer.lock().await.reduce(event);
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            self.publish_presentation().await;
+        }
+        outcome
     }
 
     pub async fn acknowledge_notification(
@@ -156,10 +152,15 @@ impl AppState {
         id: &NotificationId,
         now_ms: u64,
     ) -> ReductionOutcome {
-        self.session_reducer
+        let outcome = self
+            .session_reducer
             .lock()
             .await
-            .acknowledge_notification(id, now_ms)
+            .acknowledge_notification(id, now_ms);
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            self.publish_presentation().await;
+        }
+        outcome
     }
 
     pub async fn persistent_state(
@@ -180,6 +181,37 @@ impl AppState {
 
     pub(crate) async fn replace_ingestion_diagnostics(&self, diagnostics: IngestionDiagnostics) {
         *self.ingestion_diagnostics.write().await = diagnostics;
+    }
+
+    async fn publish_presentation(&self) {
+        let presentation = self.pet_presentation().await;
+        if presentation.revision > self.presentation_sender.borrow().revision {
+            self.presentation_sender.send_replace(presentation);
+        }
+    }
+}
+
+fn presentation_from_view(snapshot: &ViewSnapshot) -> PetPresentationState {
+    PetPresentationState {
+        revision: snapshot.revision,
+        lifecycle: match snapshot.session_state.presentation {
+            PresentationState::Idle => PetLifecycleState::Idle,
+            PresentationState::Running => PetLifecycleState::Running,
+            PresentationState::Review => PetLifecycleState::Review,
+            PresentationState::Failed => PetLifecycleState::Failed,
+            PresentationState::Waiting => PetLifecycleState::Waiting,
+        },
+        pet_asset_id: snapshot.pet_asset_id.clone(),
+        pet_label: snapshot
+            .selected_pet
+            .as_ref()
+            .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name.clone()),
+        unread_notification_count: snapshot
+            .session_state
+            .notifications
+            .iter()
+            .filter(|notification| notification.state == NotificationState::Unread)
+            .count(),
     }
 }
 
@@ -316,5 +348,36 @@ mod tests {
         let serialized = serde_json::to_string(&presentation).unwrap();
         assert!(!serialized.contains("session-private"));
         assert!(!serialized.contains("turn-private"));
+    }
+
+    #[tokio::test]
+    async fn presentation_subscriber_observes_only_monotonic_applied_revisions() {
+        let state = AppState::default();
+        let mut presentations = state.subscribe_pet_presentation();
+        let input = ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_started".to_owned()),
+            event_id: Some("event-stream".to_owned()),
+            session_id: Some("session-stream".to_owned()),
+            turn_id: Some("turn-stream".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        };
+        let event = normalize_provider_input(input).unwrap();
+        assert!(matches!(
+            state.apply_session_event(event.clone()).await,
+            ReductionOutcome::Applied { revision: 1 }
+        ));
+        presentations.changed().await.unwrap();
+        assert_eq!(presentations.borrow_and_update().revision, 1);
+        assert_eq!(
+            state.apply_session_event(event).await,
+            ReductionOutcome::Duplicate
+        );
+        assert!(!presentations.has_changed().unwrap());
     }
 }

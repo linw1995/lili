@@ -68,7 +68,7 @@
 ## 7. Pet UI, Notifications, and Window Behavior
 
 - [x] 7.1 Build the SSR pet shell and hydrated renderer from `PetPresentationState`, with no raw provider event interpretation in browser code.
-- [ ] 7.2 Add snapshot-first event-stream reconnection using monotonic revisions, keep-alives, stale-event rejection, and WebView reload tests without duplicate cards.
+- [x] 7.2 Add snapshot-first event-stream reconnection using monotonic revisions, keep-alives, stale-event rejection, and WebView reload tests without duplicate cards.
 - [ ] 7.3 Implement lifecycle animation mapping, temporary wave and jump overlays, deterministic return to reducer state, and interruption rules for attention and failure.
 - [ ] 7.4 Implement pointer gaze, hit-region tracking, click versus double-click disambiguation, drag velocity, running-left/right selection, and final window-position commit.
 - [ ] 7.5 Implement logical display-coordinate persistence, scale conversion, work-area clamping, display disconnect handling, and a reachable visible margin on every platform.

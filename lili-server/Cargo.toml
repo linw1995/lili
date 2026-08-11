@@ -9,6 +9,7 @@ axum.workspace = true
 http.workspace = true
 leptos = { workspace = true, features = ["ssr"] }
 lili-app-state = { path = "../lili-app-state" }
+lili-core = { path = "../lili-core" }
 lili-ui = { path = "../lili-ui", features = ["ssr"] }
 serde.workspace = true
 serde_json.workspace = true

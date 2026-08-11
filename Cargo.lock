@@ -2664,6 +2664,7 @@ dependencies = [
  "http",
  "leptos",
  "lili-app-state",
+ "lili-core",
  "lili-pet",
  "lili-ui",
  "serde",
