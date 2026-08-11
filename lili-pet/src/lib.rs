@@ -1,7 +1,14 @@
+mod discovery;
+
 use std::time::Duration;
 
 use lili_core::PetId;
 use serde::{Deserialize, Serialize};
+
+pub use discovery::{
+    DEFAULT_PET_ID, DiscoveredPackage, DiscoveryIssue, DiscoveryReport, PackageOrigin,
+    default_pet_path, discover_pet_packages, resolve_codex_home,
+};
 
 pub const SPRITE_VERSION_NUMBER: u8 = 2;
 pub const ATLAS_COLUMNS: u8 = 8;

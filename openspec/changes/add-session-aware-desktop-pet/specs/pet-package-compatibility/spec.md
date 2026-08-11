@@ -5,11 +5,15 @@ Defines how Lili discovers, validates, selects, and renders Codex v2 pet package
 ## ADDED Requirements
 
 ### Requirement: Discover Codex v2 pet packages
-The system SHALL discover user pet packages from `${CODEX_HOME}/pets/<pet-id>/`, defaulting `CODEX_HOME` to the platform Codex home, and SHALL require `pet.json` and the manifest-referenced spritesheet to remain inside the package directory.
+The system SHALL use `${CODEX_HOME}/pet/lili/` as Lili's fixed default user package location, discover additional user pet packages from `${CODEX_HOME}/pets/<pet-id>/`, default `CODEX_HOME` to the platform Codex home, and require `pet.json` and the manifest-referenced spritesheet to remain inside the package directory.
 
 #### Scenario: Valid package is discovered
 - **WHEN** a package directory contains a valid `pet.json` and referenced spritesheet
 - **THEN** the pet is listed by its identifier, display name, and description
+
+#### Scenario: Default Lili package is discovered
+- **WHEN** `${CODEX_HOME}/pet/lili/` contains a valid v2 package
+- **THEN** the package is considered before additional packages with the same identifier
 
 #### Scenario: Escaping asset path is rejected
 - **WHEN** `spritesheetPath` is absolute, traverses a parent directory, or resolves through a link outside the package
