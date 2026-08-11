@@ -31,7 +31,7 @@
 ## 3. Normalized Session Domain and Reducer
 
 - [x] 3.1 Define versioned provider input, normalized session event, session/turn/event identity, display-safe project context, source capability, notification, and view snapshot types.
-- [ ] 3.2 Implement payload normalization with additive-field tolerance, required-field validation, summary redaction and truncation, stable fallback event identity, and raw-payload exclusion from errors.
+- [x] 3.2 Implement payload normalization with additive-field tolerance, required-field validation, summary redaction and truncation, stable fallback event identity, and raw-payload exclusion from errors.
 - [ ] 3.3 Implement the serialized session reducer with per-turn monotonic terminal states, new-turn generations, deduplication, attention resolution, notification acknowledgement, and snapshot revisions.
 - [ ] 3.4 Implement deterministic concurrent-session presentation priority and minimum animation dwell without coupling notification ordering to the currently displayed session.
 - [ ] 3.5 Add table-driven and property tests for duplicated, reordered, stale, concurrent, missing-field, and new-provider-field event sequences.

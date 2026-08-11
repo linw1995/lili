@@ -23,7 +23,7 @@ lili-server = { path = "../lili-server" }
 rcgen = "0.14"
 rustls = "0.23"
 serde.workspace = true
-sha2 = "0.11"
+sha2.workspace = true
 tauri = { workspace = true, features = ["macos-private-api", "tray-icon"] }
 tokio.workspace = true
 tracing.workspace = true
