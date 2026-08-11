@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
 use lili_app_state::{
-    AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, NativeIngestionActor,
-    NativeIngestionHandle, WindowPlacement,
+    AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, DEFAULT_VISIBLE_WINDOW_MARGIN,
+    DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, WindowPlacement,
+    resolve_window_placement,
 };
 use lili_pet::{PetCatalog, resolve_codex_home};
 use lili_server::{StaticAssets, build_router};
@@ -54,7 +55,7 @@ fn run_desktop(smoke: bool) {
         cfg!(debug_assertions),
     )
     .map(StaticAssets::new);
-    let (state, state_store, codex_home) = load_app_state();
+    let (state, state_store, codex_home, saved_window_placement) = load_app_state();
     app.manage(DesktopPersistence {
         state: state.clone(),
         store: state_store.clone(),
@@ -111,18 +112,29 @@ fn run_desktop(smoke: bool) {
         builder = builder.initialization_script(desktop_smoke::SCRIPT);
     }
     let window = builder.build().expect("failed to create pet window");
+    if let Some(saved_window_placement) = saved_window_placement.as_ref()
+        && let Err(error) = apply_reachable_window_placement(&window, saved_window_placement)
+    {
+        tracing::warn!(%error, "saved window placement could not be restored");
+    }
     platform_pinning::install_and_navigate(&window, bootstrap_url, certificate_sha256)
         .expect("failed to install loopback certificate pinning");
     window.show().expect("failed to show pet window");
 
     let close_app = app.handle().clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             if let Some(window) = close_app.get_webview_window("pet") {
                 let _ = window.hide();
             }
         }
+        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+            if let Some(window) = close_app.get_webview_window("pet") {
+                ensure_window_reachable(&window);
+            }
+        }
+        _ => {}
     });
 
     let mut shutdown_tx = Some(shutdown_tx);
@@ -145,25 +157,31 @@ fn run_desktop(smoke: bool) {
     });
 }
 
-fn load_app_state() -> (AppState, Option<AppStateStore>, Option<PathBuf>) {
+fn load_app_state() -> (
+    AppState,
+    Option<AppStateStore>,
+    Option<PathBuf>,
+    Option<WindowPlacement>,
+) {
     let codex_home = match resolve_codex_home() {
         Ok(codex_home) => codex_home,
         Err(error) => {
             tracing::warn!(%error, "Codex home was not resolved");
-            return (AppState::default(), None, None);
+            return (AppState::default(), None, None, None);
         }
     };
     let store = AppStateStore::for_codex_home(&codex_home);
     match store.load() {
         Ok(Some(state)) => {
+            let window_placement = state.window_placement().cloned();
             let pet_catalog = PetCatalog::load_with_selection(&codex_home, state.selected_pet_id());
             let state = AppState::with_persistent_state(pet_catalog, state)
                 .expect("validated application state must restore");
-            (state, Some(store), Some(codex_home))
+            (state, Some(store), Some(codex_home), window_placement)
         }
         Ok(None) => {
             let state = AppState::with_pet_catalog(PetCatalog::load(&codex_home));
-            (state, Some(store), Some(codex_home))
+            (state, Some(store), Some(codex_home), None)
         }
         Err(error) => {
             tracing::warn!(%error, "persisted application state was ignored");
@@ -171,6 +189,7 @@ fn load_app_state() -> (AppState, Option<AppStateStore>, Option<PathBuf>) {
                 AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
                 None,
                 Some(codex_home),
+                None,
             )
         }
     }
@@ -291,20 +310,93 @@ fn unix_time_ms() -> u64 {
 
 fn current_window_placement(window: &tauri::WebviewWindow) -> Option<WindowPlacement> {
     let position = window.outer_position().ok()?;
-    let scale = window.scale_factor().ok()?;
-    let display_id = window
+    let monitor = window
         .current_monitor()
         .ok()
         .flatten()
-        .and_then(|monitor| monitor.name().cloned())
-        .unwrap_or_else(|| "unknown-display".to_owned());
+        .or_else(|| window.primary_monitor().ok().flatten())?;
+    let scale = monitor.scale_factor();
+    let work_area = monitor.work_area();
     WindowPlacement::new(
-        display_id,
-        (f64::from(position.x) / scale).round() as i32,
-        (f64::from(position.y) / scale).round() as i32,
+        monitor_id(&monitor),
+        (f64::from(position.x - work_area.position.x) / scale).round() as i32,
+        (f64::from(position.y - work_area.position.y) / scale).round() as i32,
         (scale * 1_000.0).round() as u32,
     )
     .ok()
+}
+
+fn monitor_id(monitor: &tauri::Monitor) -> String {
+    monitor.name().cloned().unwrap_or_else(|| {
+        let position = monitor.position();
+        let size = monitor.size();
+        format!(
+            "display-{}-{}-{}x{}",
+            position.x, position.y, size.width, size.height
+        )
+    })
+}
+
+fn display_work_areas(window: &tauri::WebviewWindow) -> Result<Vec<DisplayWorkArea>, String> {
+    let primary_id = window
+        .primary_monitor()
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        .map(monitor_id);
+    window
+        .available_monitors()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|monitor| {
+            let id = monitor_id(&monitor);
+            let work_area = monitor.work_area();
+            DisplayWorkArea::new(
+                id.clone(),
+                work_area.position.x,
+                work_area.position.y,
+                work_area.size.width,
+                work_area.size.height,
+                (monitor.scale_factor() * 1_000.0).round() as u32,
+                primary_id.as_deref() == Some(id.as_str()),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+fn apply_reachable_window_placement(
+    window: &tauri::WebviewWindow,
+    saved: &WindowPlacement,
+) -> Result<WindowPlacement, String> {
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let displays = display_work_areas(window)?;
+    let resolved = resolve_window_placement(
+        saved,
+        &displays,
+        size.width,
+        size.height,
+        DEFAULT_VISIBLE_WINDOW_MARGIN,
+    )
+    .ok_or_else(|| "no display work area is available".to_owned())?;
+    let current = window.outer_position().map_err(|error| error.to_string())?;
+    if current.x != resolved.physical_x() || current.y != resolved.physical_y() {
+        window
+            .set_position(tauri::PhysicalPosition::new(
+                resolved.physical_x(),
+                resolved.physical_y(),
+            ))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(resolved.placement().clone())
+}
+
+fn ensure_window_reachable(window: &tauri::WebviewWindow) {
+    let Some(current) = current_window_placement(window) else {
+        return;
+    };
+    if let Err(error) = apply_reachable_window_placement(window, &current) {
+        tracing::warn!(%error, "window reachability could not be enforced");
+    }
 }
 
 #[derive(Clone)]

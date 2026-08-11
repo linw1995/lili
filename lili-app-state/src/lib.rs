@@ -19,7 +19,8 @@ pub use ingestion::{
     NativeIngestionHandle, RejectionCategory,
 };
 pub use persistence::{
-    AppStateStore, PersistenceError, PersistentApplicationState, WindowPlacement,
+    AppStateStore, DEFAULT_VISIBLE_WINDOW_MARGIN, DisplayWorkArea, PersistenceError,
+    PersistentApplicationState, ResolvedWindowPlacement, WindowPlacement, resolve_window_placement,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

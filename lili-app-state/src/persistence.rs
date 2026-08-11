@@ -16,7 +16,80 @@ const MAX_DISPLAY_ID_CHARS: usize = 256;
 const MAX_LOGICAL_COORDINATE: i32 = 1_000_000;
 const MIN_SCALE_MILLI: u32 = 250;
 const MAX_SCALE_MILLI: u32 = 8_000;
+pub const DEFAULT_VISIBLE_WINDOW_MARGIN: u32 = 48;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisplayWorkArea {
+    id: String,
+    physical_x: i32,
+    physical_y: i32,
+    physical_width: u32,
+    physical_height: u32,
+    scale_milli: u32,
+    primary: bool,
+}
+
+impl DisplayWorkArea {
+    pub fn new(
+        id: impl Into<String>,
+        physical_x: i32,
+        physical_y: i32,
+        physical_width: u32,
+        physical_height: u32,
+        scale_milli: u32,
+        primary: bool,
+    ) -> Result<Self, PersistenceError> {
+        let display = Self {
+            id: id.into(),
+            physical_x,
+            physical_y,
+            physical_width,
+            physical_height,
+            scale_milli,
+            primary,
+        };
+        if display.id.is_empty()
+            || display.id.chars().count() > MAX_DISPLAY_ID_CHARS
+            || display.id.chars().any(char::is_control)
+            || display.physical_width == 0
+            || display.physical_height == 0
+            || !(MIN_SCALE_MILLI..=MAX_SCALE_MILLI).contains(&display.scale_milli)
+        {
+            return Err(PersistenceError::InvalidDisplayWorkArea);
+        }
+        Ok(display)
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub const fn scale_milli(&self) -> u32 {
+        self.scale_milli
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedWindowPlacement {
+    placement: WindowPlacement,
+    physical_x: i32,
+    physical_y: i32,
+}
+
+impl ResolvedWindowPlacement {
+    pub const fn placement(&self) -> &WindowPlacement {
+        &self.placement
+    }
+
+    pub const fn physical_x(&self) -> i32 {
+        self.physical_x
+    }
+
+    pub const fn physical_y(&self) -> i32 {
+        self.physical_y
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +145,49 @@ impl WindowPlacement {
         }
         Ok(())
     }
+}
+
+pub fn resolve_window_placement(
+    saved: &WindowPlacement,
+    displays: &[DisplayWorkArea],
+    physical_window_width: u32,
+    physical_window_height: u32,
+    visible_margin: u32,
+) -> Option<ResolvedWindowPlacement> {
+    let display = displays
+        .iter()
+        .find(|display| display.id == saved.display_id)
+        .or_else(|| displays.iter().find(|display| display.primary))
+        .or_else(|| displays.first())?;
+    let scale = f64::from(display.scale_milli) / 1_000.0;
+    let requested_x = display.physical_x + (f64::from(saved.logical_x) * scale).round() as i32;
+    let requested_y = display.physical_y + (f64::from(saved.logical_y) * scale).round() as i32;
+    let margin_x = visible_margin.min(physical_window_width.saturating_div(2));
+    let margin_y = visible_margin.min(physical_window_height.saturating_div(2));
+    let min_x =
+        i64::from(display.physical_x) - i64::from(physical_window_width) + i64::from(margin_x);
+    let min_y =
+        i64::from(display.physical_y) - i64::from(physical_window_height) + i64::from(margin_y);
+    let max_x =
+        i64::from(display.physical_x) + i64::from(display.physical_width) - i64::from(margin_x);
+    let max_y =
+        i64::from(display.physical_y) + i64::from(display.physical_height) - i64::from(margin_y);
+    let physical_x = i64::from(requested_x).clamp(min_x, max_x) as i32;
+    let physical_y = i64::from(requested_y).clamp(min_y, max_y) as i32;
+    let logical_x = (f64::from(physical_x - display.physical_x) / scale).round() as i32;
+    let logical_y = (f64::from(physical_y - display.physical_y) / scale).round() as i32;
+    let placement = WindowPlacement::new(
+        display.id.clone(),
+        logical_x,
+        logical_y,
+        display.scale_milli,
+    )
+    .ok()?;
+    Some(ResolvedWindowPlacement {
+        placement,
+        physical_x,
+        physical_y,
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -263,6 +379,8 @@ pub enum PersistenceError {
     InvalidSelectedPet,
     #[error("application state contains an invalid window placement")]
     InvalidWindowPlacement,
+    #[error("display work area is invalid")]
+    InvalidDisplayWorkArea,
     #[error("application state contains invalid reducer metadata: {0}")]
     Reducer(#[from] ReducerRestoreError),
     #[error("application state I/O failed: {0}")]
@@ -346,5 +464,39 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(store.load(), Err(PersistenceError::TooLarge)));
+    }
+
+    #[test]
+    fn logical_placement_converts_to_the_target_display_scale() {
+        let saved = WindowPlacement::new("retina", 100, 50, 1_000).unwrap();
+        let displays =
+            [DisplayWorkArea::new("retina", 1_920, 40, 3_000, 2_000, 2_000, true).unwrap()];
+        let resolved = resolve_window_placement(&saved, &displays, 640, 720, 48).unwrap();
+        assert_eq!(resolved.physical_x(), 2_120);
+        assert_eq!(resolved.physical_y(), 140);
+        assert_eq!(resolved.placement().logical_x(), 100);
+        assert_eq!(resolved.placement().scale_milli(), 2_000);
+    }
+
+    #[test]
+    fn disconnected_display_falls_back_to_primary_and_remains_reachable() {
+        let saved = WindowPlacement::new("removed", 10_000, -10_000, 1_000).unwrap();
+        let displays = [
+            DisplayWorkArea::new("secondary", -1_920, 0, 1_920, 1_080, 1_000, false).unwrap(),
+            DisplayWorkArea::new("primary", 0, 24, 1_920, 1_056, 1_000, true).unwrap(),
+        ];
+        let resolved = resolve_window_placement(&saved, &displays, 320, 360, 48).unwrap();
+        assert_eq!(resolved.placement().display_id(), "primary");
+        assert_eq!(resolved.physical_x(), 1_872);
+        assert_eq!(resolved.physical_y(), -288);
+    }
+
+    #[test]
+    fn oversized_window_keeps_a_reachable_margin_on_small_work_area() {
+        let saved = WindowPlacement::new("small", -5_000, 5_000, 1_000).unwrap();
+        let displays = [DisplayWorkArea::new("small", 100, 200, 200, 100, 1_000, true).unwrap()];
+        let resolved = resolve_window_placement(&saved, &displays, 600, 400, 48).unwrap();
+        assert_eq!(resolved.physical_x(), -452);
+        assert_eq!(resolved.physical_y(), 252);
     }
 }
