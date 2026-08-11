@@ -9,6 +9,7 @@
   package = builtins.fromJSON (builtins.readFile (root + /package.json));
   tauri = builtins.fromJSON (builtins.readFile (root + /lili/tauri.conf.json));
   version = cargo.workspace.package.version;
+  wasmBindgenDependency = cargo.workspace.dependencies."wasm-bindgen";
   requiredApps = [
     "dev"
     "dev-web"
@@ -34,7 +35,7 @@ in {
       touch "$out"
     '';
 
-  toolchain-contract =
+  toolchain-contract = assert wasmBindgenDependency == "=${toolchain.wasmBindgenVersion}";
     pkgs.runCommand "lili-toolchain-contract" {
       nativeBuildInputs = toolchain.buildTools;
     } ''

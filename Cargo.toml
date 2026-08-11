@@ -5,6 +5,36 @@ license = "Apache-2.0"
 
 [workspace]
 resolver = "2"
+members = [
+  "lili",
+  "lili-actions",
+  "lili-app-state",
+  "lili-core",
+  "lili-pet",
+  "lili-server",
+  "lili-session",
+  "lili-ui",
+  "lili-web",
+]
+
+[workspace.dependencies]
+axum = "0.8"
+http = "1"
+leptos = { version = "0.8.20", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = "2.11.5"
+tauri-build = "2.6.3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["js", "serde", "v4"] }
+wasm-bindgen = "=0.2.126"
+web-sys = "0.3"
 
 [profile.dev]
 incremental = true

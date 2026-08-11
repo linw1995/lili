@@ -1,0 +1,9 @@
+[package]
+name = "lili-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lili-core = { path = "../lili-core" }
+serde.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "lili-app-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lili-actions = { path = "../lili-actions" }
+lili-pet = { path = "../lili-pet" }
+lili-session = { path = "../lili-session" }
+serde.workspace = true
+tokio.workspace = true
