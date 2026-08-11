@@ -1,3 +1,4 @@
+mod execution;
 mod loading;
 
 use std::{collections::BTreeMap, path::PathBuf};
@@ -16,6 +17,7 @@ pub const MAX_ACTION_QUEUE_CAPACITY: usize = 64;
 pub const INTERACTION_CONTEXT_VERSION: u16 = 1;
 pub const MAX_INTERACTION_CONTEXT_BYTES: usize = 16 * 1024;
 
+pub use execution::{ActionSpawnError, SpawnedAction, spawn_action};
 pub use loading::{
     ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
     EffectiveActionsView, LoadedAction, LoadedActions, action_config_path, load_actions_file,
