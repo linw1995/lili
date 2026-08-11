@@ -1,3 +1,4 @@
+mod install;
 mod plan;
 
 use std::{
@@ -12,6 +13,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use toml_edit::{DocumentMut, Item};
 
+pub use install::{
+    InstallError, InstallOutcome, InstalledFileProvenance, IntegrationProvenance, install,
+    install_with_verifier, load_plan,
+};
 pub use plan::{
     InstallPlanStatus, IntegrationInstallPlan, PlannedFileAction, PlannedFileChange,
     PlannedHookEntry, PlannedNotifyEntry, build_install_plan,
@@ -265,7 +270,7 @@ fn read_bounded(path: &Path) -> (IntegrationFileInspection, Option<String>) {
     }
 }
 
-fn sha256_hex(contents: &[u8]) -> String {
+pub(crate) fn sha256_hex(contents: &[u8]) -> String {
     let digest = Sha256::digest(contents);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

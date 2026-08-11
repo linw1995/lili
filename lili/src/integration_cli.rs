@@ -1,17 +1,19 @@
 use std::ffi::OsString;
 
-use lili_integration::{build_install_plan, inspect};
+use lili_integration::{build_install_plan, inspect, install, load_plan};
 use lili_pet::resolve_codex_home;
 
 pub fn try_run(arguments: &[OsString]) -> Option<u8> {
-    let [command, subcommand] = arguments else {
-        return None;
-    };
+    let command = arguments.first()?;
     if command != "integrate" {
         return None;
     }
-    if subcommand != "inspect" && subcommand != "plan" {
-        eprintln!("usage: lili integrate <inspect|plan>");
+    let subcommand = arguments.get(1).and_then(|argument| argument.to_str());
+    if subcommand == Some("install") {
+        return Some(run_install(arguments));
+    }
+    if arguments.len() != 2 || !matches!(subcommand, Some("inspect" | "plan")) {
+        eprintln!("usage: lili integrate <inspect|plan|install --plan <path>>");
         return Some(2);
     }
     let codex_home = match resolve_codex_home() {
@@ -22,7 +24,7 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
         }
     };
     let inspection = inspect(&codex_home);
-    let output = if subcommand == "inspect" {
+    let output = if subcommand == Some("inspect") {
         serde_json::to_value(inspection)
     } else {
         let hook_binary = packaged_hook_binary();
@@ -47,6 +49,37 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
         Err(_) => {
             eprintln!("integration inspection could not be written");
             Some(4)
+        }
+    }
+}
+
+fn run_install(arguments: &[OsString]) -> u8 {
+    let [_, _, flag, path] = arguments else {
+        eprintln!("usage: lili integrate install --plan <path>");
+        return 2;
+    };
+    if flag != "--plan" {
+        eprintln!("usage: lili integrate install --plan <path>");
+        return 2;
+    }
+    let plan = match load_plan(std::path::Path::new(path)) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("integration plan could not be loaded: {error}");
+            return 3;
+        }
+    };
+    match install(&plan) {
+        Ok(outcome) => match serde_json::to_writer_pretty(std::io::stdout().lock(), &outcome) {
+            Ok(()) => {
+                println!();
+                0
+            }
+            Err(_) => 4,
+        },
+        Err(error) => {
+            eprintln!("integration install failed: {error}");
+            5
         }
     }
 }
