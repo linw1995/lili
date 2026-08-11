@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use lili_actions::ActionSummary;
 use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
-use lili_session::SessionSummary;
+use lili_session::{
+    NormalizedSessionEvent, NotificationId, ReductionOutcome, SessionReducer, SessionViewSnapshot,
+};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -12,7 +14,7 @@ pub struct ViewSnapshot {
     pub revision: u64,
     pub selected_pet: Option<PetSummary>,
     pub pet_asset_id: Option<String>,
-    pub sessions: Vec<SessionSummary>,
+    pub session_state: SessionViewSnapshot,
     pub actions: Vec<ActionSummary>,
 }
 
@@ -26,6 +28,7 @@ pub struct UserSettings {
 pub struct AppState {
     snapshot: Arc<RwLock<ViewSnapshot>>,
     settings: Arc<RwLock<UserSettings>>,
+    session_reducer: Arc<Mutex<SessionReducer>>,
     pet_catalog: Arc<PetCatalog>,
     pet_asset: Arc<ApprovedPetAsset>,
 }
@@ -63,6 +66,7 @@ impl AppState {
                 ..ViewSnapshot::default()
             })),
             settings: Arc::new(RwLock::new(UserSettings::default())),
+            session_reducer: Arc::new(Mutex::new(SessionReducer::default())),
             pet_catalog: Arc::new(pet_catalog),
             pet_asset: Arc::new(pet_asset),
         }
@@ -77,7 +81,10 @@ impl AppState {
     }
 
     pub async fn snapshot(&self) -> ViewSnapshot {
-        self.snapshot.read().await.clone()
+        let mut snapshot = self.snapshot.read().await.clone();
+        snapshot.session_state = self.session_reducer.lock().await.snapshot();
+        snapshot.revision = snapshot.session_state.revision;
+        snapshot
     }
 
     pub async fn settings(&self) -> UserSettings {
@@ -87,6 +94,17 @@ impl AppState {
     pub async fn replace_settings(&self, settings: UserSettings) -> UserSettings {
         *self.settings.write().await = settings.clone();
         settings
+    }
+
+    pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        self.session_reducer.lock().await.reduce(event)
+    }
+
+    pub async fn acknowledge_notification(&self, id: &NotificationId) -> ReductionOutcome {
+        self.session_reducer
+            .lock()
+            .await
+            .acknowledge_notification(id)
     }
 }
 
@@ -118,5 +136,49 @@ fn approved_asset(
 impl Default for AppState {
     fn default() -> Self {
         Self::with_pet_catalog(PetCatalog::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lili_session::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn app_state_serializes_concurrent_duplicate_reduction() {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_started".to_owned()),
+            event_id: Some("event-1".to_owned()),
+            session_id: Some("session-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            occurred_at_ms: Some(1),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+
+        let (left, right) = tokio::join!(
+            state.apply_session_event(event.clone()),
+            state.apply_session_event(event)
+        );
+        assert!(matches!(
+            (left, right),
+            (
+                ReductionOutcome::Applied { revision: 1 },
+                ReductionOutcome::Duplicate
+            ) | (
+                ReductionOutcome::Duplicate,
+                ReductionOutcome::Applied { revision: 1 }
+            )
+        ));
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.session_state.sessions.len(), 1);
     }
 }

@@ -242,8 +242,7 @@ fn fallback_event_id(
     for byte in digest.finalize() {
         write!(&mut identity, "{byte:02x}").expect("writing to a string cannot fail");
     }
-    EventId::parse(identity)
-        .expect("fallback event identity is bounded")
+    EventId::parse(identity).expect("fallback event identity is bounded")
 }
 
 fn event_type_name(event_type: SessionEventKind) -> &'static str {

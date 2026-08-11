@@ -264,6 +264,7 @@ pub enum NotificationState {
 #[serde(rename_all = "camelCase")]
 pub struct Notification {
     pub id: NotificationId,
+    pub provider: ProviderId,
     pub event_id: EventId,
     pub session_id: SessionId,
     pub turn_id: Option<TurnId>,
@@ -300,6 +301,7 @@ pub enum PresentationState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
+    pub provider: ProviderId,
     pub id: SessionId,
     pub current_turn_id: Option<TurnId>,
     pub phase: SessionPhase,
