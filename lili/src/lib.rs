@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
-use lili_app_state::AppState;
+use lili_app_state::{AppState, AppStateStore, WindowPlacement};
 use lili_pet::{PetCatalog, resolve_codex_home};
 use lili_server::{StaticAssets, build_router};
 use loopback::LoopbackServer;
@@ -40,14 +40,9 @@ fn run_desktop(smoke: bool) {
         cfg!(debug_assertions),
     )
     .map(StaticAssets::new);
-    let pet_catalog = resolve_codex_home()
-        .map(|codex_home| PetCatalog::load(&codex_home))
-        .unwrap_or_default();
-    let loopback = LoopbackServer::bind(build_router(
-        AppState::with_pet_catalog(pet_catalog),
-        assets,
-    ))
-    .expect("failed to bind secure loopback transport");
+    let (state, state_store) = load_app_state();
+    let loopback = LoopbackServer::bind(build_router(state.clone(), assets))
+        .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();
     let origin = loopback.origin();
@@ -106,13 +101,71 @@ fn run_desktop(smoke: bool) {
     });
 
     let mut shutdown_tx = Some(shutdown_tx);
-    app.run(move |_app, event| {
-        if matches!(event, tauri::RunEvent::Exit)
-            && let Some(shutdown_tx) = shutdown_tx.take()
-        {
-            let _ = shutdown_tx.send(());
+    app.run(move |app, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if !smoke && let Some(store) = &state_store {
+                let placement = app
+                    .get_webview_window("pet")
+                    .as_ref()
+                    .and_then(current_window_placement);
+                let persistent = tauri::async_runtime::block_on(state.persistent_state(placement));
+                if let Err(error) = store.save(&persistent) {
+                    tracing::warn!(%error, "application state was not persisted");
+                }
+            }
+            if let Some(shutdown_tx) = shutdown_tx.take() {
+                let _ = shutdown_tx.send(());
+            }
         }
     });
+}
+
+fn load_app_state() -> (AppState, Option<AppStateStore>) {
+    let codex_home = match resolve_codex_home() {
+        Ok(codex_home) => codex_home,
+        Err(error) => {
+            tracing::warn!(%error, "Codex home was not resolved");
+            return (AppState::default(), None);
+        }
+    };
+    let store = AppStateStore::for_codex_home(&codex_home);
+    match store.load() {
+        Ok(Some(state)) => {
+            let pet_catalog = PetCatalog::load_with_selection(&codex_home, state.selected_pet_id());
+            let state = AppState::with_persistent_state(pet_catalog, state)
+                .expect("validated application state must restore");
+            (state, Some(store))
+        }
+        Ok(None) => (
+            AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
+            Some(store),
+        ),
+        Err(error) => {
+            tracing::warn!(%error, "persisted application state was ignored");
+            (
+                AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
+                None,
+            )
+        }
+    }
+}
+
+fn current_window_placement(window: &tauri::WebviewWindow) -> Option<WindowPlacement> {
+    let position = window.outer_position().ok()?;
+    let scale = window.scale_factor().ok()?;
+    let display_id = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .and_then(|monitor| monitor.name().cloned())
+        .unwrap_or_else(|| "unknown-display".to_owned());
+    WindowPlacement::new(
+        display_id,
+        (f64::from(position.x) / scale).round() as i32,
+        (f64::from(position.y) / scale).round() as i32,
+        (scale * 1_000.0).round() as u32,
+    )
+    .ok()
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {

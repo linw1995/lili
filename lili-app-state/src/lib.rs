@@ -1,3 +1,5 @@
+mod persistence;
+
 use std::sync::Arc;
 
 use lili_actions::ActionSummary;
@@ -8,6 +10,10 @@ use lili_session::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+
+pub use persistence::{
+    AppStateStore, PersistenceError, PersistentApplicationState, WindowPlacement,
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ViewSnapshot {
@@ -56,6 +62,18 @@ impl ApprovedPetAsset {
 
 impl AppState {
     pub fn with_pet_catalog(pet_catalog: PetCatalog) -> Self {
+        Self::with_reducer(pet_catalog, SessionReducer::default())
+    }
+
+    pub fn with_persistent_state(
+        pet_catalog: PetCatalog,
+        state: PersistentApplicationState,
+    ) -> Result<Self, lili_session::ReducerRestoreError> {
+        let reducer = SessionReducer::from_persistent_state(state.into_reducer_state())?;
+        Ok(Self::with_reducer(pet_catalog, reducer))
+    }
+
+    fn with_reducer(pet_catalog: PetCatalog, reducer: SessionReducer) -> Self {
         let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
         let selected_pet = Some(PetSummary::from(pet_catalog.active().definition()));
         let pet_asset_id = Some(pet_asset.id().to_owned());
@@ -66,7 +84,7 @@ impl AppState {
                 ..ViewSnapshot::default()
             })),
             settings: Arc::new(RwLock::new(UserSettings::default())),
-            session_reducer: Arc::new(Mutex::new(SessionReducer::default())),
+            session_reducer: Arc::new(Mutex::new(reducer)),
             pet_catalog: Arc::new(pet_catalog),
             pet_asset: Arc::new(pet_asset),
         }
@@ -110,6 +128,18 @@ impl AppState {
             .await
             .acknowledge_notification(id, now_ms)
     }
+
+    pub async fn persistent_state(
+        &self,
+        window_placement: Option<WindowPlacement>,
+    ) -> PersistentApplicationState {
+        let selected_pet_id = lili_core::PetId::parse(self.pet_catalog.requested_identifier());
+        PersistentApplicationState::new(
+            selected_pet_id,
+            window_placement,
+            self.session_reducer.lock().await.persistent_state(),
+        )
+    }
 }
 
 fn load_active_asset(pet_catalog: PetCatalog) -> (PetCatalog, ApprovedPetAsset) {
@@ -145,7 +175,9 @@ impl Default for AppState {
 
 #[cfg(test)]
 mod tests {
-    use lili_session::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
+    use lili_session::{
+        ProviderCapabilitiesInputV1, ProviderInputV1, SessionPhase, normalize_provider_input,
+    };
 
     use super::*;
 
@@ -184,5 +216,37 @@ mod tests {
         let snapshot = state.snapshot().await;
         assert_eq!(snapshot.revision, 1);
         assert_eq!(snapshot.session_state.sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persistent_application_state_restores_session_reducer() {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-1".to_owned()),
+            session_id: Some("session-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let placement = WindowPlacement::new("display-1", 10, 20, 2_000).unwrap();
+        let persistent = state.persistent_state(Some(placement.clone())).await;
+        assert_eq!(persistent.window_placement(), Some(&placement));
+
+        let restored = AppState::with_persistent_state(PetCatalog::default(), persistent).unwrap();
+        let snapshot = restored.snapshot().await;
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(
+            snapshot.session_state.sessions[0].phase,
+            SessionPhase::Completed
+        );
+        assert_eq!(snapshot.session_state.notifications.len(), 1);
     }
 }

@@ -139,7 +139,19 @@ impl PetCatalog {
                 DEFAULT_PET_ID.to_owned()
             }
         };
+        Self::load_requested(codex_home, requested_identifier, diagnostics)
+    }
 
+    pub fn load_with_selection(codex_home: &Path, selected: Option<&PetId>) -> Self {
+        let requested_identifier = selected.map_or(DEFAULT_PET_ID, PetId::as_str).to_owned();
+        Self::load_requested(codex_home, requested_identifier, Vec::new())
+    }
+
+    fn load_requested(
+        codex_home: &Path,
+        requested_identifier: String,
+        mut diagnostics: Vec<CatalogDiagnostic>,
+    ) -> Self {
         let discovered = discover_pet_packages(codex_home);
         diagnostics.extend(discovered.issues().iter().map(|issue| CatalogDiagnostic {
             package_dir: Some(issue.package_dir().to_owned()),
@@ -390,5 +402,16 @@ mod tests {
         );
         let payload = fs::read_to_string(selection_path(&temp.0)).unwrap();
         assert!(!payload.contains('/'));
+    }
+
+    #[test]
+    fn explicit_application_state_selection_overrides_legacy_selection_file() {
+        let temp = TempDir::new();
+        let legacy = PetId::parse("missing").unwrap();
+        persist_selected_pet(&temp.0, &legacy).unwrap();
+        let selected = PetId::parse(DEFAULT_PET_ID).unwrap();
+        let catalog = PetCatalog::load_with_selection(&temp.0, Some(&selected));
+        assert_eq!(catalog.requested_identifier(), DEFAULT_PET_ID);
+        assert!(catalog.diagnostics().is_empty());
     }
 }

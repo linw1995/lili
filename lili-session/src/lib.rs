@@ -5,7 +5,10 @@ mod types;
 pub use normalization::{
     MAX_PROVIDER_PAYLOAD_BYTES, NormalizationError, normalize_json, normalize_provider_input,
 };
-pub use reducer::{DEFAULT_MINIMUM_DWELL_MS, ReductionOutcome, SessionReducer};
+pub use reducer::{
+    DEFAULT_MINIMUM_DWELL_MS, ReducerRestoreError, ReductionOutcome, SessionReducer,
+    SessionReducerState,
+};
 pub use types::{
     DisplayProjectContext, DisplaySummary, DisplayValueError, EventId, IdentityError,
     NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
