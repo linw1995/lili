@@ -4,6 +4,45 @@ default-run = "lili"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autobins = false
+
+[features]
+acceptance = ["release-tools"]
+release-tools = []
+
+[[bin]]
+name = "lili"
+path = "src/main.rs"
+
+[[bin]]
+name = "lili-hook"
+path = "src/bin/lili-hook.rs"
+required-features = ["release-tools"]
+
+[[bin]]
+name = "lili-codex-matrix"
+path = "src/bin/lili-codex-matrix.rs"
+required-features = ["release-tools"]
+
+[[bin]]
+name = "lili-action-tree-fixture"
+path = "src/bin/lili-action-tree-fixture.rs"
+required-features = ["acceptance"]
+
+[[bin]]
+name = "lili-linux-acceptance"
+path = "src/bin/lili-linux-acceptance.rs"
+required-features = ["acceptance"]
+
+[[bin]]
+name = "lili-macos-acceptance"
+path = "src/bin/lili-macos-acceptance.rs"
+required-features = ["acceptance"]
+
+[[bin]]
+name = "lili-windows-acceptance"
+path = "src/bin/lili-windows-acceptance.rs"
+required-features = ["acceptance"]
 
 [lib]
 name = "lili_lib"

@@ -1,0 +1,20 @@
+version = 1
+
+[[action]]
+id = "open-session-context"
+trigger = "notification_activate"
+command = ["/absolute/path/to/script", "--interaction-stdin"]
+timeout_ms = 5000
+debounce_ms = 400
+
+[action.filters]
+providers = ["codex"]
+notification_kinds = ["attention", "failure", "completion"]
+
+[action.concurrency]
+mode = "reject"
+max_parallel = 1
+queue_capacity = 0
+
+[action.working_directory]
+policy = "codex_home"

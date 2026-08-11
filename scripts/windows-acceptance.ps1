@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 cargo tauri build --bundles nsis -- --locked
-cargo build --locked --release --package lili --bin lili-hook --bin lili-action-tree-fixture --bin lili-windows-acceptance
+cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-action-tree-fixture --bin lili-windows-acceptance
 
 $installer = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
 if ($null -eq $installer) {

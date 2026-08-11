@@ -29,3 +29,9 @@ Replace `nixpkgs` with the intended input name. Do not run broad lockfile update
 Rust and npm dependency updates are separate operations. Use Cargo and npm commands that explicitly update their own lockfile, then verify all checks through the Flake.
 
 Normal development and build applications use locked dependency resolution. `scripts/check-lockfiles.sh` can wrap a command and fail if it mutates any lockfile.
+
+## Release assembly
+
+`nix run .#build` runs the supported Codex matrix gate, creates the platform-standard Tauri bundles, and assembles a versioned archive under `release/`. The archive contains the desktop and hook binaries, fallback pet, release Web assets, integration and security documentation, action example, project license, generated third-party notices, and a SHA-256 file manifest. The assembler rejects source test fixtures and files that contain the current development workspace path.
+
+Platform signing remains an external trust operation. When Tauri receives a configured signing identity, the manifest records `signed`; otherwise a standard local bundle records `platform-standard`. Set `LILI_REQUIRE_SIGNED=1` in a protected release environment to reject an unsigned macOS archive.

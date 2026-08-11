@@ -33,8 +33,19 @@ in {
 
   build = mkWorkspaceApp {
     name = "build";
+    runtimeInputs =
+      toolchain.buildTools
+      ++ [
+        pkgs.cargo-license
+        pkgs.coreutils
+        pkgs.findutils
+        pkgs.gnutar
+        pkgs.gzip
+        pkgs.jq
+        pkgs.nodejs_24
+      ];
     text = ''
-      exec cargo tauri build "$@" -- --locked
+      exec bash scripts/build-release.sh "$@"
     '';
   };
 
@@ -86,7 +97,7 @@ in {
       test_tmp="$(mktemp -d /tmp/lili-tests.XXXXXX)"
       trap 'rm -rf -- "$test_tmp"' EXIT
       export TMPDIR="$test_tmp"
-      cargo test --locked --workspace --all-targets
+      cargo test --locked --workspace --all-targets --features lili/acceptance
     '';
   };
 
@@ -124,7 +135,7 @@ in {
   codex-matrix = mkWorkspaceApp {
     name = "codex-matrix";
     text = ''
-      cargo build --locked --release --package lili --bin lili-hook --bin lili-codex-matrix
+      cargo build --locked --release --package lili --features release-tools --bin lili-hook --bin lili-codex-matrix
       exec target/release/lili-codex-matrix \
         "$(pwd -P)/target/release/lili-hook" \
         "$(pwd -P)/lili-session/tests/fixtures/codex"
@@ -193,7 +204,7 @@ in {
       if toolchain.isDarwin
       then ''
         cargo tauri build --bundles app -- --locked
-        cargo build --locked --release --package lili --bin lili-hook --bin lili-macos-acceptance
+        cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-macos-acceptance
         exec target/release/lili-macos-acceptance \
           target/release/bundle/macos/Lili.app/Contents/MacOS/lili \
           target/release/lili-hook
@@ -211,7 +222,7 @@ in {
       if toolchain.isLinux
       then ''
         cargo tauri build --bundles deb -- --locked
-        cargo build --locked --release --package lili --bin lili-hook --bin lili-linux-acceptance
+        cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-linux-acceptance
         bundle="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
         test -n "$bundle"
         acceptance=(target/release/lili-linux-acceptance target/release/lili target/release/lili-hook "$bundle")

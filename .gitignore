@@ -4,6 +4,7 @@
 /node_modules/
 /target/
 /result
+/release/
 /playwright-report/
 /test-results/
 /fuzz/artifacts/
