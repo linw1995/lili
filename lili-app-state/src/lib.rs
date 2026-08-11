@@ -4,11 +4,13 @@ mod persistence;
 use std::sync::Arc;
 
 use lili_actions::ActionSummary;
-use lili_core::{PetLifecycleState, PetPresentationState};
+use lili_core::{
+    PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
+};
 use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
 use lili_session::{
-    NormalizedSessionEvent, NotificationId, NotificationState, PresentationState, ReductionOutcome,
-    SessionReducer, SessionViewSnapshot,
+    NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
+    PresentationState, ReductionOutcome, SessionReducer, SessionViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -164,6 +166,18 @@ impl AppState {
         outcome
     }
 
+    pub async fn notification_context(&self, id: &NotificationId) -> Option<Notification> {
+        self.session_reducer
+            .lock()
+            .await
+            .snapshot()
+            .notifications
+            .into_iter()
+            .find(|notification| {
+                notification.id == *id && notification.state == NotificationState::Unread
+            })
+    }
+
     pub async fn persistent_state(
         &self,
         window_placement: Option<WindowPlacement>,
@@ -193,6 +207,42 @@ impl AppState {
 }
 
 fn presentation_from_view(snapshot: &ViewSnapshot) -> PetPresentationState {
+    let notifications = snapshot
+        .session_state
+        .notifications
+        .iter()
+        .filter(|notification| notification.state == NotificationState::Unread)
+        .map(|notification| PetNotificationPresentation {
+            activation_id: notification.id.as_str().to_owned(),
+            kind: match notification.kind {
+                NotificationKind::Attention => PetNotificationKind::Attention,
+                NotificationKind::Completion => PetNotificationKind::Completion,
+                NotificationKind::Failure => PetNotificationKind::Failure,
+            },
+            project_label: notification
+                .project
+                .as_ref()
+                .map(|project| project.label().to_owned()),
+            summary: notification.summary.as_ref().map_or_else(
+                || match notification.kind {
+                    NotificationKind::Attention => "Input required".to_owned(),
+                    NotificationKind::Completion => "Task completed".to_owned(),
+                    NotificationKind::Failure => "Task failed".to_owned(),
+                },
+                |summary| summary.text().to_owned(),
+            ),
+            summary_truncated: notification
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.was_truncated()),
+            summary_redacted: notification
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.was_redacted()),
+            occurred_at_ms: notification.occurred_at_ms,
+            unread: true,
+        })
+        .collect::<Vec<_>>();
     PetPresentationState {
         revision: snapshot.revision,
         lifecycle: match snapshot.session_state.presentation {
@@ -207,12 +257,8 @@ fn presentation_from_view(snapshot: &ViewSnapshot) -> PetPresentationState {
             .selected_pet
             .as_ref()
             .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name.clone()),
-        unread_notification_count: snapshot
-            .session_state
-            .notifications
-            .iter()
-            .filter(|notification| notification.state == NotificationState::Unread)
-            .count(),
+        unread_notification_count: notifications.len(),
+        notifications,
     }
 }
 
@@ -250,7 +296,8 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use lili_session::{
-        ProviderCapabilitiesInputV1, ProviderInputV1, SessionPhase, normalize_provider_input,
+        ProviderCapabilitiesInputV1, ProviderInputV1, ProviderProjectInputV1, SessionPhase,
+        normalize_provider_input,
     };
 
     use super::*;
@@ -335,8 +382,10 @@ mod tests {
             session_id: Some("session-private".to_owned()),
             turn_id: Some("turn-private".to_owned()),
             occurred_at_ms: Some(10),
-            project: None,
-            summary: None,
+            project: Some(ProviderProjectInputV1 {
+                label: Some("Workspace".to_owned()),
+            }),
+            summary: Some("Finished safely".to_owned()),
             capabilities: ProviderCapabilitiesInputV1::default(),
             source_discriminator: None,
         })
@@ -346,6 +395,34 @@ mod tests {
         assert_eq!(presentation.revision, 1);
         assert_eq!(presentation.lifecycle, PetLifecycleState::Review);
         assert_eq!(presentation.unread_notification_count, 1);
+        let card = &presentation.notifications[0];
+        assert_eq!(card.kind, PetNotificationKind::Completion);
+        assert_eq!(card.project_label.as_deref(), Some("Workspace"));
+        assert_eq!(card.summary, "Finished safely");
+        let notification_id = NotificationId::parse(card.activation_id.clone()).unwrap();
+        let context = state.notification_context(&notification_id).await.unwrap();
+        assert_eq!(context.session_id.as_str(), "session-private");
+        assert_eq!(context.turn_id.as_ref().unwrap().as_str(), "turn-private");
+
+        let next_turn = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_started".to_owned()),
+            event_id: Some("event-next-turn".to_owned()),
+            session_id: Some("session-private".to_owned()),
+            turn_id: Some("turn-next".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(next_turn).await;
+        let updated = state.pet_presentation().await;
+        assert_eq!(updated.notifications[0].activation_id, card.activation_id);
+        let context = state.notification_context(&notification_id).await.unwrap();
+        assert_eq!(context.turn_id.as_ref().unwrap().as_str(), "turn-private");
         let serialized = serde_json::to_string(&presentation).unwrap();
         assert!(!serialized.contains("session-private"));
         assert!(!serialized.contains("turn-private"));

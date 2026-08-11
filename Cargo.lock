@@ -2666,6 +2666,7 @@ dependencies = [
  "lili-app-state",
  "lili-core",
  "lili-pet",
+ "lili-session",
  "lili-ui",
  "serde",
  "serde_json",
@@ -2697,6 +2698,7 @@ dependencies = [
 name = "lili-ui"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "leptos",
  "lili-core",
  "lili-pet",

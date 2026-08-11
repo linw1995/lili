@@ -11,6 +11,7 @@ use axum::{
 };
 use leptos::prelude::*;
 use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
+use lili_session::{NotificationId, ReductionOutcome};
 use lili_ui::App;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -55,12 +56,21 @@ struct InteractionResponse {
     request_id: Uuid,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct NotificationMutationResponse {
+    accepted: bool,
+}
+
 pub fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
     let api = Router::new()
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/settings", get(settings).merge(put(update_settings)))
         .route("/interactions", post(interaction))
+        .route(
+            "/notifications/{notification_id}/dismiss",
+            post(dismiss_notification),
+        )
         .route("/diagnostics", get(diagnostics));
 
     let mut router = Router::new()
@@ -111,16 +121,60 @@ async fn diagnostics(State(state): State<AppState>) -> Json<Diagnostics> {
     })
 }
 
-async fn interaction(Json(request): Json<InteractionRequest>) -> Json<InteractionResponse> {
-    let accepted = !request.trigger.is_empty()
-        && request
-            .notification_id
-            .as_ref()
-            .is_none_or(|value| !value.is_empty());
+async fn interaction(
+    State(state): State<AppState>,
+    Json(request): Json<InteractionRequest>,
+) -> Json<InteractionResponse> {
+    let accepted = if let Some(notification_id) = request.notification_id {
+        if let Ok(notification_id) = NotificationId::parse(notification_id) {
+            request.trigger == "notification_click"
+                && state.notification_context(&notification_id).await.is_some()
+        } else {
+            false
+        }
+    } else {
+        !request.trigger.is_empty()
+    };
     Json(InteractionResponse {
         accepted,
         request_id: Uuid::new_v4(),
     })
+}
+
+async fn dismiss_notification(
+    State(state): State<AppState>,
+    Path(notification_id): Path<String>,
+) -> (StatusCode, Json<NotificationMutationResponse>) {
+    let Ok(notification_id) = NotificationId::parse(notification_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(NotificationMutationResponse { accepted: false }),
+        );
+    };
+    let accepted = matches!(
+        state
+            .acknowledge_notification(&notification_id, unix_time_ms())
+            .await,
+        ReductionOutcome::Applied { .. }
+    );
+    (
+        if accepted {
+            StatusCode::OK
+        } else {
+            StatusCode::NOT_FOUND
+        },
+        Json(NotificationMutationResponse { accepted }),
+    )
+}
+
+fn unix_time_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 async fn pet_asset(State(state): State<AppState>, Path(asset_id): Path<String>) -> Response {
@@ -223,6 +277,7 @@ mod tests {
 
     use axum::body::to_bytes;
     use http::Request;
+    use lili_session::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
@@ -248,6 +303,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    async fn state_with_notification() -> (AppState, String) {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-card".to_owned()),
+            session_id: Some("session-card".to_owned()),
+            turn_id: Some("turn-card".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: Some("Done".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let notification_id = state.pet_presentation().await.notifications[0]
+            .activation_id
+            .clone();
+        (state, notification_id)
     }
 
     #[tokio::test]
@@ -296,6 +374,52 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("data-ssr-marker=\"lili-ready\""));
+    }
+
+    #[tokio::test]
+    async fn notification_activation_and_dismissal_are_independent() {
+        let (state, notification_id) = state_with_notification().await;
+        let router = build_router(state.clone(), None);
+        let activation = serde_json::json!({
+            "trigger": "notification_click",
+            "notification_id": notification_id.clone(),
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/interactions")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(activation.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["accepted"] == true);
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 1);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/notifications/{notification_id}/dismiss"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 0);
+
+        let response = router
+            .oneshot(
+                Request::post(format!("/api/v1/notifications/{notification_id}/dismiss"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

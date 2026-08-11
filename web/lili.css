@@ -15,6 +15,78 @@ body {
   min-height: 100vh;
   place-items: center;
   pointer-events: none;
+  position: relative;
+}
+
+.notification-stack {
+  display: grid;
+  gap: 6px;
+  left: 8px;
+  max-height: 142px;
+  overflow-y: auto;
+  pointer-events: auto;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 2;
+}
+
+.notification-card {
+  backdrop-filter: blur(12px);
+  background: rgb(24 28 36 / 92%);
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 12px;
+  color: #fff;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.notification-unread {
+  border-inline-start: 4px solid #78d7ff;
+}
+
+.notification-heading,
+.notification-controls {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.notification-heading,
+.notification-disclosure {
+  color: #cdd7e5;
+  font-size: 11px;
+}
+
+.notification-project,
+.notification-summary {
+  font-size: 12px;
+  margin: 0;
+}
+
+.notification-summary {
+  color: #edf3fb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-controls {
+  justify-content: flex-end;
+}
+
+.notification-controls button {
+  background: rgb(255 255 255 / 12%);
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 7px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
 }
 
 .pet-sprite {

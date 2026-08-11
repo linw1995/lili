@@ -60,6 +60,37 @@ impl PetLifecycleState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PetNotificationKind {
+    Attention,
+    Completion,
+    Failure,
+}
+
+impl PetNotificationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Attention => "attention",
+            Self::Completion => "completion",
+            Self::Failure => "failure",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetNotificationPresentation {
+    pub activation_id: String,
+    pub kind: PetNotificationKind,
+    pub project_label: Option<String>,
+    pub summary: String,
+    pub summary_truncated: bool,
+    pub summary_redacted: bool,
+    pub occurred_at_ms: u64,
+    pub unread: bool,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetPresentationState {
@@ -68,4 +99,5 @@ pub struct PetPresentationState {
     pub pet_asset_id: Option<String>,
     pub pet_label: String,
     pub unread_notification_count: usize,
+    pub notifications: Vec<PetNotificationPresentation>,
 }

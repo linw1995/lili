@@ -1,5 +1,7 @@
 use leptos::prelude::*;
-use lili_core::{PetLifecycleState, PetPresentationState};
+use lili_core::{
+    PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
+};
 #[cfg(any(test, feature = "hydrate"))]
 use lili_pet::LookDirectionSelector;
 use lili_pet::{AnimationScheduler, AnimationState, FrameDescriptor, LookFrame};
@@ -30,13 +32,14 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
     let initial_render = controller.get_untracked().render(now_ms);
     let animation = RwSignal::new(initial_render.animation);
     let frame = RwSignal::new(initial_render.frame);
+    let wall_clock = RwSignal::new(0_u64);
     #[cfg(feature = "hydrate")]
     {
         let pointer = RwSignal::new(PointerTracker::default());
         let clicks = RwSignal::new(ClickDisambiguator::default());
         let gaze = RwSignal::new(None::<LookFrame>);
         connect_presentation_stream(presentation, controller);
-        start_animation_clock(controller, animation, frame, clicks, gaze);
+        start_animation_clock(controller, animation, frame, clicks, gaze, wall_clock);
         let pet_view = view! {
             <section
                 class="pet-sprite"
@@ -102,7 +105,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
             </section>
         };
         return view! {
-            <PetShell presentation animation pet_view/>
+            <PetShell presentation animation wall_clock pet_view/>
         };
     }
     #[cfg(not(feature = "hydrate"))]
@@ -121,7 +124,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
     };
     #[cfg(not(feature = "hydrate"))]
     view! {
-        <PetShell presentation animation pet_view/>
+        <PetShell presentation animation wall_clock pet_view/>
     }
 }
 
@@ -129,8 +132,26 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
 fn PetShell(
     presentation: RwSignal<PetPresentationState>,
     animation: RwSignal<AnimationState>,
+    wall_clock: RwSignal<u64>,
     pet_view: impl IntoView + 'static,
 ) -> impl IntoView {
+    #[cfg(feature = "hydrate")]
+    let notification_cards = view! {
+        <For
+            each=move || presentation.get().notifications
+            key=|notification| notification.activation_id.clone()
+            children=move |notification| view! {
+                <NotificationCard notification wall_clock/>
+            }
+        />
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let notification_cards = presentation
+        .get_untracked()
+        .notifications
+        .into_iter()
+        .map(|notification| view! { <NotificationCard notification wall_clock/> })
+        .collect_view();
     view! {
         <main
             id="lili-app"
@@ -141,8 +162,110 @@ fn PetShell(
             data-unread-count=move || presentation.get().unread_notification_count
             data-animation=move || animation_name(animation.get())
         >
+            <aside class="notification-stack" aria-label="Session notifications">
+                {notification_cards}
+            </aside>
             {pet_view}
         </main>
+    }
+}
+
+#[component]
+fn NotificationCard(
+    notification: PetNotificationPresentation,
+    wall_clock: RwSignal<u64>,
+) -> impl IntoView {
+    let activation_id = notification.activation_id;
+    let kind = notification.kind;
+    let project_label = notification
+        .project_label
+        .unwrap_or_else(|| "Session".to_owned());
+    let summary = notification.summary;
+    let occurred_at_ms = notification.occurred_at_ms;
+    let unread = notification.unread;
+    let disclosure = match (
+        notification.summary_redacted,
+        notification.summary_truncated,
+    ) {
+        (true, true) => Some("Redacted and truncated"),
+        (true, false) => Some("Redacted"),
+        (false, true) => Some("Truncated"),
+        (false, false) => None,
+    };
+    #[cfg(feature = "hydrate")]
+    let controls = {
+        let activate_id = activation_id.clone();
+        let dismiss_id = activation_id.clone();
+        view! {
+            <button
+                class="notification-activate"
+                type="button"
+                aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
+                on:click=move |_| activate_native_notification(&activate_id)
+            >
+                "Open"
+            </button>
+            <button
+                class="notification-dismiss"
+                type="button"
+                aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
+                on:click=move |_| dismiss_native_notification(&dismiss_id)
+            >
+                "Dismiss"
+            </button>
+        }
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let controls = view! {
+        <button
+            class="notification-activate"
+            type="button"
+            aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
+        >
+            "Open"
+        </button>
+        <button
+            class="notification-dismiss"
+            type="button"
+            aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
+        >
+            "Dismiss"
+        </button>
+    };
+    view! {
+        <article
+            class="notification-card"
+            class:notification-unread=unread
+            data-notification-id=activation_id
+            data-notification-kind=kind.as_str()
+        >
+            <div class="notification-heading">
+                <span class="notification-kind">{notification_kind_label(kind)}</span>
+                <time>{move || relative_time_label(occurred_at_ms, wall_clock.get())}</time>
+            </div>
+            <strong class="notification-project">{project_label}</strong>
+            <p class="notification-summary">{summary}</p>
+            {disclosure.map(|label| view! { <span class="notification-disclosure">{label}</span> })}
+            <div class="notification-controls">{controls}</div>
+        </article>
+    }
+}
+
+const fn notification_kind_label(kind: PetNotificationKind) -> &'static str {
+    match kind {
+        PetNotificationKind::Attention => "Attention",
+        PetNotificationKind::Completion => "Completed",
+        PetNotificationKind::Failure => "Failed",
+    }
+}
+
+fn relative_time_label(occurred_at_ms: u64, now_ms: u64) -> String {
+    let elapsed_seconds = now_ms.saturating_sub(occurred_at_ms) / 1_000;
+    match elapsed_seconds {
+        0..60 => "Now".to_owned(),
+        60..3_600 => format!("{}m ago", elapsed_seconds / 60),
+        3_600..86_400 => format!("{}h ago", elapsed_seconds / 3_600),
+        _ => format!("{}d ago", elapsed_seconds / 86_400),
     }
 }
 
@@ -575,6 +698,7 @@ fn start_animation_clock(
     frame: RwSignal<AtlasFrame>,
     clicks: RwSignal<ClickDisambiguator>,
     gaze: RwSignal<Option<LookFrame>>,
+    wall_clock: RwSignal<u64>,
 ) {
     use wasm_bindgen::{JsCast, closure::Closure};
 
@@ -583,6 +707,7 @@ fn start_animation_clock(
     };
     let callback = Closure::<dyn FnMut()>::new(move || {
         let now_ms = animation_clock_ms();
+        wall_clock.set(js_sys::Date::now().max(0.0) as u64);
         if clicks.write().poll(now_ms) == ClickDecision::Single {
             controller.update(|controller| controller.trigger_wave(now_ms));
         }
@@ -621,6 +746,28 @@ export function commitNativeWindowPosition() {
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = commitNativeWindowPosition)]
     fn commit_native_window_position();
+}
+
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function activateNativeNotification(id) {
+  void fetch('/api/v1/interactions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ trigger: 'notification_click', notification_id: id }),
+  });
+}
+
+export function dismissNativeNotification(id) {
+  void fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
+    fn activate_native_notification(id: &str);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = dismissNativeNotification)]
+    fn dismiss_native_notification(id: &str);
 }
 
 #[cfg(feature = "hydrate")]
@@ -677,7 +824,17 @@ mod tests {
                 lifecycle: PetLifecycleState::Waiting,
                 pet_asset_id: Some("opaque-id".to_owned()),
                 pet_label: "Lili".to_owned(),
-                unread_notification_count: 2,
+                unread_notification_count: 1,
+                notifications: vec![PetNotificationPresentation {
+                    activation_id: "notification-safe".to_owned(),
+                    kind: PetNotificationKind::Completion,
+                    project_label: Some("Workspace".to_owned()),
+                    summary: "Finished safely".to_owned(),
+                    summary_truncated: true,
+                    summary_redacted: false,
+                    occurred_at_ms: 10,
+                    unread: true,
+                }],
             }/>
         }
         .to_html();
@@ -687,8 +844,11 @@ mod tests {
         assert!(html.contains("data-hit-region=\"pet\""));
         assert!(html.contains("data-revision=\"7\""));
         assert!(html.contains("data-lifecycle=\"waiting\""));
-        assert!(html.contains("data-unread-count=\"2\""));
+        assert!(html.contains("data-unread-count=\"1\""));
         assert!(html.contains("/pet-assets/opaque-id"));
+        assert!(html.contains("data-notification-id=\"notification-safe\""));
+        assert!(html.contains("Finished safely"));
+        assert!(html.contains("Truncated"));
         assert!(!html.contains("sessionId"));
         assert!(!html.contains("eventId"));
     }
@@ -717,6 +877,15 @@ mod tests {
         }));
         assert_eq!(cursor.current.revision, 6);
         assert_eq!(cursor.current.unread_notification_count, 2);
+    }
+
+    #[test]
+    fn notification_time_labels_are_bounded_and_relative() {
+        assert_eq!(relative_time_label(10_000, 10_000), "Now");
+        assert_eq!(relative_time_label(10_000, 130_000), "2m ago");
+        assert_eq!(relative_time_label(10_000, 7_210_000), "2h ago");
+        assert_eq!(relative_time_label(10_000, 172_810_000), "2d ago");
+        assert_eq!(relative_time_label(20_000, 10_000), "Now");
     }
 
     #[test]
