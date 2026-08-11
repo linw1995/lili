@@ -575,7 +575,31 @@ const fn diagnostic_message(code: ActionDiagnosticCode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static NEXT_TEST_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let sequence = NEXT_TEST_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "lili-actions-loading-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn every_diagnostic_code_has_a_stable_message() {
@@ -689,6 +713,43 @@ command = [{}]
         assert_eq!(
             malformed.effective().diagnostics[0].code,
             ActionDiagnosticCode::MalformedDocument
+        );
+    }
+
+    #[test]
+    fn file_loading_distinguishes_absence_invalid_files_and_size_limits() {
+        let temp = TempDir::new();
+        let missing = load_actions_file(&temp.0.join("missing.toml"), &context());
+        assert!(missing.effective().diagnostics.is_empty());
+
+        let directory = load_actions_file(&temp.0, &context());
+        assert_eq!(
+            directory.effective().diagnostics[0].code,
+            ActionDiagnosticCode::InvalidFile
+        );
+
+        let valid_path = temp.0.join("valid.toml");
+        fs::write(&valid_path, "version = 1\n").unwrap();
+        let valid = load_actions_file(&valid_path, &context());
+        assert!(valid.effective().diagnostics.is_empty());
+
+        let malformed_path = temp.0.join("malformed.toml");
+        fs::write(&malformed_path, [0xff]).unwrap();
+        let malformed = load_actions_file(&malformed_path, &context());
+        assert_eq!(
+            malformed.effective().diagnostics[0].code,
+            ActionDiagnosticCode::InvalidFile
+        );
+
+        let oversized_path = temp.0.join("oversized.toml");
+        fs::File::create(&oversized_path)
+            .unwrap()
+            .set_len(MAX_ACTION_CONFIG_BYTES as u64 + 1)
+            .unwrap();
+        let oversized = load_actions_file(&oversized_path, &context());
+        assert_eq!(
+            oversized.effective().diagnostics[0].code,
+            ActionDiagnosticCode::TooLarge
         );
     }
 }

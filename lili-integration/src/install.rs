@@ -626,6 +626,36 @@ mod tests {
     }
 
     #[test]
+    fn plan_loading_enforces_regular_file_size_and_json_boundaries() {
+        let temp = TempDir::new();
+        let inspection = inspect_with_version(&temp.0, Some("0.147.0".to_owned()));
+        let plan = build_install_plan(&inspection, &temp.0.join("bin/lili-hook"), 42);
+
+        let valid_path = temp.0.join("plan.json");
+        fs::write(&valid_path, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(load_plan(&valid_path).unwrap(), plan);
+
+        assert!(matches!(load_plan(&temp.0), Err(InstallError::InvalidPlan)));
+
+        let malformed_path = temp.0.join("malformed.json");
+        fs::write(&malformed_path, b"{").unwrap();
+        assert!(matches!(
+            load_plan(&malformed_path),
+            Err(InstallError::InvalidPlan)
+        ));
+
+        let oversized_path = temp.0.join("oversized.json");
+        File::create(&oversized_path)
+            .unwrap()
+            .set_len(MAX_PLAN_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            load_plan(&oversized_path),
+            Err(InstallError::InvalidPlan)
+        ));
+    }
+
+    #[test]
     fn coexistence_install_is_idempotent_and_records_original_argv() {
         let temp = TempDir::new();
         fs::write(
