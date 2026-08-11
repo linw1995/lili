@@ -1,6 +1,6 @@
 ## 1. Nix Toolchain, Workspace, and Shared Application Shell
 
-- [ ] 1.1 Define version ownership: Cargo workspace `package.version` is the application release version, `flake.lock` pins system/build tools, `Cargo.lock` pins Rust dependencies, and `package-lock.json` pins npm dependencies.
+- [x] 1.1 Define version ownership: Cargo workspace `package.version` is the application release version, `flake.lock` pins system/build tools, `Cargo.lock` pins Rust dependencies, and `package-lock.json` pins npm dependencies.
 - [ ] 1.2 Create a thin root `flake.nix`, committed `flake.lock`, and modular `nix/outputs.nix`, `nix/toolchain.nix`, `nix/apps.nix`, `nix/dev-shells.nix`, and `nix/checks.nix` files with deduplicated Flake inputs; place every imported module in the Git index before the first Git-Flake evaluation.
 - [ ] 1.3 Pin the Rust release and compose Cargo, rustc, rustfmt, Clippy, rust-analyzer, rust-src, LLVM tools, `wasm32-unknown-unknown`, and the required Darwin cross target.
 - [ ] 1.4 Pin Node.js 24, Tauri CLI, Binaryen, Trunk, wasm-bindgen CLI, formatting, linting, and repository-hook tools; assert wasm-bindgen CLI compatibility with the Rust dependency.
