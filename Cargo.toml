@@ -19,6 +19,8 @@ members = [
 
 [workspace.dependencies]
 axum = "0.8"
+getrandom = "0.4"
+hmac = "0.13"
 http = "1"
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 leptos = { version = "0.8.20", default-features = false }

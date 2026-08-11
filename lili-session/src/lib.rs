@@ -1,7 +1,14 @@
+mod forwarding;
 mod normalization;
 mod reducer;
 mod types;
 
+pub use forwarding::{
+    DEFAULT_NONCE_CAPACITY, DEFAULT_REPLAY_WINDOW_MS, FORWARDING_PROTOCOL_VERSION, ForwardingAck,
+    ForwardingAckDisposition, ForwardingCredentialRecord, ForwardingCredentials, ForwardingMessage,
+    ForwardingProtocolError, ForwardingVerifier, MAX_FORWARDING_FRAME_BYTES, PlatformEndpoint,
+    VerifiedForwardingMessage,
+};
 pub use normalization::{
     MAX_PROVIDER_PAYLOAD_BYTES, NormalizationError, normalize_json, normalize_provider_input,
 };

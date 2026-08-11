@@ -2666,6 +2666,8 @@ dependencies = [
 name = "lili-session"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
+ "hmac",
  "lili-core",
  "serde",
  "serde_json",

@@ -15,8 +15,8 @@ tauri-build.workspace = true
 [dependencies]
 axum.workspace = true
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-getrandom = "0.4"
-hmac = "0.13"
+getrandom.workspace = true
+hmac.workspace = true
 lili-app-state = { path = "../lili-app-state" }
 lili-pet = { path = "../lili-pet" }
 lili-server = { path = "../lili-server" }

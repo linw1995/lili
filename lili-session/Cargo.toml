@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+getrandom.workspace = true
+hmac.workspace = true
 lili-core = { path = "../lili-core" }
 serde.workspace = true
 serde_json.workspace = true
