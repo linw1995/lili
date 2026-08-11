@@ -145,8 +145,14 @@ async fn events(State(state): State<AppState>) -> Sse<ReceiverStream<Result<Even
     Sse::new(ReceiverStream::new(receiver))
 }
 
-async fn ssr_shell() -> Html<String> {
-    let app = view! { <App/> }.to_html();
+async fn ssr_shell(State(state): State<AppState>) -> Html<String> {
+    let pet_asset_url = state
+        .snapshot()
+        .await
+        .pet_asset_id
+        .map(|asset_id| format!("/api/v1/pet-assets/{asset_id}"))
+        .unwrap_or_default();
+    let app = view! { <App pet_asset_url/> }.to_html();
     Html(format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"/assets/lili.css\"><title>Lili</title></head><body>{app}</body></html>"
     ))
@@ -229,6 +235,22 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("data-ssr-marker=\"lili-ready\""));
+    }
+
+    #[tokio::test]
+    async fn shell_renders_the_approved_pet_asset_identity() {
+        let state = AppState::default();
+        let asset_id = state.snapshot().await.pet_asset_id.unwrap();
+        let response = build_router(state, None)
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("class=\"pet-sprite\""));
+        assert!(body.contains("class=\"pet-atlas\""));
+        assert!(body.contains(&format!("/api/v1/pet-assets/{asset_id}")));
+        assert!(!body.contains("spritesheet.webp"));
     }
 
     #[tokio::test]

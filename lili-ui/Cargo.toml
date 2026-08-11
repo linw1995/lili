@@ -9,9 +9,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-hydrate = ["dep:wasm-bindgen", "leptos/hydrate"]
+hydrate = ["dep:wasm-bindgen", "dep:web-sys", "leptos/hydrate"]
 ssr = ["leptos/ssr"]
 
 [dependencies]
 leptos.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
+web-sys = { workspace = true, features = ["Document", "Element", "Window"], optional = true }

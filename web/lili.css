@@ -16,13 +16,55 @@ body {
   place-items: center;
 }
 
-.pet-placeholder {
-  display: grid;
-  width: 12rem;
-  height: 12rem;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 2rem;
-  background: rgb(24 24 27 / 72%);
-  color: #fafafa;
+.pet-sprite {
+  position: relative;
+  width: 192px;
+  height: 208px;
+  overflow: hidden;
+}
+
+.pet-atlas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1536px;
+  height: 2288px;
+  max-width: none;
+  animation: lili-idle 1100ms steps(1, jump-end) infinite;
+}
+
+@keyframes lili-idle {
+  0% {
+    transform: translateX(0);
+  }
+
+  25.4545% {
+    transform: translateX(-192px);
+  }
+
+  35.4545% {
+    transform: translateX(-384px);
+  }
+
+  45.4545% {
+    transform: translateX(-576px);
+  }
+
+  58.1818% {
+    transform: translateX(-768px);
+  }
+
+  70.9091% {
+    transform: translateX(-960px);
+  }
+
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-atlas {
+    animation: none;
+  }
 }

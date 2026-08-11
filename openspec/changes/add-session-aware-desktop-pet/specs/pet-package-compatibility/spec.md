@@ -41,6 +41,10 @@ The system SHALL render standard rows with the v2 frame counts and timing sequen
 - **WHEN** elapsed monotonic time reaches an exact frame boundary or exceeds one or more complete loops
 - **THEN** the scheduler selects the next frame at the boundary and wraps by the contract-defined loop duration without accumulating drift
 
+#### Scenario: Development application starts with the fallback pet
+- **WHEN** the application starts without a valid user package
+- **THEN** the SSR shell references only the approved opaque fallback asset identity and the hydrated view displays the six-frame idle loop instead of a placeholder
+
 ### Requirement: Render all look directions in clockwise order
 The system SHALL map rows 9 and 10 to the 16 clockwise look directions from `000` through `337.5` degrees, where `000` means up and the no-vector deadzone falls back to idle.
 

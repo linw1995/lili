@@ -24,6 +24,7 @@
 - [x] 2.5 Serve only approved atlas assets through opaque server identities with MIME, cache, CSP, and package-change invalidation tests.
 - [x] 2.6 Implement the renderer frame scheduler for all standard rows and the screen-coordinate 16-direction lookup with deadzone, timer, and wraparound tests.
 - [x] 2.7 Add golden compatibility tests against valid custom packages plus wrong-version, wrong-dimension, malformed-image, opaque-background, and escaping-path fixtures.
+- [x] 2.8 Wire the approved active atlas into the SSR and hydrated shell with the exact six-frame idle loop so `nix run .#dev` visibly exercises the compatibility layer.
 
 ## 3. Normalized Session Domain and Reducer
 
