@@ -12,6 +12,12 @@ use crate::{
 const NOTIFY_EVENT_TYPE: &str = "agent-turn-complete";
 const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 128;
 
+const SESSION_START_HOOK: &str = "SessionStart";
+const USER_PROMPT_SUBMIT_HOOK: &str = "UserPromptSubmit";
+const PERMISSION_REQUEST_HOOK: &str = "PermissionRequest";
+const STOP_HOOK: &str = "Stop";
+const SESSION_END_HOOK: &str = "SessionEnd";
+
 #[derive(Debug, Deserialize)]
 struct NotifyInput {
     #[serde(rename = "type")]
@@ -26,6 +32,16 @@ struct NotifyInput {
     last_assistant_message: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LifecycleInput {
+    session_id: Option<String>,
+    turn_id: Option<String>,
+    cwd: Option<String>,
+    hook_event_name: Option<String>,
+    source: Option<String>,
+    last_assistant_message: Option<String>,
+}
+
 pub fn normalize_hook_json(
     payload: &[u8],
     occurred_at_ms: u64,
@@ -37,6 +53,9 @@ pub fn normalize_hook_json(
         serde_json::from_slice(payload).map_err(|_| NormalizationError::MalformedJson)?;
     if value.get("type").and_then(serde_json::Value::as_str) == Some(NOTIFY_EVENT_TYPE) {
         return normalize_notify_json(payload, occurred_at_ms);
+    }
+    if value.get("hook_event_name").is_some() {
+        return normalize_lifecycle_json(payload, occurred_at_ms);
     }
     normalize_json(payload)
 }
@@ -78,6 +97,60 @@ pub fn normalize_notify_json(
     })
 }
 
+pub fn normalize_lifecycle_json(
+    payload: &[u8],
+    occurred_at_ms: u64,
+) -> Result<NormalizedSessionEvent, NormalizationError> {
+    if payload.len() > MAX_PROVIDER_PAYLOAD_BYTES {
+        return Err(NormalizationError::PayloadTooLarge);
+    }
+    let input: LifecycleInput =
+        serde_json::from_slice(payload).map_err(|_| NormalizationError::MalformedJson)?;
+    let hook = input
+        .hook_event_name
+        .as_deref()
+        .ok_or(NormalizationError::MissingField("hook event name"))?;
+    let (event_type, turn_id, summary) = match hook {
+        SESSION_START_HOOK => ("session_started", None, None),
+        USER_PROMPT_SUBMIT_HOOK => ("turn_started", input.turn_id, None),
+        PERMISSION_REQUEST_HOOK => ("attention_required", input.turn_id, None),
+        STOP_HOOK => (
+            "turn_completed",
+            input.turn_id,
+            input.last_assistant_message,
+        ),
+        SESSION_END_HOOK => ("session_ended", None, None),
+        _ => return Err(NormalizationError::UnsupportedEventType),
+    };
+    let source_discriminator = lifecycle_source(hook, input.source.as_deref())?;
+    normalize_provider_input(ProviderInputV1 {
+        version: SESSION_SCHEMA_VERSION,
+        provider: Some("codex".to_owned()),
+        event_type: Some(event_type.to_owned()),
+        event_id: None,
+        session_id: input.session_id,
+        turn_id,
+        occurred_at_ms: Some(occurred_at_ms),
+        project: input
+            .cwd
+            .map(|label| ProviderProjectInputV1 { label: Some(label) }),
+        summary,
+        capabilities: lifecycle_capabilities(),
+        source_discriminator: Some(source_discriminator),
+    })
+}
+
+fn lifecycle_capabilities() -> ProviderCapabilitiesInputV1 {
+    ProviderCapabilitiesInputV1 {
+        reports_active: true,
+        reports_attention: true,
+        reports_completion: true,
+        reports_failure: false,
+        reports_resolution: false,
+        reports_session_end: true,
+    }
+}
+
 fn notify_event_id(thread_id: Option<&str>, turn_id: Option<&str>) -> Option<String> {
     let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) else {
         return None;
@@ -111,6 +184,28 @@ fn notify_source(client: Option<&str>) -> Result<String, NormalizationError> {
     Ok(format!("{prefix}{client}"))
 }
 
+fn lifecycle_source(
+    hook: &str,
+    session_start_source: Option<&str>,
+) -> Result<String, NormalizationError> {
+    let mut source = format!("hook:{hook}");
+    if hook == SESSION_START_HOOK
+        && let Some(start_source) = session_start_source
+    {
+        let start_source = start_source.trim();
+        if start_source.is_empty() || start_source.chars().any(char::is_control) {
+            return Err(NormalizationError::InvalidField("session start source"));
+        }
+        source.push(':');
+        source.extend(
+            start_source
+                .chars()
+                .take(MAX_SOURCE_DISCRIMINATOR_CHARS.saturating_sub(source.chars().count())),
+        );
+    }
+    Ok(source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +213,33 @@ mod tests {
 
     const NOTIFY_FIXTURE: &[u8] =
         include_bytes!("../tests/fixtures/codex/0.147.0/agent-turn-complete.json");
+    const LIFECYCLE_FIXTURES: [(&[u8], SessionEventKind, bool); 5] = [
+        (
+            include_bytes!("../tests/fixtures/codex/0.147.0/session-start.json"),
+            SessionEventKind::SessionStarted,
+            false,
+        ),
+        (
+            include_bytes!("../tests/fixtures/codex/0.147.0/user-prompt-submit.json"),
+            SessionEventKind::TurnStarted,
+            true,
+        ),
+        (
+            include_bytes!("../tests/fixtures/codex/0.147.0/permission-request.json"),
+            SessionEventKind::AttentionRequired,
+            true,
+        ),
+        (
+            include_bytes!("../tests/fixtures/codex/0.147.0/stop.json"),
+            SessionEventKind::TurnCompleted,
+            true,
+        ),
+        (
+            include_bytes!("../tests/fixtures/codex/0.147.0/session-end.json"),
+            SessionEventKind::SessionEnded,
+            false,
+        ),
+    ];
 
     #[test]
     fn notify_fixture_normalizes_terminal_turn_metadata() {
@@ -164,5 +286,42 @@ mod tests {
     fn hook_normalizer_preserves_provider_neutral_test_inputs() {
         let payload = br#"{"version":1,"provider":"codex","type":"turn_completed","sessionId":"session-1","turnId":"turn-1","occurredAtMs":42}"#;
         assert!(normalize_hook_json(payload, 100).is_ok());
+    }
+
+    #[test]
+    fn lifecycle_fixtures_map_only_documented_distinctions() {
+        for (payload, expected_kind, expects_turn) in LIFECYCLE_FIXTURES {
+            let event = normalize_lifecycle_json(payload, 42).unwrap();
+            assert_eq!(event.event_type, expected_kind);
+            assert_eq!(event.turn_id.is_some(), expects_turn);
+            assert!(event.capabilities.reports_active);
+            assert!(event.capabilities.reports_attention);
+            assert!(event.capabilities.reports_completion);
+            assert!(event.capabilities.reports_session_end);
+            assert!(!event.capabilities.reports_failure);
+            assert!(!event.capabilities.reports_resolution);
+        }
+    }
+
+    #[test]
+    fn lifecycle_adapter_does_not_retain_prompt_or_permission_details() {
+        for payload in [LIFECYCLE_FIXTURES[1].0, LIFECYCLE_FIXTURES[2].0] {
+            let event = normalize_lifecycle_json(payload, 42).unwrap();
+            assert!(event.summary.is_none());
+        }
+        let stop = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
+        assert_eq!(
+            stop.summary.unwrap().text(),
+            "Fixture verification completed successfully."
+        );
+    }
+
+    #[test]
+    fn lifecycle_adapter_rejects_unknown_hooks_without_inference() {
+        let payload = br#"{"hook_event_name":"PostToolUse","session_id":"session-1","turn_id":"turn-1","cwd":"/tmp/project"}"#;
+        assert_eq!(
+            normalize_lifecycle_json(payload, 42),
+            Err(NormalizationError::UnsupportedEventType)
+        );
     }
 }
