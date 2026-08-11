@@ -130,6 +130,10 @@ impl ForwardingCredentialRecord {
         &self.endpoint
     }
 
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
     pub const fn version(&self) -> u16 {
         self.version
     }
@@ -221,6 +225,10 @@ impl ForwardingMessage {
 
     pub fn event(&self) -> &NormalizedSessionEvent {
         &self.event
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
     }
 }
 

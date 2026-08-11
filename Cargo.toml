@@ -30,7 +30,7 @@ sha2 = "0.11"
 tauri = "2.11.5"
 tauri-build = "2.6.3"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs"] }
@@ -39,6 +39,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["js", "serde", "v4"] }
 wasm-bindgen = "=0.2.126"
 web-sys = "0.3"
+
+[workspace.dependencies.rustix]
+version = "1"
+features = ["process"]
+
+[workspace.dependencies.windows-sys]
+version = "0.61"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+]
 
 [profile.dev]
 incremental = true

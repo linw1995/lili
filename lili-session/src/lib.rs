@@ -1,6 +1,7 @@
 mod forwarding;
 mod normalization;
 mod reducer;
+mod transport;
 mod types;
 
 pub use forwarding::{
@@ -15,6 +16,10 @@ pub use normalization::{
 pub use reducer::{
     DEFAULT_MINIMUM_DWELL_MS, ReducerRestoreError, ReductionOutcome, SessionReducer,
     SessionReducerState,
+};
+pub use transport::{
+    BoundForwardingEndpoint, ForwardingConnection, ForwardingCredentialStore,
+    ForwardingTransportError, deliver_forwarding_message,
 };
 pub use types::{
     DisplayProjectContext, DisplaySummary, DisplayValueError, EventId, IdentityError,
