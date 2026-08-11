@@ -143,3 +143,33 @@ fn unix_time_ms() -> u64 {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_command_rejects_invalid_arguments_and_missing_plans() {
+        assert_eq!(run_install(&[]), 2);
+        assert_eq!(
+            run_install(&[
+                "integrate".into(),
+                "install".into(),
+                "--invalid".into(),
+                "plan.json".into(),
+            ]),
+            2
+        );
+        assert_eq!(
+            run_install(&[
+                "integrate".into(),
+                "install".into(),
+                "--plan".into(),
+                std::env::temp_dir()
+                    .join("lili-missing-install-plan.json")
+                    .into_os_string(),
+            ]),
+            3
+        );
+    }
+}

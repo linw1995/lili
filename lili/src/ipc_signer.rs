@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use tauri::ipc::{InvokeBody, Request};
 
 use crate::loopback::{RequestSigner, SignedRequest};
@@ -42,14 +44,20 @@ pub fn sign_loopback_request(
     let method = metadata(&request, METHOD_HEADER)?;
     let path_and_query = metadata(&request, PATH_HEADER)?;
     let content_type = metadata(&request, CONTENT_TYPE_HEADER)?;
-    let json_body;
-    let body = match request.body() {
-        InvokeBody::Raw(body) => body.as_slice(),
+    let body = signing_body(request.body())?;
+    signer
+        .sign(method, path_and_query, content_type, &body)
+        .map_err(str::to_owned)
+}
+
+fn signing_body(body: &InvokeBody) -> Result<Cow<'_, [u8]>, String> {
+    match body {
+        InvokeBody::Raw(body) => Ok(Cow::Borrowed(body)),
         InvokeBody::Json(value) => {
             let bytes = value
                 .as_array()
                 .ok_or_else(|| "the signer requires a byte-array request body".to_owned())?;
-            json_body = bytes
+            let body = bytes
                 .iter()
                 .map(|byte| {
                     byte.as_u64()
@@ -58,12 +66,9 @@ pub fn sign_loopback_request(
                         .ok_or_else(|| "the signer body contains a non-byte value".to_owned())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            &json_body
+            Ok(Cow::Owned(body))
         }
-    };
-    signer
-        .sign(method, path_and_query, content_type, body)
-        .map_err(str::to_owned)
+    }
 }
 
 fn metadata<'a>(request: &'a Request<'_>, name: &'static str) -> Result<&'a str, String> {
@@ -73,4 +78,24 @@ fn metadata<'a>(request: &'a Request<'_>, name: &'static str) -> Result<&'a str,
         .ok_or_else(|| format!("missing signer metadata: {name}"))?
         .to_str()
         .map_err(|_| format!("invalid signer metadata: {name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signing_body_accepts_raw_and_json_bytes_only() {
+        let raw = InvokeBody::Raw(vec![0, 1, 255]);
+        assert_eq!(signing_body(&raw).unwrap().as_ref(), [0, 1, 255]);
+
+        let json = InvokeBody::Json(serde_json::json!([0, 1, 255]));
+        assert_eq!(signing_body(&json).unwrap().as_ref(), [0, 1, 255]);
+
+        let object = InvokeBody::Json(serde_json::json!({"byte": 1}));
+        assert!(signing_body(&object).is_err());
+
+        let invalid_byte = InvokeBody::Json(serde_json::json!([256]));
+        assert!(signing_body(&invalid_byte).is_err());
+    }
 }

@@ -514,6 +514,16 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn loopback_server_binds_ephemeral_tls_origin() {
+        let server = LoopbackServer::bind(Router::new()).unwrap();
+        assert_eq!(server.origin().scheme(), "https");
+        assert_eq!(server.origin().host_str(), Some("127.0.0.1"));
+        assert!(server.origin().port().is_some());
+        assert_eq!(server.certificate_sha256().len(), 32);
+        assert_eq!(server.bootstrap_url().origin(), server.origin().origin());
+    }
+
     const AUTHORITY: &str = "127.0.0.1:43123";
     const ORIGIN_VALUE: &str = "https://127.0.0.1:43123";
     const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
