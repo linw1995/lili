@@ -1,3 +1,5 @@
+mod loading;
+
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +12,12 @@ pub const MAX_ACTION_DEBOUNCE_MS: u64 = 60_000;
 pub const DEFAULT_GLOBAL_CONCURRENCY: usize = 4;
 pub const MAX_GLOBAL_CONCURRENCY: usize = 16;
 pub const MAX_ACTION_QUEUE_CAPACITY: usize = 64;
+
+pub use loading::{
+    ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
+    EffectiveActionsView, LoadedAction, LoadedActions, action_config_path, load_actions_file,
+    load_actions_str,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
