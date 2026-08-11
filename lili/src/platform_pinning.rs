@@ -258,7 +258,103 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::install_and_navigate;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod windows {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+    use tauri::WebviewWindow;
+    use webview2_com::{CoTaskMemPWSTR, ServerCertificateErrorDetectedEventHandler};
+    use windows::core::{HSTRING, Interface};
+
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
+        COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL, ICoreWebView2_14,
+    };
+
+    pub fn install_and_navigate(
+        window: &WebviewWindow,
+        bootstrap_url: tauri::Url,
+        certificate_sha256: [u8; 32],
+    ) -> Result<(), String> {
+        let expected_origin = bootstrap_url.origin().ascii_serialization();
+        let url = bootstrap_url.to_string();
+        window
+            .with_webview(move |platform_webview| unsafe {
+                let controller = platform_webview.controller();
+                let webview = match controller.CoreWebView2() {
+                    Ok(webview) => webview,
+                    Err(_) => {
+                        crate::diagnostics::error("tls_pinning", "install", "missing_webview");
+                        return;
+                    }
+                };
+                let webview14 = match webview.cast::<ICoreWebView2_14>() {
+                    Ok(webview) => webview,
+                    Err(_) => {
+                        crate::diagnostics::error("tls_pinning", "install", "runtime_too_old");
+                        return;
+                    }
+                };
+                let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(
+                    move |_, arguments| {
+                        let Some(arguments) = arguments else {
+                            return Ok(());
+                        };
+                        let mut request_uri = CoTaskMemPWSTR::default();
+                        arguments
+                            .RequestUri(request_uri.as_mut().as_pwstr() as *const _ as *mut _)?;
+                        let request_uri = request_uri.to_string();
+                        let origin_matches = tauri::Url::parse(&request_uri)
+                            .is_ok_and(|uri| uri.origin().ascii_serialization() == expected_origin);
+                        let certificate_matches = arguments
+                            .ServerCertificate()
+                            .and_then(|certificate| {
+                                let mut pem = CoTaskMemPWSTR::default();
+                                certificate
+                                    .ToPemEncoding(pem.as_mut().as_pwstr() as *const _ as *mut _)?;
+                                Ok(pem.to_string())
+                            })
+                            .ok()
+                            .and_then(|pem| decode_pem_certificate(&pem))
+                            .is_some_and(|der| {
+                                let actual: [u8; 32] = Sha256::digest(der).into();
+                                actual == certificate_sha256
+                            });
+                        arguments.SetAction(if origin_matches && certificate_matches {
+                            COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW
+                        } else {
+                            COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL
+                        })
+                    },
+                ));
+                let mut token = 0;
+                if webview14
+                    .add_ServerCertificateErrorDetected(&handler, &mut token)
+                    .is_err()
+                {
+                    crate::diagnostics::error("tls_pinning", "install", "handler_failed");
+                    return;
+                }
+                if webview.Navigate(&HSTRING::from(url)).is_err() {
+                    crate::diagnostics::error("tls_pinning", "navigate", "navigation_failed");
+                }
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn decode_pem_certificate(pem: &str) -> Option<Vec<u8>> {
+        let encoded = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect::<String>();
+        STANDARD.decode(encoded).ok()
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub use windows::install_and_navigate;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn install_and_navigate(
     _window: &tauri::WebviewWindow,
     _bootstrap_url: tauri::Url,

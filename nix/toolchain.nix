@@ -11,7 +11,10 @@
       "rustfmt"
     ];
     targets =
-      ["wasm32-unknown-unknown"]
+      [
+        "wasm32-unknown-unknown"
+        "x86_64-pc-windows-msvc"
+      ]
       ++ pkgs.lib.optionals isDarwin ["x86_64-apple-darwin"];
   };
   fuzzRustToolchain = pkgs.rust-bin.nightly."2026-08-01".minimal.override {

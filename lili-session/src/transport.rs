@@ -187,7 +187,7 @@ impl BoundForwardingEndpoint {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn bind_with_fault(
         runtime_dir: &Path,
         fault: TransportFault,
@@ -522,6 +522,80 @@ async fn platform_connect(
     Ok(ForwardingConnection {
         stream: Box::new(stream),
     })
+}
+
+#[cfg(windows)]
+pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool {
+    use std::{ffi::c_void, mem, ptr};
+
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_ALL, LocalFree},
+        Security::{
+            ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+            Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
+            DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        },
+        System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
+    };
+
+    let Some(name) = endpoint.named_pipe() else {
+        return false;
+    };
+    let name = name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut owner: PSID = ptr::null_mut();
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 || owner.is_null() || dacl.is_null() || descriptor.is_null() {
+        return false;
+    }
+    let mut information = ACL_SIZE_INFORMATION::default();
+    let acl_read = unsafe {
+        GetAclInformation(
+            dacl,
+            (&raw mut information).cast::<c_void>(),
+            u32::try_from(mem::size_of_val(&information)).expect("ACL information fits in u32"),
+            AclSizeInformation,
+        )
+    };
+    let mut raw_ace: *mut c_void = ptr::null_mut();
+    let ace_read = acl_read != 0
+        && information.AceCount == 1
+        && unsafe { GetAce(dacl, 0, &mut raw_ace) } != 0
+        && !raw_ace.is_null();
+    let private = if ace_read {
+        let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
+        u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
+            && ace.Mask == GENERIC_ALL
+            && unsafe { EqualSid(owner, sid) } != 0
+    } else {
+        false
+    };
+    unsafe {
+        LocalFree(descriptor);
+    }
+    private
+}
+
+#[cfg(not(windows))]
+pub fn private_forwarding_endpoint_is_live(_endpoint: &PlatformEndpoint) -> bool {
+    false
 }
 
 #[cfg(not(any(unix, windows)))]

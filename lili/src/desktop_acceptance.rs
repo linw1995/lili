@@ -90,23 +90,24 @@ pub fn complete_desktop_acceptance(
         return;
     }
     let codex_home = state.codex_home.lock().ok().and_then(|path| path.clone());
+    let placement = crate::current_window_placement(&window);
     let window_contract = window.is_always_on_top().is_ok_and(|enabled| enabled)
         && window.is_decorated().is_ok_and(|decorated| !decorated)
-        && crate::current_window_placement(&window).is_some();
+        && placement.is_some();
+    let dpi_contract = placement.is_some_and(|placement| placement.scale_milli() >= 500);
     let tray_contract = app.tray_by_id("lili-tray").is_some();
     let visibility_contract = window.hide().is_ok()
         && window.is_visible().is_ok_and(|visible| !visible)
         && window.show().is_ok()
         && window.is_visible().is_ok_and(|visible| visible);
-    let transport_contract = codex_home
-        .as_deref()
-        .is_some_and(private_unix_transport_is_live);
-    let passed = cfg!(target_os = "macos")
+    let transport_contract = codex_home.as_deref().is_some_and(private_transport_is_live);
+    let passed = cfg!(any(target_os = "macos", target_os = "windows"))
         && report.transparent
         && report.pinned_content
         && report.hook_delivered
         && report.action_timed_out
         && window_contract
+        && dpi_contract
         && tray_contract
         && visibility_contract
         && transport_contract;
@@ -114,7 +115,7 @@ pub fn complete_desktop_acceptance(
 }
 
 #[cfg(unix)]
-fn private_unix_transport_is_live(codex_home: &std::path::Path) -> bool {
+fn private_transport_is_live(codex_home: &std::path::Path) -> bool {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
     let runtime_dir = codex_home.join("lili").join("runtime");
@@ -140,7 +141,11 @@ fn private_unix_transport_is_live(codex_home: &std::path::Path) -> bool {
         && socket_metadata.permissions().mode() & 0o077 == 0
 }
 
-#[cfg(not(unix))]
-fn private_unix_transport_is_live(_codex_home: &std::path::Path) -> bool {
-    false
+#[cfg(windows)]
+fn private_transport_is_live(codex_home: &std::path::Path) -> bool {
+    let runtime_dir = codex_home.join("lili").join("runtime");
+    let store = lili_session::ForwardingCredentialStore::for_runtime_dir(&runtime_dir);
+    store
+        .load()
+        .is_ok_and(|record| lili_session::private_forwarding_endpoint_is_live(record.endpoint()))
 }

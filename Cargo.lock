@@ -2578,6 +2578,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-server",
+ "base64 0.22.1",
  "block2",
  "getrandom 0.4.3",
  "hmac",
@@ -2604,6 +2605,9 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "webview2-com",
+ "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
