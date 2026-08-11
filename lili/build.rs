@@ -1,16 +1,16 @@
 fn main() {
     configure_missing_frontend();
-    tauri_build::build();
+    let attributes = tauri_build::Attributes::new()
+        .app_manifest(tauri_build::AppManifest::new().commands(&["sign_loopback_request"]));
+    tauri_build::try_build(attributes).expect("failed to run Tauri build script");
 }
 
 fn configure_missing_frontend() {
     const FRONTEND_DIST: &str = "../dist";
-
     println!("cargo:rerun-if-changed={FRONTEND_DIST}");
     if std::path::Path::new(FRONTEND_DIST).is_dir() {
         return;
     }
-
     let mut config = match std::env::var("TAURI_CONFIG") {
         Ok(config) => serde_json::from_str(&config).expect("TAURI_CONFIG must contain valid JSON"),
         Err(std::env::VarError::NotPresent) => serde_json::json!({}),
@@ -29,7 +29,6 @@ fn configure_missing_frontend() {
         .as_object_mut()
         .expect("TAURI_CONFIG bundle must contain a JSON object")
         .insert("resources".to_owned(), serde_json::Value::Null);
-
     let config = serde_json::to_string(&config).expect("TAURI_CONFIG must serialize");
     println!("cargo:rustc-env=TAURI_CONFIG={config}");
     unsafe {

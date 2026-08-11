@@ -13,4 +13,47 @@ serde_json.workspace = true
 tauri-build.workspace = true
 
 [dependencies]
+axum.workspace = true
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+getrandom = "0.4"
+hmac = "0.13"
+lili-app-state = { path = "../lili-app-state" }
+lili-server = { path = "../lili-server" }
+rcgen = "0.14"
+rustls = "0.23"
+serde.workspace = true
+sha2 = "0.11"
 tauri = { workspace = true, features = ["macos-private-api"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+  "NSObject",
+  "NSString",
+  "NSURLAuthenticationChallenge",
+  "NSURLCredential",
+  "NSURLProtectionSpace",
+  "NSURLSession",
+] }
+objc2-security = { version = "0.3", features = [
+  "SecBase",
+  "SecCertificate",
+  "SecTrust",
+] }
+objc2-web-kit = { version = "0.3", features = [
+  "WKDownload",
+  "WKNavigation",
+  "WKNavigationAction",
+  "WKNavigationDelegate",
+  "WKNavigationResponse",
+  "WKWebView",
+  "block2",
+  "objc2-app-kit",
+] }
+
+[dev-dependencies]
+tower.workspace = true
