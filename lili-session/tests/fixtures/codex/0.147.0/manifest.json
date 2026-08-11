@@ -1,0 +1,12 @@
+{
+  "codexVersion": "0.147.0",
+  "sourceTag": "rust-v0.147.0",
+  "surfaces": [
+    "agent-turn-complete",
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "Stop",
+    "SessionEnd"
+  ]
+}

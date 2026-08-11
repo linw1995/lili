@@ -49,7 +49,7 @@
 
 ## 5. ChatGPT/Codex Notification Adapters
 
-- [ ] 5.1 Add golden fixtures for supported Codex `agent-turn-complete`, `SessionStart`, prompt/activity, `PermissionRequest`, `Stop`, and `SessionEnd` payloads keyed by tested Codex versions.
+- [x] 5.1 Add golden fixtures for supported Codex `agent-turn-complete`, `SessionStart`, prompt/activity, `PermissionRequest`, `Stop`, and `SessionEnd` payloads keyed by tested Codex versions.
 - [ ] 5.2 Implement the `notify` adapter for terminal turn events, including thread, turn, client, working-directory, and bounded assistant-summary normalization when fields are present.
 - [ ] 5.3 Implement observer-only lifecycle adapters that map available hooks to session start, active, attention, stop, and end events while advertising unsupported distinctions instead of inferring them.
 - [ ] 5.4 Verify that `PermissionRequest` forwarding returns no decision, never acknowledges a permission, and remains bounded when Lili is stopped, hung, or restarting.
