@@ -4,7 +4,7 @@
 - [x] 1.2 Create a thin root `flake.nix`, committed `flake.lock`, and modular `nix/outputs.nix`, `nix/toolchain.nix`, `nix/apps.nix`, `nix/dev-shells.nix`, and `nix/checks.nix` files with deduplicated Flake inputs; place every imported module in the Git index before the first Git-Flake evaluation.
 - [x] 1.3 Pin the Rust release and compose Cargo, rustc, rustfmt, Clippy, rust-analyzer, rust-src, LLVM tools, `wasm32-unknown-unknown`, and the required Darwin cross target.
 - [x] 1.4 Pin Node.js 24, Tauri CLI, Binaryen, Trunk, wasm-bindgen CLI, formatting, linting, and repository-hook tools; assert wasm-bindgen CLI compatibility with the Rust dependency.
-- [ ] 1.5 Implement the Darwin `mkShellNoCC` environment using host `xcrun`, SDK, clang, linker, and Swift library paths, plus Linux GTK/WebKit/pkg-config build inputs.
+- [x] 1.5 Implement the Darwin `mkShellNoCC` environment using host `xcrun`, SDK, clang, linker, and Swift library paths, plus Linux GTK/WebKit/pkg-config build inputs.
 - [ ] 1.6 Expose stable Flake apps for `dev`, `dev-web`, `build`, `build-app`, `build-css`, `format`, `lint`, `prek`, and `e2e`, with Trunk offline mode and normalized color handling.
 - [ ] 1.7 Keep the default development shell lightweight, move Playwright/browser dependencies to the E2E app or shell, and add `.envrc` with `use flake`.
 - [ ] 1.8 Add Flake checks for clean lockfiles, canonical version propagation, expected tool versions, required output names, and evaluation of `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`.
