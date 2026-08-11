@@ -1,9 +1,11 @@
 fn main() {
     configure_missing_frontend();
-    let attributes = tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new()
-            .commands(&["sign_loopback_request", "complete_desktop_smoke"]),
-    );
+    let attributes =
+        tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
+            "sign_loopback_request",
+            "commit_window_position",
+            "complete_desktop_smoke",
+        ]));
     tauri_build::try_build(attributes).expect("failed to run Tauri build script");
 }
 

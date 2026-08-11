@@ -42,6 +42,7 @@ fn run_desktop(smoke: bool) {
         .manage(DesktopSmokeState::default())
         .invoke_handler(tauri::generate_handler![
             sign_loopback_request,
+            commit_window_position,
             complete_desktop_smoke
         ])
         .build(tauri::generate_context!())
@@ -54,6 +55,10 @@ fn run_desktop(smoke: bool) {
     )
     .map(StaticAssets::new);
     let (state, state_store, codex_home) = load_app_state();
+    app.manage(DesktopPersistence {
+        state: state.clone(),
+        store: state_store.clone(),
+    });
     if !smoke
         && let Some(codex_home) = codex_home
         && let Err(error) = start_native_ingestion(&codex_home, state.clone())
@@ -76,6 +81,7 @@ fn run_desktop(smoke: bool) {
             .local(false)
             .window("pet")
             .permission("allow-sign-loopback-request")
+            .permission("allow-commit-window-position")
             .permission("core:window:allow-start-dragging");
         if smoke {
             capability.permission("allow-complete-desktop-smoke")
@@ -299,6 +305,29 @@ fn current_window_placement(window: &tauri::WebviewWindow) -> Option<WindowPlace
         (scale * 1_000.0).round() as u32,
     )
     .ok()
+}
+
+#[derive(Clone)]
+struct DesktopPersistence {
+    state: AppState,
+    store: Option<AppStateStore>,
+}
+
+#[tauri::command]
+async fn commit_window_position(
+    window: tauri::WebviewWindow,
+    persistence: tauri::State<'_, DesktopPersistence>,
+) -> Result<bool, String> {
+    let Some(store) = &persistence.store else {
+        return Ok(false);
+    };
+    let placement = current_window_placement(&window)
+        .ok_or_else(|| "window placement could not be determined".to_owned())?;
+    let state = persistence.state.persistent_state(Some(placement)).await;
+    store
+        .save(&state)
+        .map_err(|error| format!("window placement could not be saved: {error}"))?;
+    Ok(true)
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {

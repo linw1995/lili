@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-commit-window-position"
+description = "Enables the commit_window_position command without any pre-configured scope."
+commands.allow = ["commit_window_position"]
+
+[[permission]]
+identifier = "deny-commit-window-position"
+description = "Denies the commit_window_position command without any pre-configured scope."
+commands.deny = ["commit_window_position"]
