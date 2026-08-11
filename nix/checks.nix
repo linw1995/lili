@@ -43,4 +43,15 @@ in {
       wasm-bindgen --version | grep -F "wasm-bindgen ${toolchain.wasmBindgenVersion}"
       touch "$out"
     '';
+
+  lockfile-contract =
+    pkgs.runCommand "lili-lockfile-contract" {
+      nativeBuildInputs = [pkgs.git pkgs.nodejs_24 toolchain.rustToolchain];
+    } ''
+      cp -R ${root} source
+      chmod -R u+w source
+      cd source
+      bash ./scripts/check-lockfiles.sh cargo metadata --locked --no-deps --format-version 1
+      touch "$out"
+    '';
 }

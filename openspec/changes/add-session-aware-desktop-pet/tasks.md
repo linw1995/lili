@@ -8,7 +8,7 @@
 - [x] 1.6 Expose stable Flake apps for `dev`, `dev-web`, `build`, `build-app`, `build-css`, `format`, `lint`, `prek`, and `e2e`, with Trunk offline mode and normalized color handling.
 - [x] 1.7 Keep the default development shell lightweight, move Playwright/browser dependencies to the E2E app or shell, and add `.envrc` with `use flake`.
 - [x] 1.8 Add Flake checks for clean lockfiles, canonical version propagation, expected tool versions, required output names, and evaluation of `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`.
-- [ ] 1.9 Document the selective Flake input update procedure and add a test proving normal development and build commands do not rewrite any lockfile.
+- [x] 1.9 Document the selective Flake input update procedure and add a test proving normal development and build commands do not rewrite any lockfile.
 - [ ] 1.10 Create the Rust workspace with `lili-core`, `lili-pet`, `lili-session`, `lili-actions`, `lili-app-state`, `lili-server`, `lili-ui`, `lili-web`, and `lili` members, pinned shared dependencies, formatting, lint, and test configuration.
 - [ ] 1.11 Add the Leptos SSR shell, hydration entry, static asset build, and fixture-only Web entry point with a deterministic health and SSR marker test.
 - [ ] 1.12 Implement the single Axum router with snapshot, event-stream, approved pet-asset, settings, interaction, and diagnostics routes plus strict body limits and security headers.
