@@ -1,5 +1,6 @@
 mod install;
 mod plan;
+mod uninstall;
 
 use std::{
     fs,
@@ -22,6 +23,7 @@ pub use plan::{
     PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry, build_coexistence_install_plan,
     build_install_plan,
 };
+pub use uninstall::{UninstallError, UninstallOutcome, uninstall};
 
 pub const INTEGRATION_SCHEMA_VERSION: u16 = 1;
 pub const LILI_INTEGRATION_ID: &str = "lili-session-v1";

@@ -103,3 +103,21 @@ fn coexistence_plan_requires_explicit_mode_and_preserves_argv() {
         serde_json::json!(["existing", "--channel", "pet"])
     );
 }
+
+#[test]
+fn uninstall_cli_removes_an_installed_integration() {
+    let temp = TempDir::new();
+    let inspection = lili_integration::inspect_with_version(&temp.0, Some("0.147.0".to_owned()));
+    let plan = lili_integration::build_install_plan(&inspection, &temp.0.join("bin/lili-hook"), 42);
+    lili_integration::install_with_verifier(&plan, |_| Ok(())).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_lili"))
+        .args(["integrate", "uninstall"])
+        .env("CODEX_HOME", &temp.0)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let outcome: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(outcome["complete"], true);
+    assert!(!temp.0.join("config.toml").exists());
+    assert!(!temp.0.join("hooks.json").exists());
+}

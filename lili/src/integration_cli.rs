@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use lili_integration::{
-    build_coexistence_install_plan, build_install_plan, inspect, install, load_plan,
+    build_coexistence_install_plan, build_install_plan, inspect, install, load_plan, uninstall,
 };
 use lili_pet::resolve_codex_home;
 
@@ -14,13 +14,18 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     if subcommand == Some("install") {
         return Some(run_install(arguments));
     }
+    if subcommand == Some("uninstall") {
+        return Some(run_uninstall(arguments));
+    }
     let coexist = arguments.len() == 3
         && subcommand == Some("plan")
         && arguments
             .get(2)
             .is_some_and(|argument| argument == "--coexist");
     if !(arguments.len() == 2 && matches!(subcommand, Some("inspect" | "plan"))) && !coexist {
-        eprintln!("usage: lili integrate <inspect|plan [--coexist]|install --plan <path>>");
+        eprintln!(
+            "usage: lili integrate <inspect|plan [--coexist]|install --plan <path>|uninstall>"
+        );
         return Some(2);
     }
     let codex_home = match resolve_codex_home() {
@@ -61,6 +66,33 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
         Err(_) => {
             eprintln!("integration inspection could not be written");
             Some(4)
+        }
+    }
+}
+
+fn run_uninstall(arguments: &[OsString]) -> u8 {
+    if arguments.len() != 2 {
+        eprintln!("usage: lili integrate uninstall");
+        return 2;
+    }
+    let codex_home = match resolve_codex_home() {
+        Ok(codex_home) => codex_home,
+        Err(error) => {
+            eprintln!("Codex home could not be resolved: {error}");
+            return 3;
+        }
+    };
+    match uninstall(&codex_home) {
+        Ok(outcome) => match serde_json::to_writer_pretty(std::io::stdout().lock(), &outcome) {
+            Ok(()) => {
+                println!();
+                0
+            }
+            Err(_) => 4,
+        },
+        Err(error) => {
+            eprintln!("integration uninstall failed: {error}");
+            5
         }
     }
 }

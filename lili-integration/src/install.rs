@@ -99,6 +99,10 @@ where
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
+    let previous_provenance = original_provenance
+        .as_deref()
+        .and_then(|contents| serde_json::from_slice::<IntegrationProvenance>(contents).ok())
+        .filter(|provenance| provenance.integration_id == LILI_INTEGRATION_ID);
 
     let mut backups = Vec::new();
     create_backup_if_needed(
@@ -123,6 +127,7 @@ where
             original_hooks.as_deref(),
             rendered_config.as_deref(),
             rendered_hooks.as_deref(),
+            previous_provenance.as_ref(),
         )?;
         atomic_write_json(&provenance_path, &provenance)?;
         Ok(provenance_path.clone())
@@ -329,6 +334,7 @@ fn build_provenance(
     original_hooks: Option<&[u8]>,
     rendered_config: Option<&[u8]>,
     rendered_hooks: Option<&[u8]>,
+    previous: Option<&IntegrationProvenance>,
 ) -> Result<IntegrationProvenance, InstallError> {
     let current_config = rendered_config
         .map(Vec::from)
@@ -340,6 +346,30 @@ fn build_provenance(
         .ok_or(InstallError::InvalidPlan)?;
     let installed_at_ms = plan_timestamp(plan)?;
     let hook_commands = managed_hook_commands(&current_hooks)?;
+    let config = if rendered_config.is_none() {
+        previous.map(|provenance| provenance.config.clone())
+    } else {
+        None
+    }
+    .unwrap_or_else(|| InstalledFileProvenance {
+        path: plan.config_change.target.clone(),
+        created: original_config.is_none(),
+        before_sha256: original_config.map(sha256_hex),
+        after_sha256: sha256_hex(&current_config),
+        backup: plan.config_change.backup.clone(),
+    });
+    let hooks = if rendered_hooks.is_none() {
+        previous.map(|provenance| provenance.hooks.clone())
+    } else {
+        None
+    }
+    .unwrap_or_else(|| InstalledFileProvenance {
+        path: plan.hooks_change.target.clone(),
+        created: original_hooks.is_none(),
+        before_sha256: original_hooks.map(sha256_hex),
+        after_sha256: sha256_hex(&current_hooks),
+        backup: plan.hooks_change.backup.clone(),
+    });
     Ok(IntegrationProvenance {
         schema_version: 1,
         integration_id: LILI_INTEGRATION_ID.to_owned(),
@@ -349,20 +379,8 @@ fn build_provenance(
         notify_argv: plan.notify.argv.clone(),
         previous_notify_argv: plan.previous_notify_argv.clone(),
         hook_commands,
-        config: InstalledFileProvenance {
-            path: plan.config_change.target.clone(),
-            created: original_config.is_none(),
-            before_sha256: original_config.map(sha256_hex),
-            after_sha256: sha256_hex(&current_config),
-            backup: plan.config_change.backup.clone(),
-        },
-        hooks: InstalledFileProvenance {
-            path: plan.hooks_change.target.clone(),
-            created: original_hooks.is_none(),
-            before_sha256: original_hooks.map(sha256_hex),
-            after_sha256: sha256_hex(&current_hooks),
-            backup: plan.hooks_change.backup.clone(),
-        },
+        config,
+        hooks,
     })
 }
 
@@ -394,7 +412,7 @@ fn managed_hook_commands(contents: &[u8]) -> Result<Vec<String>, InstallError> {
     Ok(commands)
 }
 
-fn provenance_path(codex_home: &Path) -> PathBuf {
+pub(crate) fn provenance_path(codex_home: &Path) -> PathBuf {
     codex_home.join("lili").join(PROVENANCE_FILE_NAME)
 }
 
@@ -404,7 +422,7 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Install
     atomic_write(path, &contents)
 }
 
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), InstallError> {
+pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), InstallError> {
     let parent = path.parent().ok_or(InstallError::InvalidPlan)?;
     ensure_private_directory(parent)?;
     let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
@@ -444,7 +462,7 @@ fn write_new_private_file(path: &Path, contents: &[u8]) -> Result<(), InstallErr
     Ok(())
 }
 
-fn rollback_file(path: &Path, original: Option<&[u8]>) -> Result<(), InstallError> {
+pub(crate) fn rollback_file(path: &Path, original: Option<&[u8]>) -> Result<(), InstallError> {
     match original {
         Some(contents) => atomic_write(path, contents),
         None => match fs::remove_file(path) {
@@ -457,6 +475,19 @@ fn rollback_file(path: &Path, original: Option<&[u8]>) -> Result<(), InstallErro
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         },
+    }
+}
+
+pub(crate) fn remove_file(path: &Path) -> Result<(), InstallError> {
+    match fs::remove_file(path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                sync_directory(parent)?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
