@@ -3,7 +3,10 @@ mod persistence;
 
 use std::sync::Arc;
 
-use lili_actions::ActionSummary;
+use lili_actions::{
+    ActionSummary, DisplayEventSummaryV1, InteractionContextV1, InteractionTrigger,
+    NotificationFilterKind, NotificationSnapshotV1, PetLifecycleSnapshotV1, PetSnapshotV1,
+};
 use lili_core::{
     PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
 };
@@ -204,6 +207,42 @@ impl AppState {
             })
     }
 
+    pub async fn bind_interaction(
+        &self,
+        interaction_id: Uuid,
+        accepted_at_ms: u64,
+        trigger: InteractionTrigger,
+        notification_id: Option<&NotificationId>,
+    ) -> Option<InteractionContextV1> {
+        let reducer = self.session_reducer.lock().await;
+        let session_snapshot = reducer.snapshot();
+        let pet = self
+            .interaction_pet_snapshot(session_snapshot.presentation)
+            .await;
+        match trigger {
+            InteractionTrigger::NotificationActivate => {
+                let notification_id = notification_id?;
+                let notification =
+                    session_snapshot
+                        .notifications
+                        .into_iter()
+                        .find(|notification| {
+                            notification.id == *notification_id
+                                && notification.state == NotificationState::Unread
+                        })?;
+                Some(InteractionContextV1::for_notification(
+                    interaction_id,
+                    accepted_at_ms,
+                    pet,
+                    notification_snapshot(notification),
+                ))
+            }
+            InteractionTrigger::PetClick | InteractionTrigger::PetDoubleClick => {
+                InteractionContextV1::for_pet(interaction_id, accepted_at_ms, trigger, pet)
+            }
+        }
+    }
+
     pub async fn persistent_state(
         &self,
         window_placement: Option<WindowPlacement>,
@@ -235,6 +274,53 @@ impl AppState {
             presentation_from_view(&snapshot, reduced_motion)
         };
         self.presentation_sender.send_replace(presentation);
+    }
+
+    async fn interaction_pet_snapshot(&self, presentation: PresentationState) -> PetSnapshotV1 {
+        let snapshot = self.snapshot.read().await;
+        PetSnapshotV1 {
+            pet_id: snapshot
+                .selected_pet
+                .as_ref()
+                .map_or_else(|| "unknown".to_owned(), |pet| pet.id.as_str().to_owned()),
+            label: snapshot
+                .selected_pet
+                .as_ref()
+                .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name.clone()),
+            lifecycle: match presentation {
+                PresentationState::Idle => PetLifecycleSnapshotV1::Idle,
+                PresentationState::Running => PetLifecycleSnapshotV1::Running,
+                PresentationState::Review => PetLifecycleSnapshotV1::Review,
+                PresentationState::Failed => PetLifecycleSnapshotV1::Failed,
+                PresentationState::Waiting => PetLifecycleSnapshotV1::Waiting,
+            },
+        }
+    }
+}
+
+fn notification_snapshot(notification: Notification) -> NotificationSnapshotV1 {
+    NotificationSnapshotV1 {
+        notification_id: notification.id.as_str().to_owned(),
+        event_id: notification.event_id.as_str().to_owned(),
+        provider: notification.provider.as_str().to_owned(),
+        session_id: notification.session_id.as_str().to_owned(),
+        turn_id: notification
+            .turn_id
+            .map(|turn_id| turn_id.as_str().to_owned()),
+        kind: match notification.kind {
+            NotificationKind::Attention => NotificationFilterKind::Attention,
+            NotificationKind::Completion => NotificationFilterKind::Completion,
+            NotificationKind::Failure => NotificationFilterKind::Failure,
+        },
+        occurred_at_ms: notification.occurred_at_ms,
+        project_label: notification
+            .project
+            .map(|project| project.label().to_owned()),
+        summary: notification.summary.map(|summary| DisplayEventSummaryV1 {
+            text: summary.text().to_owned(),
+            truncated: summary.was_truncated(),
+            redacted: summary.was_redacted(),
+        }),
     }
 }
 
@@ -459,6 +545,92 @@ mod tests {
         let serialized = serde_json::to_string(&presentation).unwrap();
         assert!(!serialized.contains("session-private"));
         assert!(!serialized.contains("turn-private"));
+    }
+
+    #[tokio::test]
+    async fn accepted_interaction_keeps_the_clicked_notification_snapshot() {
+        let state = AppState::default();
+        let clicked = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-clicked".to_owned()),
+            session_id: Some("session-clicked".to_owned()),
+            turn_id: Some("turn-clicked".to_owned()),
+            occurred_at_ms: Some(10),
+            project: Some(ProviderProjectInputV1 {
+                label: Some("Clicked workspace".to_owned()),
+            }),
+            summary: Some("Clicked completion".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(clicked).await;
+        let notification_id = state.snapshot().await.session_state.notifications[0]
+            .id
+            .clone();
+        let context = state
+            .bind_interaction(
+                Uuid::nil(),
+                11,
+                InteractionTrigger::NotificationActivate,
+                Some(&notification_id),
+            )
+            .await
+            .unwrap();
+
+        let newer = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("attention_required".to_owned()),
+            event_id: Some("event-newer".to_owned()),
+            session_id: Some("session-newer".to_owned()),
+            turn_id: Some("turn-newer".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: Some("Newer attention".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(newer).await;
+
+        let notification = context.notification.as_ref().unwrap();
+        assert_eq!(notification.event_id, "event-clicked");
+        assert_eq!(notification.session_id, "session-clicked");
+        assert_eq!(notification.turn_id.as_deref(), Some("turn-clicked"));
+        assert_eq!(
+            notification.project_label.as_deref(),
+            Some("Clicked workspace")
+        );
+        assert_eq!(
+            notification
+                .summary
+                .as_ref()
+                .map(|summary| summary.text.as_str()),
+            Some("Clicked completion")
+        );
+        let encoded = serde_json::to_vec(&context).unwrap();
+        assert!(encoded.len() <= lili_actions::MAX_INTERACTION_CONTEXT_BYTES);
+        assert!(
+            !String::from_utf8(encoded)
+                .unwrap()
+                .contains("session-newer")
+        );
+    }
+
+    #[tokio::test]
+    async fn pet_interaction_binds_pet_state_without_session_context() {
+        let state = AppState::default();
+        let context = state
+            .bind_interaction(Uuid::nil(), 1, InteractionTrigger::PetDoubleClick, None)
+            .await
+            .unwrap();
+        assert_eq!(context.trigger, InteractionTrigger::PetDoubleClick);
+        assert_eq!(context.pet.pet_id, "lili");
+        assert_eq!(context.pet.lifecycle, PetLifecycleSnapshotV1::Idle);
+        assert!(context.notification.is_none());
     }
 
     #[tokio::test]

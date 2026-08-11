@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post, put},
 };
 use leptos::prelude::*;
+use lili_actions::InteractionTrigger;
 use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
 use lili_session::{NotificationId, ReductionOutcome};
 use lili_ui::App;
@@ -125,19 +126,46 @@ async fn interaction(
     State(state): State<AppState>,
     Json(request): Json<InteractionRequest>,
 ) -> Json<InteractionResponse> {
-    let accepted = if let Some(notification_id) = request.notification_id {
-        if let Ok(notification_id) = NotificationId::parse(notification_id) {
-            request.trigger == "notification_click"
-                && state.notification_context(&notification_id).await.is_some()
-        } else {
-            false
+    let request_id = Uuid::new_v4();
+    let binding = match request.trigger.as_str() {
+        "notification_click" | "notification_activate" => {
+            let notification_id = request
+                .notification_id
+                .and_then(|value| NotificationId::parse(value).ok());
+            state
+                .bind_interaction(
+                    request_id,
+                    unix_time_ms(),
+                    InteractionTrigger::NotificationActivate,
+                    notification_id.as_ref(),
+                )
+                .await
         }
-    } else {
-        !request.trigger.is_empty()
+        "pet_click" if request.notification_id.is_none() => {
+            state
+                .bind_interaction(
+                    request_id,
+                    unix_time_ms(),
+                    InteractionTrigger::PetClick,
+                    None,
+                )
+                .await
+        }
+        "pet_double_click" if request.notification_id.is_none() => {
+            state
+                .bind_interaction(
+                    request_id,
+                    unix_time_ms(),
+                    InteractionTrigger::PetDoubleClick,
+                    None,
+                )
+                .await
+        }
+        _ => None,
     };
     Json(InteractionResponse {
-        accepted,
-        request_id: Uuid::new_v4(),
+        accepted: binding.is_some(),
+        request_id,
     })
 }
 

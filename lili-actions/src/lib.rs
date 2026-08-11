@@ -3,6 +3,7 @@ mod loading;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub const ACTIONS_SCHEMA_VERSION: u16 = 1;
 pub const DEFAULT_ACTION_TIMEOUT_MS: u64 = 10_000;
@@ -12,6 +13,8 @@ pub const MAX_ACTION_DEBOUNCE_MS: u64 = 60_000;
 pub const DEFAULT_GLOBAL_CONCURRENCY: usize = 4;
 pub const MAX_GLOBAL_CONCURRENCY: usize = 16;
 pub const MAX_ACTION_QUEUE_CAPACITY: usize = 64;
+pub const INTERACTION_CONTEXT_VERSION: u16 = 1;
+pub const MAX_INTERACTION_CONTEXT_BYTES: usize = 16 * 1024;
 
 pub use loading::{
     ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
@@ -33,6 +36,95 @@ pub enum NotificationFilterKind {
     Attention,
     Completion,
     Failure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PetLifecycleSnapshotV1 {
+    Idle,
+    Running,
+    Review,
+    Failed,
+    Waiting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetSnapshotV1 {
+    pub pet_id: String,
+    pub label: String,
+    pub lifecycle: PetLifecycleSnapshotV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayEventSummaryV1 {
+    pub text: String,
+    pub truncated: bool,
+    pub redacted: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationSnapshotV1 {
+    pub notification_id: String,
+    pub event_id: String,
+    pub provider: String,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub kind: NotificationFilterKind,
+    pub occurred_at_ms: u64,
+    pub project_label: Option<String>,
+    pub summary: Option<DisplayEventSummaryV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionContextV1 {
+    pub version: u16,
+    pub interaction_id: Uuid,
+    pub accepted_at_ms: u64,
+    pub trigger: InteractionTrigger,
+    pub pet: PetSnapshotV1,
+    pub notification: Option<NotificationSnapshotV1>,
+}
+
+impl InteractionContextV1 {
+    pub fn for_pet(
+        interaction_id: Uuid,
+        accepted_at_ms: u64,
+        trigger: InteractionTrigger,
+        pet: PetSnapshotV1,
+    ) -> Option<Self> {
+        matches!(
+            trigger,
+            InteractionTrigger::PetClick | InteractionTrigger::PetDoubleClick
+        )
+        .then_some(Self {
+            version: INTERACTION_CONTEXT_VERSION,
+            interaction_id,
+            accepted_at_ms,
+            trigger,
+            pet,
+            notification: None,
+        })
+    }
+
+    pub fn for_notification(
+        interaction_id: Uuid,
+        accepted_at_ms: u64,
+        pet: PetSnapshotV1,
+        notification: NotificationSnapshotV1,
+    ) -> Self {
+        Self {
+            version: INTERACTION_CONTEXT_VERSION,
+            interaction_id,
+            accepted_at_ms,
+            trigger: InteractionTrigger::NotificationActivate,
+            pet,
+            notification: Some(notification),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -219,5 +311,44 @@ command = "echo unsafe"
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn interaction_context_v1_serializes_only_bounded_display_safe_fields() {
+        let context = InteractionContextV1::for_notification(
+            Uuid::nil(),
+            42,
+            PetSnapshotV1 {
+                pet_id: "lili".to_owned(),
+                label: "Lili".to_owned(),
+                lifecycle: PetLifecycleSnapshotV1::Review,
+            },
+            NotificationSnapshotV1 {
+                notification_id: "notification-1".to_owned(),
+                event_id: "event-1".to_owned(),
+                provider: "codex".to_owned(),
+                session_id: "session-1".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
+                kind: NotificationFilterKind::Completion,
+                occurred_at_ms: 40,
+                project_label: Some("workspace".to_owned()),
+                summary: Some(DisplayEventSummaryV1 {
+                    text: "Finished".to_owned(),
+                    truncated: false,
+                    redacted: true,
+                }),
+            },
+        );
+
+        let encoded = serde_json::to_vec(&context).unwrap();
+        assert!(encoded.len() <= MAX_INTERACTION_CONTEXT_BYTES);
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(value["version"], INTERACTION_CONTEXT_VERSION);
+        assert_eq!(value["trigger"], "notification_activate");
+        assert_eq!(value["notification"]["sessionId"], "session-1");
+        assert_eq!(value["notification"]["summary"]["redacted"], true);
+        assert!(value.get("environment").is_none());
+        assert!(value.get("credentials").is_none());
+        assert!(value.get("rawPayload").is_none());
     }
 }
