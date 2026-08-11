@@ -25,8 +25,8 @@ pub use loading::{
     load_actions_str,
 };
 pub use supervisor::{
-    ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor, CapturedOutput,
-    MAX_ACTION_OUTPUT_BYTES,
+    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor,
+    CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

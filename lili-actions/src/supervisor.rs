@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     io,
     process::ExitStatus,
     sync::Arc,
@@ -20,6 +20,7 @@ use crate::{
 };
 
 pub const MAX_ACTION_OUTPUT_BYTES: usize = 16 * 1024;
+pub const MAX_ACTION_AUDIT_ENTRIES: usize = 256;
 const PROCESS_IO_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -71,6 +72,40 @@ pub struct ActionExecutionResult {
     pub stderr: CapturedOutput,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionAuditEntry {
+    pub action_id: String,
+    pub trigger: InteractionTrigger,
+    pub event_id: Option<String>,
+    pub started_at_ms: u64,
+    pub finished_at_ms: u64,
+    pub outcome: ActionExecutionOutcome,
+    pub exit_code: Option<i32>,
+    pub stdout_captured_bytes: usize,
+    pub stdout_truncated_bytes: u64,
+    pub stderr_captured_bytes: usize,
+    pub stderr_truncated_bytes: u64,
+}
+
+impl From<&ActionExecutionResult> for ActionAuditEntry {
+    fn from(result: &ActionExecutionResult) -> Self {
+        Self {
+            action_id: result.action_id.clone(),
+            trigger: result.trigger,
+            event_id: result.event_id.clone(),
+            started_at_ms: result.started_at_ms,
+            finished_at_ms: result.finished_at_ms,
+            outcome: result.outcome,
+            exit_code: result.exit_code,
+            stdout_captured_bytes: result.stdout.bytes.len(),
+            stdout_truncated_bytes: result.stdout.truncated_bytes,
+            stderr_captured_bytes: result.stderr.bytes.len(),
+            stderr_truncated_bytes: result.stderr.truncated_bytes,
+        }
+    }
+}
+
 impl ActionExecutionResult {
     fn immediate(
         action_id: impl Into<String>,
@@ -100,6 +135,7 @@ impl ActionExecutionResult {
 pub struct ActionSupervisor {
     actions: Arc<BTreeMap<String, Arc<ActionRuntime>>>,
     global: Arc<Semaphore>,
+    audit: Arc<Mutex<VecDeque<ActionAuditEntry>>>,
 }
 
 impl ActionSupervisor {
@@ -119,6 +155,9 @@ impl ActionSupervisor {
         Some(Self {
             actions: Arc::new(actions),
             global: Arc::new(Semaphore::new(global_concurrency)),
+            audit: Arc::new(Mutex::new(VecDeque::with_capacity(
+                MAX_ACTION_AUDIT_ENTRIES,
+            ))),
         })
     }
 
@@ -131,6 +170,25 @@ impl ActionSupervisor {
     }
 
     pub async fn execute(
+        &self,
+        action_id: &str,
+        context: &InteractionContextV1,
+    ) -> ActionExecutionResult {
+        let result = self.execute_unrecorded(action_id, context).await;
+        if !matches!(
+            result.outcome,
+            ActionExecutionOutcome::NotMatched | ActionExecutionOutcome::UnknownAction
+        ) {
+            self.record_audit(&result).await;
+        }
+        result
+    }
+
+    pub async fn audit_snapshot(&self) -> Vec<ActionAuditEntry> {
+        self.audit.lock().await.iter().cloned().collect()
+    }
+
+    async fn execute_unrecorded(
         &self,
         action_id: &str,
         context: &InteractionContextV1,
@@ -178,6 +236,14 @@ impl ActionSupervisor {
             );
         };
         run_action(&runtime.action, context).await
+    }
+
+    async fn record_audit(&self, result: &ActionExecutionResult) {
+        let mut audit = self.audit.lock().await;
+        if audit.len() == MAX_ACTION_AUDIT_ENTRIES {
+            audit.pop_front();
+        }
+        audit.push_back(ActionAuditEntry::from(result));
     }
 }
 
@@ -566,5 +632,25 @@ debounce_ms = 0
         assert_eq!(first.outcome, ActionExecutionOutcome::Succeeded);
         assert_eq!(second.outcome, ActionExecutionOutcome::Succeeded);
         assert!(started.elapsed() >= Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn audit_is_bounded_and_excludes_captured_output() {
+        let supervisor = supervisor(
+            &["/bin/sh", "-c", "printf private-output"],
+            "mode = \"reject\"\nmax_parallel = 1\nqueue_capacity = 0",
+            0,
+        );
+        let result = supervisor.execute("test", &interaction()).await;
+        assert_eq!(result.stdout.bytes(), b"private-output");
+        for _ in 0..=MAX_ACTION_AUDIT_ENTRIES {
+            supervisor.record_audit(&result).await;
+        }
+        let audit = supervisor.audit_snapshot().await;
+        assert_eq!(audit.len(), MAX_ACTION_AUDIT_ENTRIES);
+        assert!(audit.iter().all(|entry| entry.stdout_captured_bytes == 14));
+        let serialized = serde_json::to_string(&audit).unwrap();
+        assert!(!serialized.contains("private-output"));
+        assert!(!serialized.contains("environment"));
     }
 }

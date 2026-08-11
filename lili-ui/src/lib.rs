@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use lili_core::{
-    PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
+    PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
+    PetNotificationPresentation, PetPresentationState,
 };
 #[cfg(any(test, feature = "hydrate"))]
 use lili_pet::LookDirectionSelector;
@@ -185,6 +186,18 @@ fn PetShell(
         .into_iter()
         .map(|notification| view! { <NotificationCard notification wall_clock/> })
         .collect_view();
+    #[cfg(feature = "hydrate")]
+    let action_feedback = move || {
+        presentation
+            .get()
+            .action_feedback
+            .map(|feedback| view! { <ActionFeedback feedback/> })
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let action_feedback = presentation
+        .get_untracked()
+        .action_feedback
+        .map(|feedback| view! { <ActionFeedback feedback/> });
     view! {
         <main
             id="lili-app"
@@ -204,8 +217,41 @@ fn PetShell(
             >
                 {notification_cards}
             </aside>
+            <aside
+                class="action-feedback-region"
+                aria-label="Action result"
+                aria-live="polite"
+                aria-atomic="true"
+            >
+                {action_feedback}
+            </aside>
             {pet_view}
         </main>
+    }
+}
+
+#[component]
+fn ActionFeedback(feedback: PetActionFeedbackPresentation) -> impl IntoView {
+    let role = if feedback.kind == PetActionFeedbackKind::Failure {
+        "alert"
+    } else {
+        "status"
+    };
+    let action_id = feedback.action_id;
+    let action_id_attribute = action_id.clone();
+    view! {
+        <div
+            class="action-feedback"
+            class:action-feedback-success=feedback.kind == PetActionFeedbackKind::Success
+            class:action-feedback-failure=feedback.kind == PetActionFeedbackKind::Failure
+            class:action-feedback-busy=feedback.kind == PetActionFeedbackKind::Busy
+            role=role
+            data-action-id=action_id_attribute
+            data-action-result=feedback.kind.as_str()
+        >
+            <strong>{action_id}</strong>
+            <span>{feedback.message}</span>
+        </div>
     }
 }
 
@@ -916,6 +962,12 @@ mod tests {
                     occurred_at_ms: 10,
                     unread: true,
                 }],
+                action_feedback: Some(PetActionFeedbackPresentation {
+                    action_id: "open-session".to_owned(),
+                    kind: PetActionFeedbackKind::Failure,
+                    message: "Action could not start".to_owned(),
+                    occurred_at_ms: 11,
+                }),
                 reduced_motion: false,
             }/>
         }
@@ -936,6 +988,9 @@ mod tests {
         assert!(html.contains("data-notification-id=\"notification-safe\""));
         assert!(html.contains("Finished safely"));
         assert!(html.contains("Truncated"));
+        assert!(html.contains("data-action-id=\"open-session\""));
+        assert!(html.contains("data-action-result=\"failure\""));
+        assert!(html.contains("Action could not start"));
         assert!(!html.contains("sessionId"));
         assert!(!html.contains("eventId"));
     }

@@ -83,7 +83,7 @@
 - [x] 8.3 Define `InteractionContextV1` and bind accepted interactions to immutable notification or pet snapshots before asynchronous dispatch.
 - [x] 8.4 Implement direct executable spawning without a shell or event-to-argv interpolation, using a minimal environment and bounded JSON stdin.
 - [x] 8.5 Implement global and per-action concurrency, debounce, queue/reject policy, timeout, bounded output capture, and cross-platform process-tree termination.
-- [ ] 8.6 Implement the bounded privacy-preserving execution audit and action result feedback without mutating session state or automatically dismissing failed notification actions.
+- [x] 8.6 Implement the bounded privacy-preserving execution audit and action result feedback without mutating session state or automatically dismissing failed notification actions.
 - [ ] 8.7 Bind notification activation, pet click, and pet double-click to configured actions and verify each accepted interaction dispatches at most once under concurrent session updates.
 - [ ] 8.8 Add injection, missing executable, nonzero exit, timeout, output flood, environment leak, rapid-click, concurrency saturation, and application-shutdown tests.
 

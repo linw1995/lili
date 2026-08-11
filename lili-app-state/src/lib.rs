@@ -4,11 +4,13 @@ mod persistence;
 use std::sync::Arc;
 
 use lili_actions::{
-    ActionSummary, DisplayEventSummaryV1, InteractionContextV1, InteractionTrigger,
-    NotificationFilterKind, NotificationSnapshotV1, PetLifecycleSnapshotV1, PetSnapshotV1,
+    ActionExecutionOutcome, ActionExecutionResult, ActionSummary, DisplayEventSummaryV1,
+    InteractionContextV1, InteractionTrigger, NotificationFilterKind, NotificationSnapshotV1,
+    PetLifecycleSnapshotV1, PetSnapshotV1,
 };
 use lili_core::{
-    PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
+    PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
+    PetNotificationPresentation, PetPresentationState,
 };
 use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
 use lili_session::{
@@ -60,6 +62,7 @@ pub struct AppState {
     pet_catalog: Arc<RwLock<PetCatalog>>,
     pet_asset: Arc<RwLock<ApprovedPetAsset>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
+    action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
 }
 
@@ -110,7 +113,7 @@ impl AppState {
             actions: Vec::new(),
         };
         let (presentation_sender, _) =
-            watch::channel(presentation_from_view(&initial_snapshot, false));
+            watch::channel(presentation_from_view(&initial_snapshot, false, None));
         Self {
             snapshot: Arc::new(RwLock::new(initial_snapshot)),
             settings: Arc::new(RwLock::new(UserSettings::default())),
@@ -118,6 +121,7 @@ impl AppState {
             pet_catalog: Arc::new(RwLock::new(pet_catalog)),
             pet_asset: Arc::new(RwLock::new(pet_asset)),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
+            action_feedback: Arc::new(RwLock::new(None)),
             presentation_sender: Arc::new(presentation_sender),
         }
     }
@@ -154,7 +158,11 @@ impl AppState {
 
     pub async fn pet_presentation(&self) -> PetPresentationState {
         let snapshot = self.snapshot().await;
-        presentation_from_view(&snapshot, self.settings.read().await.reduced_motion)
+        presentation_from_view(
+            &snapshot,
+            self.settings.read().await.reduced_motion,
+            self.action_feedback.read().await.clone(),
+        )
     }
 
     pub fn subscribe_pet_presentation(&self) -> watch::Receiver<PetPresentationState> {
@@ -243,6 +251,38 @@ impl AppState {
         }
     }
 
+    pub async fn publish_action_result(&self, result: &ActionExecutionResult) -> bool {
+        let feedback = match result.outcome {
+            ActionExecutionOutcome::Succeeded => PetActionFeedbackPresentation {
+                action_id: result.action_id.clone(),
+                kind: PetActionFeedbackKind::Success,
+                message: "Action completed".to_owned(),
+                occurred_at_ms: result.finished_at_ms,
+            },
+            ActionExecutionOutcome::Saturated => PetActionFeedbackPresentation {
+                action_id: result.action_id.clone(),
+                kind: PetActionFeedbackKind::Busy,
+                message: "Action is busy".to_owned(),
+                occurred_at_ms: result.finished_at_ms,
+            },
+            ActionExecutionOutcome::NonZeroExit => {
+                action_failure(result, "Action exited with an error")
+            }
+            ActionExecutionOutcome::SpawnFailed => action_failure(result, "Action could not start"),
+            ActionExecutionOutcome::IoFailed => action_failure(result, "Action I/O failed"),
+            ActionExecutionOutcome::TimedOut => action_failure(result, "Action timed out"),
+            ActionExecutionOutcome::OutputOverflow => {
+                action_failure(result, "Action output limit exceeded")
+            }
+            ActionExecutionOutcome::Debounced
+            | ActionExecutionOutcome::NotMatched
+            | ActionExecutionOutcome::UnknownAction => return false,
+        };
+        *self.action_feedback.write().await = Some(feedback);
+        self.publish_presentation().await;
+        true
+    }
+
     pub async fn persistent_state(
         &self,
         window_placement: Option<WindowPlacement>,
@@ -267,11 +307,12 @@ impl AppState {
     async fn publish_presentation(&self) {
         let session_state = self.session_reducer.lock().await.snapshot();
         let reduced_motion = self.settings.read().await.reduced_motion;
+        let action_feedback = self.action_feedback.read().await.clone();
         let presentation = {
             let mut snapshot = self.snapshot.write().await;
             snapshot.session_state = session_state;
             snapshot.revision = snapshot.revision.saturating_add(1);
-            presentation_from_view(&snapshot, reduced_motion)
+            presentation_from_view(&snapshot, reduced_motion, action_feedback)
         };
         self.presentation_sender.send_replace(presentation);
     }
@@ -295,6 +336,18 @@ impl AppState {
                 PresentationState::Waiting => PetLifecycleSnapshotV1::Waiting,
             },
         }
+    }
+}
+
+fn action_failure(
+    result: &ActionExecutionResult,
+    message: &'static str,
+) -> PetActionFeedbackPresentation {
+    PetActionFeedbackPresentation {
+        action_id: result.action_id.clone(),
+        kind: PetActionFeedbackKind::Failure,
+        message: message.to_owned(),
+        occurred_at_ms: result.finished_at_ms,
     }
 }
 
@@ -324,7 +377,11 @@ fn notification_snapshot(notification: Notification) -> NotificationSnapshotV1 {
     }
 }
 
-fn presentation_from_view(snapshot: &ViewSnapshot, reduced_motion: bool) -> PetPresentationState {
+fn presentation_from_view(
+    snapshot: &ViewSnapshot,
+    reduced_motion: bool,
+    action_feedback: Option<PetActionFeedbackPresentation>,
+) -> PetPresentationState {
     let notifications = snapshot
         .session_state
         .notifications
@@ -377,6 +434,7 @@ fn presentation_from_view(snapshot: &ViewSnapshot, reduced_motion: bool) -> PetP
             .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name.clone()),
         unread_notification_count: notifications.len(),
         notifications,
+        action_feedback,
         reduced_motion,
     }
 }
@@ -631,6 +689,57 @@ mod tests {
         assert_eq!(context.pet.pet_id, "lili");
         assert_eq!(context.pet.lifecycle, PetLifecycleSnapshotV1::Idle);
         assert!(context.notification.is_none());
+    }
+
+    #[tokio::test]
+    async fn action_failure_feedback_does_not_mutate_session_or_notification_state() {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-action-feedback".to_owned()),
+            session_id: Some("session-action-feedback".to_owned()),
+            turn_id: Some("turn-action-feedback".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let before = state.snapshot().await;
+        let result = ActionExecutionResult {
+            action_id: "open-session".to_owned(),
+            interaction_id: Uuid::nil(),
+            trigger: InteractionTrigger::NotificationActivate,
+            event_id: Some("event-action-feedback".to_owned()),
+            started_at_ms: 11,
+            finished_at_ms: 12,
+            outcome: ActionExecutionOutcome::SpawnFailed,
+            exit_code: None,
+            stdout: lili_actions::CapturedOutput::default(),
+            stderr: lili_actions::CapturedOutput::default(),
+        };
+        assert!(state.publish_action_result(&result).await);
+
+        let after = state.snapshot().await;
+        assert!(after.revision > before.revision);
+        assert_eq!(after.session_state.revision, before.session_state.revision);
+        assert_eq!(
+            after.session_state.sessions[0].phase,
+            before.session_state.sessions[0].phase
+        );
+        assert_eq!(
+            after.session_state.notifications[0].state,
+            NotificationState::Unread
+        );
+        let presentation = state.pet_presentation().await;
+        let feedback = presentation.action_feedback.unwrap();
+        assert_eq!(feedback.action_id, "open-session");
+        assert_eq!(feedback.kind, PetActionFeedbackKind::Failure);
+        assert_eq!(feedback.message, "Action could not start");
     }
 
     #[tokio::test]

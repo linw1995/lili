@@ -91,6 +91,33 @@ pub struct PetNotificationPresentation {
     pub unread: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PetActionFeedbackKind {
+    Success,
+    Failure,
+    Busy,
+}
+
+impl PetActionFeedbackKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+            Self::Busy => "busy",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetActionFeedbackPresentation {
+    pub action_id: String,
+    pub kind: PetActionFeedbackKind,
+    pub message: String,
+    pub occurred_at_ms: u64,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetPresentationState {
@@ -100,5 +127,7 @@ pub struct PetPresentationState {
     pub pet_label: String,
     pub unread_notification_count: usize,
     pub notifications: Vec<PetNotificationPresentation>,
+    #[serde(default)]
+    pub action_feedback: Option<PetActionFeedbackPresentation>,
     pub reduced_motion: bool,
 }
