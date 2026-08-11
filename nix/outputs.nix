@@ -42,6 +42,6 @@ in
     in {
       inherit apps packages;
       devShells = import ./dev-shells.nix {inherit pkgs toolchain;};
-      checks = import ./checks.nix {inherit pkgs root supportedSystems toolchain;};
+      checks = import ./checks.nix {inherit apps pkgs root supportedSystems toolchain;};
     }
   )
