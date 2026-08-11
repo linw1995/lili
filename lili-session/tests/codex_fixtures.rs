@@ -36,10 +36,8 @@ const FIXTURES: [(&str, &str, &str); 6] = [
 
 #[test]
 fn codex_golden_fixtures_match_the_versioned_surface_manifest() {
-    let manifest: Value = serde_json::from_str(include_str!(
-        "fixtures/codex/0.147.0/manifest.json"
-    ))
-    .unwrap();
+    let manifest: Value =
+        serde_json::from_str(include_str!("fixtures/codex/0.147.0/manifest.json")).unwrap();
     assert_eq!(manifest["codexVersion"], FIXTURE_VERSION);
     assert_eq!(manifest["sourceTag"], "rust-v0.147.0");
     let surfaces = manifest["surfaces"].as_array().unwrap();

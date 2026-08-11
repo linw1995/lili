@@ -3,7 +3,7 @@ use std::{ffi::OsString, io::Read, path::Path, time::Duration};
 use lili_pet::resolve_codex_home;
 use lili_session::{
     ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolStore,
-    deliver_forwarding_message, normalize_json,
+    deliver_forwarding_message, normalize_hook_json,
 };
 
 pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(150);
@@ -77,7 +77,7 @@ pub async fn run_from_environment() -> HookResult {
 }
 
 pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> HookResult {
-    let event = match normalize_json(payload) {
+    let event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
         Err(_) => {
             return HookResult::failure(

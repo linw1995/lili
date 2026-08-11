@@ -1,3 +1,4 @@
+mod codex;
 mod forwarding;
 mod normalization;
 mod reducer;
@@ -5,6 +6,7 @@ mod spool;
 mod transport;
 mod types;
 
+pub use codex::{normalize_hook_json, normalize_notify_json};
 pub use forwarding::{
     DEFAULT_NONCE_CAPACITY, DEFAULT_REPLAY_WINDOW_MS, FORWARDING_PROTOCOL_VERSION, ForwardingAck,
     ForwardingAckDisposition, ForwardingCredentialRecord, ForwardingCredentials, ForwardingMessage,
