@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  Lili is a new Rust workspace for a cross-platform desktop pet.
+  The application follows a Tauri 2 + Leptos SSR architecture provided by linw1995:
+  domain types remain independent of UI and transport, Axum owns the native
+  router, the desktop WebView uses a signed HTTPS loopback origin, and a Web
+  entry point exists for browser and end-to-end testing.
+  Pet assets target the Codex v2 pet package contract: spriteVersionNumber 2,
+  an 8x11 atlas of 192x208 cells, and a 1536x2288 PNG or WebP spritesheet.
+  ChatGPT/Codex session integrations must use supported notification and hook
+  surfaces instead of reading authentication, state databases, or rollout logs.
+  User-configured actions execute argv arrays directly without a shell.
+  Nix Flake is the mandatory toolchain and command-entry authority. flake.lock,
+  Cargo.lock, and package-lock.json are committed and changed deliberately.
+  The workspace package version is the single application release version.
+
+rules:
+  proposal:
+    - Keep the capability boundaries explicit and list non-goals in design.md.
+  specs:
+    - Include security, compatibility, failure, and concurrency scenarios.
+  tasks:
+    - Include automated verification and packaged desktop acceptance work.

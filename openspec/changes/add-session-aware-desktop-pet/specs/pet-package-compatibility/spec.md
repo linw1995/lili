@@ -1,0 +1,52 @@
+## Purpose
+
+Defines how Lili discovers, validates, selects, and renders Codex v2 pet packages without changing the package format or accepting malformed sprite geometry.
+
+## ADDED Requirements
+
+### Requirement: Discover Codex v2 pet packages
+The system SHALL discover user pet packages from `${CODEX_HOME}/pets/<pet-id>/`, defaulting `CODEX_HOME` to the platform Codex home, and SHALL require `pet.json` and the manifest-referenced spritesheet to remain inside the package directory.
+
+#### Scenario: Valid package is discovered
+- **WHEN** a package directory contains a valid `pet.json` and referenced spritesheet
+- **THEN** the pet is listed by its identifier, display name, and description
+
+#### Scenario: Escaping asset path is rejected
+- **WHEN** `spritesheetPath` is absolute, traverses a parent directory, or resolves through a link outside the package
+- **THEN** the package is rejected without reading the escaped asset
+
+### Requirement: Validate the v2 manifest and atlas
+The system SHALL accept only `spriteVersionNumber: 2` packages whose PNG or WebP atlas is exactly `1536x2288`, consists of `192x208` cells in an 8-column by 11-row grid, and has a decodable transparent image surface.
+
+#### Scenario: Compatible v2 package loads
+- **WHEN** the manifest fields and atlas geometry satisfy the v2 contract
+- **THEN** the package becomes selectable and renderable
+
+#### Scenario: Unsupported or malformed package fails closed
+- **WHEN** the version, file type, image dimensions, manifest fields, or decode operation is invalid
+- **THEN** the package is excluded and the UI reports a package-specific diagnostic while retaining a usable fallback pet
+
+### Requirement: Render standard animation rows exactly
+The system SHALL render standard rows with the v2 frame counts and timing sequences: idle row 0 columns 0-5 at `280, 110, 110, 140, 140, 320 ms`; running-right row 1 columns 0-7 at `120 ms` per frame and `220 ms` for the final frame; running-left row 2 with the same columns and timing; waving row 3 columns 0-3 at `140 ms` per frame and `280 ms` for the final frame; jumping row 4 columns 0-4 at `140 ms` per frame and `280 ms` for the final frame; failed row 5 columns 0-7 at `140 ms` per frame and `240 ms` for the final frame; waiting row 6 columns 0-5 at `150 ms` per frame and `260 ms` for the final frame; running row 7 columns 0-5 at `120 ms` per frame and `220 ms` for the final frame; and review row 8 columns 0-5 at `150 ms` per frame and `280 ms` for the final frame.
+
+#### Scenario: Standard animation plays
+- **WHEN** the behavior state selects a standard animation
+- **THEN** only that row's used frames play in order with the contract-defined durations and unused cells are never displayed
+
+### Requirement: Render all look directions in clockwise order
+The system SHALL map rows 9 and 10 to the 16 clockwise look directions from `000` through `337.5` degrees, where `000` means up and the no-vector deadzone falls back to idle.
+
+#### Scenario: Pointer direction selects a look cell
+- **WHEN** the pointer vector from the pet center falls outside the deadzone
+- **THEN** the nearest 22.5-degree look cell is displayed using screen-coordinate direction semantics
+
+#### Scenario: Pointer enters the deadzone
+- **WHEN** the pointer vector is within the configured deadzone
+- **THEN** no directional cell is displayed and the pet resumes its applicable non-look animation
+
+### Requirement: Persist pet selection safely
+The system SHALL persist the selected pet identifier rather than an arbitrary asset path and SHALL revalidate the package on each application start.
+
+#### Scenario: Selected package disappears
+- **WHEN** the persisted pet identifier no longer resolves to a valid package
+- **THEN** the application uses the built-in fallback, preserves the invalid identifier for diagnostics, and remains operable

@@ -1,0 +1,63 @@
+## Purpose
+
+Defines the reproducible development, validation, and release toolchain for Lili so contributors and CI use the same pinned tools and application version across supported platforms.
+
+## ADDED Requirements
+
+### Requirement: Use a committed Nix Flake as the toolchain authority
+The project SHALL commit `flake.nix` and `flake.lock`, and all supported development, validation, and release entry points SHALL obtain their tool versions from the locked Flake rather than an implicitly selected global installation.
+
+#### Scenario: Developer enters the default environment
+- **WHEN** a developer runs `nix develop` from a clean checkout
+- **THEN** the shell provides the project-pinned Rust, Node.js, Tauri, Trunk, WebAssembly, formatting, and linting tools without modifying `flake.lock`
+
+#### Scenario: Global tool version differs
+- **WHEN** a machine has a different global Rust, Node.js, Tauri, or Trunk version
+- **THEN** project commands still use the Flake-provided version
+
+### Requirement: Commit language dependency lockfiles
+The project SHALL commit `Cargo.lock` and `package-lock.json` alongside `flake.lock`. The Flake SHALL pin system and build tools, while the language lockfiles SHALL pin Rust and npm dependency graphs.
+
+#### Scenario: Clean checkout resolves dependencies
+- **WHEN** CI validates a clean checkout with network access disabled after declared dependencies are available in the store or cache
+- **THEN** dependency resolution uses the committed lockfiles without selecting newer versions
+
+### Requirement: Provide stable Flake application entry points
+The Flake SHALL expose stable commands for desktop development, Web development, desktop build, stylesheet/assets build, formatting, linting, repository hooks, and end-to-end tests. Command implementations SHALL use the same toolchain composition as the default development shell.
+
+#### Scenario: Developer runs a standard workflow
+- **WHEN** a developer invokes a documented `nix run .#<command>` entry point
+- **THEN** the command runs with pinned tools and does not require manual PATH construction
+
+#### Scenario: Heavy test dependencies are unused
+- **WHEN** a developer enters the default shell or runs a non-E2E command
+- **THEN** browser binaries and other E2E-only closures are not required
+
+### Requirement: Support declared host systems explicitly
+The Flake SHALL evaluate for `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`. Darwin development SHALL use the pinned surrounding tools with the host Xcode command-line tools and SDK as an explicit platform dependency, while Linux shells SHALL provide the native WebView build libraries.
+
+#### Scenario: Flake outputs are evaluated in CI
+- **WHEN** CI evaluates every declared system without building foreign-platform artifacts
+- **THEN** required development shells, applications, and checks resolve without missing attributes or evaluation-time impurity
+
+#### Scenario: Developer enters the Darwin shell
+- **WHEN** `nix develop` runs on `aarch64-darwin`
+- **THEN** the shell uses the host `xcrun` SDK and system compiler while retaining Flake-pinned Rust, Node.js, Tauri, Trunk, and WebAssembly tools
+
+### Requirement: Keep one application release version
+The Cargo workspace package version SHALL be the canonical Lili application version. Flake packages, Tauri bundle metadata, the hook-forwarder version, and release artifacts SHALL derive or verify that same value instead of maintaining independent editable version strings.
+
+#### Scenario: Version metadata is validated
+- **WHEN** the canonical workspace version changes
+- **THEN** Flake and release checks either propagate that value to every artifact or fail with the mismatched surface identified
+
+### Requirement: Make lock updates deliberate and reviewable
+Normal development, build, and CI commands SHALL NOT rewrite lockfiles. Toolchain upgrades SHALL use an explicit selective or full Flake update workflow and SHALL validate all declared systems and stable application entry points before acceptance.
+
+#### Scenario: Locked input is unavailable from the current cache
+- **WHEN** a normal project command cannot realize a locked input
+- **THEN** the command fails without silently updating to a newer input
+
+#### Scenario: Toolchain input is upgraded
+- **WHEN** a maintainer intentionally updates a Flake input
+- **THEN** the resulting lockfile diff, tool versions, cross-system evaluation, workspace checks, and build entry points are reviewed as one change
