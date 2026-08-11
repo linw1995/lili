@@ -178,7 +178,7 @@ fn unix_time_ms() -> u64 {
 }
 
 async fn pet_asset(State(state): State<AppState>, Path(asset_id): Path<String>) -> Response {
-    let Some(asset) = state.approved_pet_asset(&asset_id) else {
+    let Some(asset) = state.approved_pet_asset(&asset_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
@@ -561,6 +561,7 @@ mod tests {
             .expect("fallback must expose an asset identity");
         let fallback = fallback_state
             .approved_pet_asset(&fallback_id)
+            .await
             .expect("fallback identity must resolve");
         fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
 

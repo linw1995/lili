@@ -19,6 +19,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 getrandom.workspace = true
 hmac.workspace = true
 lili-app-state = { path = "../lili-app-state" }
+lili-core = { path = "../lili-core" }
 lili-integration = { path = "../lili-integration" }
 lili-pet = { path = "../lili-pet" }
 lili-server = { path = "../lili-server" }

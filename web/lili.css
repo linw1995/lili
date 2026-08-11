@@ -18,6 +18,31 @@ body {
   position: relative;
 }
 
+#lili-app[data-tray-view]::before {
+  backdrop-filter: blur(14px);
+  background: rgb(24 28 36 / 94%);
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 14px;
+  color: #fff;
+  left: 12px;
+  line-height: 1.5;
+  padding: 14px;
+  pointer-events: auto;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  white-space: pre-line;
+  z-index: 3;
+}
+
+#lili-app[data-tray-view="settings"]::before {
+  content: "Settings\A Use the tray menu to control always-on-top behavior and select the active pet.";
+}
+
+#lili-app[data-tray-view="diagnostics"]::before {
+  content: "Diagnostics\A Native session ingestion remains active while the pet window is hidden.";
+}
+
 .notification-stack {
   display: grid;
   gap: 6px;

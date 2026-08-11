@@ -34,10 +34,19 @@ pub struct ViewSnapshot {
     pub actions: Vec<ActionSummary>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UserSettings {
     pub always_on_top: bool,
     pub reduced_motion: bool,
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self {
+            always_on_top: true,
+            reduced_motion: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -45,8 +54,8 @@ pub struct AppState {
     snapshot: Arc<RwLock<ViewSnapshot>>,
     settings: Arc<RwLock<UserSettings>>,
     session_reducer: Arc<Mutex<SessionReducer>>,
-    pet_catalog: Arc<PetCatalog>,
-    pet_asset: Arc<ApprovedPetAsset>,
+    pet_catalog: Arc<RwLock<PetCatalog>>,
+    pet_asset: Arc<RwLock<ApprovedPetAsset>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
 }
@@ -102,25 +111,40 @@ impl AppState {
             snapshot: Arc::new(RwLock::new(initial_snapshot)),
             settings: Arc::new(RwLock::new(UserSettings::default())),
             session_reducer: Arc::new(Mutex::new(reducer)),
-            pet_catalog: Arc::new(pet_catalog),
-            pet_asset: Arc::new(pet_asset),
+            pet_catalog: Arc::new(RwLock::new(pet_catalog)),
+            pet_asset: Arc::new(RwLock::new(pet_asset)),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
             presentation_sender: Arc::new(presentation_sender),
         }
     }
 
-    pub fn pet_catalog(&self) -> &PetCatalog {
-        &self.pet_catalog
+    pub async fn available_pets(&self) -> Vec<PetSummary> {
+        self.pet_catalog.read().await.available_summaries()
     }
 
-    pub fn approved_pet_asset(&self, asset_id: &str) -> Option<Arc<ApprovedPetAsset>> {
-        (self.pet_asset.id() == asset_id).then(|| Arc::clone(&self.pet_asset))
+    pub async fn approved_pet_asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
+        let asset = self.pet_asset.read().await;
+        (asset.id() == asset_id).then(|| asset.clone())
+    }
+
+    pub async fn replace_pet_catalog(&self, pet_catalog: PetCatalog) -> PetSummary {
+        let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
+        let selected_pet = PetSummary::from(pet_catalog.active().definition());
+        let pet_asset_id = pet_asset.id().to_owned();
+        *self.pet_catalog.write().await = pet_catalog;
+        *self.pet_asset.write().await = pet_asset;
+        {
+            let mut snapshot = self.snapshot.write().await;
+            snapshot.selected_pet = Some(selected_pet.clone());
+            snapshot.pet_asset_id = Some(pet_asset_id);
+        }
+        self.publish_presentation().await;
+        selected_pet
     }
 
     pub async fn snapshot(&self) -> ViewSnapshot {
         let mut snapshot = self.snapshot.read().await.clone();
         snapshot.session_state = self.session_reducer.lock().await.snapshot();
-        snapshot.revision = snapshot.session_state.revision;
         snapshot
     }
 
@@ -182,7 +206,8 @@ impl AppState {
         &self,
         window_placement: Option<WindowPlacement>,
     ) -> PersistentApplicationState {
-        let selected_pet_id = lili_core::PetId::parse(self.pet_catalog.requested_identifier());
+        let selected_pet_id =
+            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         PersistentApplicationState::new(
             selected_pet_id,
             window_placement,
@@ -199,10 +224,14 @@ impl AppState {
     }
 
     async fn publish_presentation(&self) {
-        let presentation = self.pet_presentation().await;
-        if presentation.revision > self.presentation_sender.borrow().revision {
-            self.presentation_sender.send_replace(presentation);
-        }
+        let session_state = self.session_reducer.lock().await.snapshot();
+        let presentation = {
+            let mut snapshot = self.snapshot.write().await;
+            snapshot.session_state = session_state;
+            snapshot.revision = snapshot.revision.saturating_add(1);
+            presentation_from_view(&snapshot)
+        };
+        self.presentation_sender.send_replace(presentation);
     }
 }
 
@@ -457,5 +486,25 @@ mod tests {
             ReductionOutcome::Duplicate
         );
         assert!(!presentations.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn pet_replacement_publishes_a_monotonic_ui_revision() {
+        let state = AppState::default();
+        let mut presentations = state.subscribe_pet_presentation();
+        assert!(state.settings().await.always_on_top);
+        assert!(
+            state
+                .available_pets()
+                .await
+                .iter()
+                .any(|pet| pet.id.as_str() == lili_pet::DEFAULT_PET_ID)
+        );
+
+        state.replace_pet_catalog(PetCatalog::default()).await;
+        presentations.changed().await.unwrap();
+        assert_eq!(presentations.borrow_and_update().revision, 1);
+        assert_eq!(state.snapshot().await.revision, 1);
+        assert_eq!(state.snapshot().await.session_state.revision, 0);
     }
 }

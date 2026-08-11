@@ -2582,6 +2582,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "lili-app-state",
+ "lili-core",
  "lili-integration",
  "lili-pet",
  "lili-server",

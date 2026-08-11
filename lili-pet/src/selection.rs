@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    AtlasMetadata, AtlasValidationError, DEFAULT_PET_ID, PetDefinition, SPRITE_VERSION_NUMBER,
-    ValidatedPetPackage, discover_pet_packages, validate_discovered_package,
+    AtlasMetadata, AtlasValidationError, DEFAULT_PET_ID, PetDefinition, PetSummary,
+    SPRITE_VERSION_NUMBER, ValidatedPetPackage, discover_pet_packages, validate_discovered_package,
     validation::{read_validated_atlas, validate_atlas_bytes},
 };
 
@@ -200,6 +200,23 @@ impl PetCatalog {
 
     pub fn packages(&self) -> &[AvailablePet] {
         &self.packages
+    }
+
+    pub fn available_summaries(&self) -> Vec<PetSummary> {
+        let mut summaries = vec![PetSummary::from(fallback_pet().definition())];
+        for pet in &self.packages {
+            let summary = PetSummary::from(pet.definition());
+            if let Some(existing) = summaries
+                .iter_mut()
+                .find(|existing| existing.id == summary.id)
+            {
+                *existing = summary;
+            } else {
+                summaries.push(summary);
+            }
+        }
+        summaries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        summaries
     }
 
     pub fn requested_identifier(&self) -> &str {
