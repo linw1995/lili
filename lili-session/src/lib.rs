@@ -1,19 +1,11 @@
-use lili_core::SessionId;
-use serde::{Deserialize, Serialize};
+mod types;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionPhase {
-    Idle,
-    Active,
-    Attention,
-    Completed,
-    Failed,
-}
+pub use types::{
+    DisplayProjectContext, DisplaySummary, DisplayValueError, EventId, IdentityError,
+    NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
+    PresentationState, ProviderCapabilitiesInputV1, ProviderId, ProviderInputV1,
+    ProviderProjectInputV1, SessionEventKind, SessionId, SessionPhase, SessionSummary,
+    SessionViewSnapshot, SourceCapabilities, TurnId,
+};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SessionSummary {
-    pub id: SessionId,
-    pub phase: SessionPhase,
-    pub project_label: Option<String>,
-}
+pub const SESSION_SCHEMA_VERSION: u16 = 1;
