@@ -59,4 +59,5 @@ objc2-web-kit = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+serde_json.workspace = true
 tower.workspace = true
