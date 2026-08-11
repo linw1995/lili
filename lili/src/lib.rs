@@ -1,3 +1,4 @@
+mod desktop_acceptance;
 mod desktop_smoke;
 mod diagnostics;
 pub mod hook_forwarder;
@@ -8,6 +9,7 @@ mod platform_pinning;
 
 use std::path::{Path, PathBuf};
 
+use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
 use lili_actions::{
@@ -41,16 +43,19 @@ pub fn run() {
         }
         return;
     }
-    let smoke = std::env::args().any(|argument| argument == "--desktop-smoke");
-    run_desktop(smoke);
+    let acceptance = std::env::args().any(|argument| argument == "--desktop-acceptance");
+    let smoke = acceptance || std::env::args().any(|argument| argument == "--desktop-smoke");
+    run_desktop(smoke, acceptance);
 }
 
-fn run_desktop(smoke: bool) {
+fn run_desktop(smoke: bool, acceptance: bool) {
     let app = tauri::Builder::default()
+        .manage(DesktopAcceptanceState::default())
         .manage(DesktopSmokeState::default())
         .invoke_handler(tauri::generate_handler![
             sign_loopback_request,
             commit_window_position,
+            complete_desktop_acceptance,
             complete_desktop_smoke
         ])
         .build(tauri::generate_context!())
@@ -62,7 +67,11 @@ fn run_desktop(smoke: bool) {
     )
     .map(StaticAssets::new);
     let (state, state_store, codex_home, saved_window_placement) = load_app_state();
-    if !smoke && let Some(codex_home) = codex_home.as_deref() {
+    app.state::<DesktopAcceptanceState>()
+        .configure(codex_home.clone());
+    if (!smoke || acceptance)
+        && let Some(codex_home) = codex_home.as_deref()
+    {
         configure_native_actions(codex_home, &state);
     }
     app.manage(DesktopPersistence {
@@ -71,7 +80,7 @@ fn run_desktop(smoke: bool) {
     });
     setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
-    if !smoke
+    if (!smoke || acceptance)
         && let Some(codex_home) = codex_home.as_deref()
         && start_native_ingestion(codex_home, state.clone()).is_err()
     {
@@ -95,7 +104,9 @@ fn run_desktop(smoke: bool) {
             .permission("allow-sign-loopback-request")
             .permission("allow-commit-window-position")
             .permission("core:window:allow-start-dragging");
-        if smoke {
+        if acceptance {
+            capability.permission("allow-complete-desktop-acceptance")
+        } else if smoke {
             capability.permission("allow-complete-desktop-smoke")
         } else {
             capability
@@ -120,7 +131,9 @@ fn run_desktop(smoke: bool) {
     .shadow(false)
     .visible(false)
     .on_navigation(move |url| url.origin() == allowed_origin);
-    if smoke {
+    if acceptance {
+        builder = builder.initialization_script(desktop_acceptance::SCRIPT);
+    } else if smoke {
         builder = builder.initialization_script(desktop_smoke::SCRIPT);
     }
     let window = builder.build().expect("failed to create pet window");
@@ -518,7 +531,7 @@ fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> t
         .cloned()
         .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".to_owned()))?;
 
-    TrayIconBuilder::new()
+    TrayIconBuilder::with_id("lili-tray")
         .icon(icon)
         .tooltip("Lili")
         .show_menu_on_left_click(false)

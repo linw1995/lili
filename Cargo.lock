@@ -2593,6 +2593,7 @@ dependencies = [
  "objc2-security",
  "objc2-web-kit",
  "rcgen",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

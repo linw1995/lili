@@ -21,6 +21,7 @@
     "fuzz"
     "prek"
     "e2e"
+    "macos-acceptance"
   ];
   missingApps = builtins.filter (name: !(builtins.hasAttr name apps)) requiredApps;
 in {

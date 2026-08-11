@@ -98,7 +98,7 @@
 ## 10. Cross-Platform and Release Acceptance
 
 - [x] 10.1 Add browser end-to-end scenarios for package selection, every animation state, look-direction quadrants, concurrent sessions, notification ordering, action results, reload recovery, and reduced motion with strict console diagnostics.
-- [ ] 10.2 Add packaged macOS acceptance for transparency, always-on-top behavior, certificate pinning, tray lifecycle, logical positioning, Unix socket ownership, hook delivery, action timeout, and clean quit.
+- [x] 10.2 Add packaged macOS acceptance for transparency, always-on-top behavior, certificate pinning, tray lifecycle, logical positioning, Unix socket ownership, hook delivery, action timeout, and clean quit.
 - [ ] 10.3 Add packaged Windows acceptance for transparency, always-on-top behavior, certificate pinning, tray lifecycle, DPI positioning, named-pipe ACLs, hook delivery, action process-tree cleanup, and clean quit.
 - [ ] 10.4 Add supported Linux acceptance for Web/Tauri availability, Unix socket ownership, Codex CLI hook delivery, tray behavior, and documented compositor limitations.
 - [ ] 10.5 Run `nix flake check --no-build`, explicit evaluation for every declared system, formatting, Clippy with warnings denied, workspace tests, dependency audit, release Web build, Tauri builds, fuzz smoke corpus, browser end-to-end tests, and OpenSpec strict validation through Flake-provided commands in CI.

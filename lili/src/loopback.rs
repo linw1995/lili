@@ -288,7 +288,7 @@ impl LoopbackSecurity {
     fn new(authority: String, origin: String, secret: String, signer: RequestSigner) -> Self {
         let cookie_name = format!("{COOKIE_PREFIX}{}", &secret[..16]);
         let csp = HeaderValue::from_str(&format!(
-            "default-src 'self'; base-uri 'none'; connect-src 'self' wss://{authority}; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'"
+            "default-src 'self'; base-uri 'none'; connect-src 'self' wss://{authority}; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'"
         ))
         .expect("generated CSP is valid");
         Self {

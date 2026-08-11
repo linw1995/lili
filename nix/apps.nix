@@ -109,4 +109,21 @@ in {
       exec cargo run --locked --package lili -- --desktop-smoke
     '';
   };
+
+  macos-acceptance = mkWorkspaceApp {
+    name = "macos-acceptance";
+    text =
+      if toolchain.isDarwin
+      then ''
+        cargo tauri build --bundles app -- --locked
+        cargo build --locked --release --package lili --bin lili-hook --bin lili-macos-acceptance
+        exec target/release/lili-macos-acceptance \
+          target/release/bundle/macos/Lili.app/Contents/MacOS/lili \
+          target/release/lili-hook
+      ''
+      else ''
+        echo "macOS acceptance requires macOS" >&2
+        exit 2
+      '';
+  };
 }
