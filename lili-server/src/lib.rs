@@ -1,4 +1,4 @@
-use std::{convert::Infallible, path::PathBuf, time::Duration};
+use std::{collections::HashSet, convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -12,16 +12,18 @@ use axum::{
 use leptos::prelude::*;
 use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
 use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
-use lili_core::{DiagnosticPrivacy, diagnostic_privacy};
+use lili_core::{DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
 use lili_session::{NotificationId, ReductionOutcome};
 use lili_ui::App;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+const MAX_FIXTURE_NOTIFICATIONS: usize = 32;
+const MAX_FIXTURE_TEXT_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticAssets {
@@ -67,15 +69,164 @@ struct NotificationMutationResponse {
     accepted: bool,
 }
 
+#[derive(Clone)]
+struct ServerState {
+    app: AppState,
+    fixture: Option<FixturePresentationStore>,
+}
+
+#[derive(Clone)]
+struct FixturePresentationStore {
+    presentation: Arc<RwLock<PetPresentationState>>,
+    sender: Arc<watch::Sender<PetPresentationState>>,
+    approved_asset_id: String,
+}
+
+impl FixturePresentationStore {
+    fn new(initial: PetPresentationState) -> Self {
+        let approved_asset_id = initial.pet_asset_id.clone().unwrap_or_default();
+        let (sender, _) = watch::channel(initial.clone());
+        Self {
+            presentation: Arc::new(RwLock::new(initial)),
+            sender: Arc::new(sender),
+            approved_asset_id,
+        }
+    }
+
+    async fn current(&self) -> PetPresentationState {
+        self.presentation.read().await.clone()
+    }
+
+    fn subscribe(&self) -> watch::Receiver<PetPresentationState> {
+        self.sender.subscribe()
+    }
+
+    async fn replace(&self, mut next: PetPresentationState) -> Result<(), &'static str> {
+        validate_fixture_presentation(&next)?;
+        let mut current = self.presentation.write().await;
+        next.revision = current.revision.saturating_add(1);
+        *current = next.clone();
+        self.sender.send_replace(next);
+        Ok(())
+    }
+
+    async fn replace_reduced_motion(&self, reduced_motion: bool) {
+        let mut current = self.presentation.write().await;
+        current.revision = current.revision.saturating_add(1);
+        current.reduced_motion = reduced_motion;
+        self.sender.send_replace(current.clone());
+    }
+
+    async fn dismiss(&self, notification_id: &str) -> bool {
+        let mut current = self.presentation.write().await;
+        let before = current.notifications.len();
+        current
+            .notifications
+            .retain(|notification| notification.activation_id != notification_id);
+        if current.notifications.len() == before {
+            return false;
+        }
+        current.unread_notification_count = current.notifications.len();
+        current.revision = current.revision.saturating_add(1);
+        self.sender.send_replace(current.clone());
+        true
+    }
+
+    async fn accepts_interaction(&self, request: &InteractionRequest) -> bool {
+        match request.trigger.as_str() {
+            "pet_click" | "pet_double_click" => request.notification_id.is_none(),
+            "notification_click" | "notification_activate" => {
+                let Some(notification_id) = request.notification_id.as_deref() else {
+                    return false;
+                };
+                self.presentation
+                    .read()
+                    .await
+                    .notifications
+                    .iter()
+                    .any(|notification| notification.activation_id == notification_id)
+            }
+            _ => false,
+        }
+    }
+
+    async fn serves_asset(&self, asset_id: &str) -> bool {
+        self.presentation.read().await.pet_asset_id.as_deref() == Some(asset_id)
+    }
+}
+
+impl ServerState {
+    fn native(app: AppState) -> Self {
+        Self { app, fixture: None }
+    }
+
+    fn fixture(app: AppState) -> Self {
+        let initial = app.subscribe_pet_presentation().borrow().clone();
+        Self {
+            app,
+            fixture: Some(FixturePresentationStore::new(initial)),
+        }
+    }
+
+    async fn presentation(&self) -> PetPresentationState {
+        match &self.fixture {
+            Some(fixture) => fixture.current().await,
+            None => self.app.pet_presentation().await,
+        }
+    }
+
+    fn subscribe_presentation(&self) -> watch::Receiver<PetPresentationState> {
+        match &self.fixture {
+            Some(fixture) => fixture.subscribe(),
+            None => self.app.subscribe_pet_presentation(),
+        }
+    }
+}
+
+fn validate_fixture_presentation(presentation: &PetPresentationState) -> Result<(), &'static str> {
+    if presentation.notifications.len() > MAX_FIXTURE_NOTIFICATIONS
+        || presentation.unread_notification_count != presentation.notifications.len()
+        || presentation.pet_label.len() > MAX_FIXTURE_TEXT_BYTES
+        || presentation
+            .action_feedback
+            .as_ref()
+            .is_some_and(|feedback| {
+                feedback.action_id.len() > MAX_FIXTURE_TEXT_BYTES
+                    || feedback.message.len() > MAX_FIXTURE_TEXT_BYTES
+            })
+    {
+        return Err("fixture presentation exceeds its bounds");
+    }
+    let mut notification_ids = HashSet::new();
+    for notification in &presentation.notifications {
+        if notification.activation_id.is_empty()
+            || notification.activation_id.len() > MAX_FIXTURE_TEXT_BYTES
+            || notification.summary.len() > MAX_FIXTURE_TEXT_BYTES
+            || notification
+                .project_label
+                .as_ref()
+                .is_some_and(|label| label.len() > MAX_FIXTURE_TEXT_BYTES)
+            || !notification_ids.insert(&notification.activation_id)
+        {
+            return Err("fixture notification is invalid");
+        }
+    }
+    Ok(())
+}
+
 pub fn build_native_router(state: AppState, assets: Option<StaticAssets>) -> Router {
     build_router(state, assets)
 }
 
 pub fn build_fixture_router(assets: Option<StaticAssets>) -> Router {
-    build_router(AppState::default(), assets)
+    build_server_router(ServerState::fixture(AppState::default()), assets, true)
 }
 
 fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
+    build_server_router(ServerState::native(state), assets, false)
+}
+
+fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture: bool) -> Router {
     let api = Router::new()
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
@@ -92,13 +243,29 @@ fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
         .route("/pet-assets/{asset_id}", get(pet_asset))
         .route("/presentation-events", get(events))
         .nest("/api/v1", api)
-        .fallback(get(ssr_shell))
+        .fallback(get(ssr_shell));
+
+    if fixture {
+        router = router.route("/__fixture/presentation", put(update_fixture_presentation));
+    }
+
+    let mut router = router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(security_headers))
         .with_state(state);
 
     if let Some(assets) = assets {
         let index = assets.root.join("index.html");
+        router = router
+            .route_service(
+                "/lili-ui.js",
+                ServeFile::new(assets.root.join("lili-ui.js")),
+            )
+            .route_service(
+                "/lili-ui_bg.wasm",
+                ServeFile::new(assets.root.join("lili-ui_bg.wasm")),
+            )
+            .nest_service("/snippets", ServeDir::new(assets.root.join("snippets")));
         router = router.nest_service(
             "/assets",
             ServeDir::new(assets.root.join("assets")).fallback(ServeFile::new(index)),
@@ -112,26 +279,30 @@ async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
-async fn snapshot(State(state): State<AppState>) -> Json<lili_app_state::ViewSnapshot> {
-    Json(state.snapshot().await)
+async fn snapshot(State(state): State<ServerState>) -> Json<lili_app_state::ViewSnapshot> {
+    Json(state.app.snapshot().await)
 }
 
-async fn settings(State(state): State<AppState>) -> Json<UserSettings> {
-    Json(state.settings().await)
+async fn settings(State(state): State<ServerState>) -> Json<UserSettings> {
+    Json(state.app.settings().await)
 }
 
 async fn update_settings(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
     Json(settings): Json<UserSettings>,
 ) -> Json<UserSettings> {
-    Json(state.replace_settings(settings).await)
+    let updated = state.app.replace_settings(settings).await;
+    if let Some(fixture) = &state.fixture {
+        fixture.replace_reduced_motion(updated.reduced_motion).await;
+    }
+    Json(updated)
 }
 
-async fn diagnostics(State(state): State<AppState>) -> Json<Diagnostics> {
+async fn diagnostics(State(state): State<ServerState>) -> Json<Diagnostics> {
     let (ingestion, actions, action_audit) = tokio::join!(
-        state.ingestion_diagnostics(),
-        state.effective_actions(),
-        state.action_audit(),
+        state.app.ingestion_diagnostics(),
+        state.app.effective_actions(),
+        state.app.action_audit(),
     );
     Json(Diagnostics {
         status: "ok",
@@ -144,16 +315,23 @@ async fn diagnostics(State(state): State<AppState>) -> Json<Diagnostics> {
 }
 
 async fn interaction(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
     Json(request): Json<InteractionRequest>,
 ) -> Json<InteractionResponse> {
     let request_id = Uuid::new_v4();
+    if let Some(fixture) = &state.fixture {
+        return Json(InteractionResponse {
+            accepted: fixture.accepts_interaction(&request).await,
+            request_id,
+        });
+    }
     let binding = match request.trigger.as_str() {
         "notification_click" | "notification_activate" => {
             let notification_id = request
                 .notification_id
                 .and_then(|value| NotificationId::parse(value).ok());
             state
+                .app
                 .bind_interaction(
                     request_id,
                     unix_time_ms(),
@@ -164,6 +342,7 @@ async fn interaction(
         }
         "pet_click" if request.notification_id.is_none() => {
             state
+                .app
                 .bind_interaction(
                     request_id,
                     unix_time_ms(),
@@ -174,6 +353,7 @@ async fn interaction(
         }
         "pet_double_click" if request.notification_id.is_none() => {
             state
+                .app
                 .bind_interaction(
                     request_id,
                     unix_time_ms(),
@@ -185,7 +365,7 @@ async fn interaction(
         _ => None,
     };
     let accepted = match binding {
-        Some(context) => state.dispatch_interaction(context).await.accepted,
+        Some(context) => state.app.dispatch_interaction(context).await.accepted,
         None => false,
     };
     Json(InteractionResponse {
@@ -195,9 +375,20 @@ async fn interaction(
 }
 
 async fn dismiss_notification(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
     Path(notification_id): Path<String>,
 ) -> (StatusCode, Json<NotificationMutationResponse>) {
+    if let Some(fixture) = &state.fixture {
+        let accepted = fixture.dismiss(&notification_id).await;
+        return (
+            if accepted {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            },
+            Json(NotificationMutationResponse { accepted }),
+        );
+    }
     let Ok(notification_id) = NotificationId::parse(notification_id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -206,6 +397,7 @@ async fn dismiss_notification(
     };
     let accepted = matches!(
         state
+            .app
             .acknowledge_notification(&notification_id, unix_time_ms())
             .await,
         ReductionOutcome::Applied { .. }
@@ -230,8 +422,12 @@ fn unix_time_ms() -> u64 {
         })
 }
 
-async fn pet_asset(State(state): State<AppState>, Path(asset_id): Path<String>) -> Response {
-    let Some(asset) = state.approved_pet_asset(&asset_id).await else {
+async fn pet_asset(State(state): State<ServerState>, Path(asset_id): Path<String>) -> Response {
+    let approved_asset_id = match &state.fixture {
+        Some(fixture) if fixture.serves_asset(&asset_id).await => &fixture.approved_asset_id,
+        _ => &asset_id,
+    };
+    let Some(asset) = state.app.approved_pet_asset(approved_asset_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
@@ -245,9 +441,9 @@ async fn pet_asset(State(state): State<AppState>, Path(asset_id): Path<String>) 
 }
 
 async fn events(
-    State(state): State<AppState>,
+    State(state): State<ServerState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let mut presentations = state.subscribe_pet_presentation();
+    let mut presentations = state.subscribe_presentation();
     let snapshot = presentations.borrow_and_update().clone();
     let (sender, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
@@ -291,12 +487,28 @@ fn presentation_event(
         .data(serde_json::to_string(presentation).expect("pet presentations must serialize"))
 }
 
-async fn ssr_shell(State(state): State<AppState>) -> Html<String> {
-    let presentation = state.pet_presentation().await;
+async fn ssr_shell(State(state): State<ServerState>) -> Html<String> {
+    let presentation = state.presentation().await;
     let app = view! { <App presentation/> }.to_html();
     Html(format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"/assets/lili.css\"><title>Lili</title></head><body>{app}</body></html>"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"/assets/lili.css\"><script type=\"module\" src=\"/assets/lili-bootstrap.js\"></script><title>Lili</title></head><body>{app}</body></html>"
     ))
+}
+
+async fn update_fixture_presentation(
+    State(state): State<ServerState>,
+    Json(presentation): Json<PetPresentationState>,
+) -> (StatusCode, Json<PetPresentationState>) {
+    let Some(fixture) = &state.fixture else {
+        return (StatusCode::NOT_FOUND, Json(presentation));
+    };
+    match fixture.replace(presentation).await {
+        Ok(()) => (StatusCode::OK, Json(fixture.current().await)),
+        Err(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(fixture.current().await),
+        ),
+    }
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
@@ -305,7 +517,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'",
+            "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'",
         ),
     );
     headers.insert(
@@ -435,6 +647,61 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("data-ssr-marker=\"lili-ready\""));
+    }
+
+    #[tokio::test]
+    async fn fixture_router_replaces_only_bounded_presentation_state() {
+        let router = build_fixture_router(None);
+        let presentation = PetPresentationState {
+            pet_asset_id: Some("selected-fixture-pet".to_owned()),
+            pet_label: "Selected fixture pet".to_owned(),
+            ..PetPresentationState::default()
+        };
+        let response = router
+            .clone()
+            .oneshot(
+                Request::put("/__fixture/presentation")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&presentation).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Selected fixture pet"));
+        assert!(body.contains("/pet-assets/selected-fixture-pet"));
+
+        let response = router
+            .oneshot(
+                Request::get("/pet-assets/selected-fixture-pet")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn native_router_does_not_expose_fixture_control() {
+        let response = build_router(AppState::default(), None)
+            .oneshot(
+                Request::put("/__fixture/presentation")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

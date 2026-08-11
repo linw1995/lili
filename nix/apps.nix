@@ -98,7 +98,7 @@ in {
       ${pkgs.lib.optionalString toolchain.isLinux ''
         export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
       ''}
-      exec npx playwright test "$@"
+      exec playwright test "$@"
     '';
   };
 

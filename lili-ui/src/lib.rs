@@ -69,8 +69,8 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                 data-tauri-drag-region="deep"
                 on:pointerdown=move |event| {
                     pointer.update(|pointer| pointer.press(
-                        f64::from(event.screen_x()),
-                        f64::from(event.screen_y()),
+                        f64::from(event.client_x()),
+                        f64::from(event.client_y()),
                         event.time_stamp().max(0.0) as u64,
                     ));
                     gaze.set(None);
@@ -80,12 +80,13 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         gaze.set(None);
                         return;
                     }
+                    let (offset_x, offset_y) = pointer_offset(&event);
                     let update = pointer.write().move_to(
-                        f64::from(event.screen_x()),
-                        f64::from(event.screen_y()),
+                        f64::from(event.client_x()),
+                        f64::from(event.client_y()),
                         event.time_stamp().max(0.0) as u64,
-                        f64::from(event.offset_x()) - PET_CENTER_X,
-                        f64::from(event.offset_y()) - PET_CENTER_Y,
+                        offset_x - PET_CENTER_X,
+                        offset_y - PET_CENTER_Y,
                     );
                     match update {
                         PointerUpdate::Gaze(next) => gaze.set(next),
@@ -368,6 +369,8 @@ fn PetImage(
             src=move || presentation.get().pet_asset_id.map(|asset_id| format!("/pet-assets/{asset_id}"))
             alt=""
             aria-hidden="true"
+            data-frame-row=move || frame.get().row
+            data-frame-column=move || frame.get().column
             style:animation="none"
             style:transform=move || frame_transform(frame.get())
         />
@@ -388,6 +391,8 @@ fn PetImage(
                 src=asset_source
                 alt=""
                 aria-hidden="true"
+                data-frame-row=frame.get_untracked().row
+                data-frame-column=frame.get_untracked().column
                 style=style
             />
         }
@@ -626,6 +631,23 @@ fn animation_clock_ms() -> u64 {
     }
     #[cfg(not(feature = "hydrate"))]
     0
+}
+
+#[cfg(feature = "hydrate")]
+fn pointer_offset(event: &web_sys::PointerEvent) -> (f64, f64) {
+    use wasm_bindgen::JsCast;
+
+    event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .map(|target| {
+            let bounds = target.get_bounding_client_rect();
+            (
+                f64::from(event.client_x()) - bounds.left(),
+                f64::from(event.client_y()) - bounds.top(),
+            )
+        })
+        .unwrap_or_else(|| (f64::from(event.offset_x()), f64::from(event.offset_y())))
 }
 
 #[cfg(feature = "hydrate")]

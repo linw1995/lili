@@ -8,10 +8,17 @@
       data-trunk
       rel="rust"
       href="lili-ui/Cargo.toml"
+      data-cargo-features="hydrate"
       data-wasm-opt="z"
       data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt"
     />
     <link data-trunk rel="css" href="web/lili.css" data-target-path="assets" />
+    <link
+      data-trunk
+      rel="copy-file"
+      href="web/lili-bootstrap.js"
+      data-target-path="assets"
+    />
     <title>Lili</title>
   </head>
   <body></body>
