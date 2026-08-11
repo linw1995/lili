@@ -32,6 +32,13 @@ pub enum InstallPlanStatus {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum IntegrationInstallMode {
+    Exclusive,
+    Coexist,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PlannedFileAction {
     Create,
     Update,
@@ -71,6 +78,7 @@ pub struct PlannedFileChange {
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationInstallPlan {
     pub schema_version: u16,
+    pub mode: IntegrationInstallMode,
     pub status: InstallPlanStatus,
     pub codex_home: PathBuf,
     pub codex_version: Option<String>,
@@ -78,6 +86,7 @@ pub struct IntegrationInstallPlan {
     pub config_change: PlannedFileChange,
     pub hooks_change: PlannedFileChange,
     pub notify: PlannedNotifyEntry,
+    pub previous_notify_argv: Option<Vec<String>>,
     pub hook_additions: Vec<PlannedHookEntry>,
     pub trust_requirements: Vec<String>,
     pub verification_command: Vec<String>,
@@ -89,8 +98,36 @@ pub fn build_install_plan(
     hook_binary: &Path,
     timestamp_ms: u64,
 ) -> IntegrationInstallPlan {
+    build_plan(
+        inspection,
+        hook_binary,
+        timestamp_ms,
+        IntegrationInstallMode::Exclusive,
+    )
+}
+
+pub fn build_coexistence_install_plan(
+    inspection: &IntegrationInspection,
+    hook_binary: &Path,
+    timestamp_ms: u64,
+) -> IntegrationInstallPlan {
+    build_plan(
+        inspection,
+        hook_binary,
+        timestamp_ms,
+        IntegrationInstallMode::Coexist,
+    )
+}
+
+fn build_plan(
+    inspection: &IntegrationInspection,
+    hook_binary: &Path,
+    timestamp_ms: u64,
+    mode: IntegrationInstallMode,
+) -> IntegrationInstallPlan {
+    let previous_notify_argv = coexistence_original_argv(inspection, mode);
     let notify = PlannedNotifyEntry {
-        argv: notify_argv(hook_binary),
+        argv: notify_argv(hook_binary, previous_notify_argv.as_deref()),
     };
     let hook_additions = HOOK_SURFACES
         .into_iter()
@@ -114,10 +151,13 @@ pub fn build_install_plan(
     }
     let status = if !blocking_reasons.is_empty() {
         InstallPlanStatus::Blocked
-    } else if matches!(
-        inspection.notify.kind,
-        IntegrationKind::Other | IntegrationKind::Invalid
-    ) {
+    } else if inspection.notify.kind == IntegrationKind::Invalid {
+        blocking_reasons
+            .push("The existing notify value is invalid and cannot be preserved.".to_owned());
+        InstallPlanStatus::Conflict
+    } else if inspection.notify.kind == IntegrationKind::Other
+        && mode == IntegrationInstallMode::Exclusive
+    {
         blocking_reasons
             .push("An existing non-Lili notify command requires explicit coexistence.".to_owned());
         InstallPlanStatus::Conflict
@@ -127,7 +167,9 @@ pub fn build_install_plan(
     let config_action = match status {
         InstallPlanStatus::Blocked => PlannedFileAction::Blocked,
         InstallPlanStatus::Conflict => PlannedFileAction::Conflict,
-        InstallPlanStatus::Ready if inspection.notify.kind == IntegrationKind::Lili => {
+        InstallPlanStatus::Ready
+            if inspection.notify.argv.as_deref() == Some(notify.argv.as_slice()) =>
+        {
             PlannedFileAction::Unchanged
         }
         InstallPlanStatus::Ready => action_for(&inspection.config),
@@ -151,6 +193,7 @@ pub fn build_install_plan(
 
     IntegrationInstallPlan {
         schema_version: 1,
+        mode,
         status,
         codex_home: inspection.codex_home.clone(),
         codex_version: inspection.codex_version.clone(),
@@ -158,6 +201,7 @@ pub fn build_install_plan(
         config_change,
         hooks_change,
         notify,
+        previous_notify_argv,
         hook_additions,
         trust_requirements: vec![
             "Review the absolute lili-hook path before applying this plan.".to_owned(),
@@ -175,13 +219,41 @@ pub fn build_install_plan(
     }
 }
 
-fn notify_argv(hook_binary: &Path) -> Vec<String> {
-    vec![
+fn notify_argv(hook_binary: &Path, previous: Option<&[String]>) -> Vec<String> {
+    let mut argv = vec![
         hook_binary.display().to_string(),
         "--integration-id".to_owned(),
         LILI_INTEGRATION_ID.to_owned(),
-        "--json-argv".to_owned(),
-    ]
+    ];
+    match previous {
+        Some(previous) => {
+            argv.push("--coexist-notify-json".to_owned());
+            argv.push(serde_json::to_string(previous).expect("notify argv must serialize"));
+        }
+        None => argv.push("--json-argv".to_owned()),
+    }
+    argv
+}
+
+fn coexistence_original_argv(
+    inspection: &IntegrationInspection,
+    mode: IntegrationInstallMode,
+) -> Option<Vec<String>> {
+    if mode != IntegrationInstallMode::Coexist {
+        return None;
+    }
+    if inspection.notify.kind == IntegrationKind::Other {
+        return inspection.notify.argv.clone();
+    }
+    let argv = inspection.notify.argv.as_deref()?;
+    if argv.get(1).map(String::as_str) != Some("--integration-id")
+        || argv.get(2).map(String::as_str) != Some(LILI_INTEGRATION_ID)
+        || argv.get(3).map(String::as_str) != Some("--coexist-notify-json")
+        || argv.len() != 5
+    {
+        return None;
+    }
+    serde_json::from_str(&argv[4]).ok()
 }
 
 fn planned_hook(
@@ -310,6 +382,34 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.0.join("config.toml")).unwrap(),
             "notify = [\"existing\"]\n"
+        );
+    }
+
+    #[test]
+    fn explicit_coexistence_wraps_the_original_notify_argv() {
+        let temp = TempDir::new();
+        fs::write(
+            temp.0.join("config.toml"),
+            "notify = [\"existing\", \"--channel\", \"pet\"]\n",
+        )
+        .unwrap();
+        let hook_binary = temp.0.join("lili-hook");
+        let inspection = inspect_with_version(&temp.0, Some("0.147.0".to_owned()));
+        let plan = build_coexistence_install_plan(&inspection, &hook_binary, 42);
+        assert_eq!(plan.status, InstallPlanStatus::Ready);
+        assert_eq!(plan.mode, IntegrationInstallMode::Coexist);
+        assert_eq!(
+            plan.previous_notify_argv,
+            Some(vec![
+                "existing".to_owned(),
+                "--channel".to_owned(),
+                "pet".to_owned(),
+            ])
+        );
+        assert_eq!(plan.notify.argv[3], "--coexist-notify-json");
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&plan.notify.argv[4]).unwrap(),
+            plan.previous_notify_argv.unwrap()
         );
     }
 }

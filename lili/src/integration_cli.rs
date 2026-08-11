@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 
-use lili_integration::{build_install_plan, inspect, install, load_plan};
+use lili_integration::{
+    build_coexistence_install_plan, build_install_plan, inspect, install, load_plan,
+};
 use lili_pet::resolve_codex_home;
 
 pub fn try_run(arguments: &[OsString]) -> Option<u8> {
@@ -12,8 +14,13 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     if subcommand == Some("install") {
         return Some(run_install(arguments));
     }
-    if arguments.len() != 2 || !matches!(subcommand, Some("inspect" | "plan")) {
-        eprintln!("usage: lili integrate <inspect|plan|install --plan <path>>");
+    let coexist = arguments.len() == 3
+        && subcommand == Some("plan")
+        && arguments
+            .get(2)
+            .is_some_and(|argument| argument == "--coexist");
+    if !(arguments.len() == 2 && matches!(subcommand, Some("inspect" | "plan"))) && !coexist {
+        eprintln!("usage: lili integrate <inspect|plan [--coexist]|install --plan <path>>");
         return Some(2);
     }
     let codex_home = match resolve_codex_home() {
@@ -28,11 +35,16 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
         serde_json::to_value(inspection)
     } else {
         let hook_binary = packaged_hook_binary();
-        serde_json::to_value(build_install_plan(
-            &inspection,
-            &hook_binary,
-            unix_time_ms(),
-        ))
+        let timestamp_ms = unix_time_ms();
+        if coexist {
+            serde_json::to_value(build_coexistence_install_plan(
+                &inspection,
+                &hook_binary,
+                timestamp_ms,
+            ))
+        } else {
+            serde_json::to_value(build_install_plan(&inspection, &hook_binary, timestamp_ms))
+        }
     };
     let output = match output {
         Ok(output) => output,

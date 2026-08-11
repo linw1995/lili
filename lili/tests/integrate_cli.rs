@@ -71,3 +71,35 @@ fn plan_cli_reports_exact_changes_without_mutating_configuration() {
     assert!(!temp.0.join("config.toml").exists());
     assert!(!temp.0.join("hooks.json").exists());
 }
+
+#[test]
+fn coexistence_plan_requires_explicit_mode_and_preserves_argv() {
+    let temp = TempDir::new();
+    fs::write(
+        temp.0.join("config.toml"),
+        "notify = [\"existing\", \"--channel\", \"pet\"]\n",
+    )
+    .unwrap();
+    let default = Command::new(env!("CARGO_BIN_EXE_lili"))
+        .args(["integrate", "plan"])
+        .env("CODEX_HOME", &temp.0)
+        .output()
+        .unwrap();
+    let default: serde_json::Value = serde_json::from_slice(&default.stdout).unwrap();
+    assert_eq!(default["status"], "conflict");
+
+    let coexist = Command::new(env!("CARGO_BIN_EXE_lili"))
+        .args(["integrate", "plan", "--coexist"])
+        .env("CODEX_HOME", &temp.0)
+        .output()
+        .unwrap();
+    assert_eq!(coexist.status.code(), Some(0));
+    let coexist: serde_json::Value = serde_json::from_slice(&coexist.stdout).unwrap();
+    assert_eq!(coexist["status"], "ready");
+    assert_eq!(coexist["mode"], "coexist");
+    assert_eq!(coexist["notify"]["argv"][3], "--coexist-notify-json");
+    assert_eq!(
+        coexist["previousNotifyArgv"],
+        serde_json::json!(["existing", "--channel", "pet"])
+    );
+}

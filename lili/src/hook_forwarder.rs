@@ -1,4 +1,10 @@
-use std::{ffi::OsString, io::Read, path::Path, time::Duration};
+use std::{
+    ffi::OsString,
+    io::Read,
+    path::Path,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use lili_integration::LILI_INTEGRATION_ID;
 use lili_pet::resolve_codex_home;
@@ -56,13 +62,30 @@ impl HookResult {
             diagnostic: Some(diagnostic),
         }
     }
+
+    fn isolated_success() -> Self {
+        Self {
+            exit_code: HookExitCode::Success,
+            outcome: None,
+            diagnostic: None,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum HookInvocation {
+    Direct(Vec<u8>),
+    Coexist {
+        original_argv: Vec<String>,
+        payload: Vec<u8>,
+    },
 }
 
 pub async fn run_from_environment() -> HookResult {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let mut stdin = std::io::stdin().lock();
-    let payload = match read_hook_payload(&arguments, &mut stdin) {
-        Ok(payload) => payload,
+    let invocation = match read_hook_invocation(&arguments, &mut stdin) {
+        Ok(invocation) => invocation,
         Err(result) => return result,
     };
     let codex_home = match resolve_codex_home() {
@@ -74,7 +97,19 @@ pub async fn run_from_environment() -> HookResult {
             );
         }
     };
-    process_payload(&codex_home, &payload, unix_time_ms()).await
+    match invocation {
+        HookInvocation::Direct(payload) => {
+            process_payload(&codex_home, &payload, unix_time_ms()).await
+        }
+        HookInvocation::Coexist {
+            original_argv,
+            payload,
+        } => {
+            let original_started = launch_original_notify(&original_argv, &payload);
+            let lili_result = process_payload(&codex_home, &payload, unix_time_ms()).await;
+            isolate_coexistence_result(original_started, lili_result)
+        }
+    }
 }
 
 pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> HookResult {
@@ -121,10 +156,24 @@ pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> 
     }
 }
 
+#[cfg(test)]
 fn read_hook_payload<R: Read>(
     arguments: &[OsString],
     stdin: &mut R,
 ) -> Result<Vec<u8>, HookResult> {
+    match read_hook_invocation(arguments, stdin)? {
+        HookInvocation::Direct(payload) => Ok(payload),
+        HookInvocation::Coexist { .. } => Err(HookResult::failure(
+            HookExitCode::Usage,
+            "coexistence invocation is not a direct hook payload",
+        )),
+    }
+}
+
+fn read_hook_invocation<R: Read>(
+    arguments: &[OsString],
+    stdin: &mut R,
+) -> Result<HookInvocation, HookResult> {
     let arguments = match arguments {
         [flag, integration_id, rest @ ..] if flag == "--integration-id" => {
             if integration_id != LILI_INTEGRATION_ID {
@@ -138,17 +187,34 @@ fn read_hook_payload<R: Read>(
         _ => arguments,
     };
     match arguments {
-        [mode, payload] if mode == "--json-argv" => {
-            let payload = payload.to_str().ok_or_else(|| {
-                HookResult::failure(HookExitCode::InvalidInput, "hook argv must be valid UTF-8")
+        [mode, encoded_argv, payload] if mode == "--coexist-notify-json" => {
+            let encoded_argv = encoded_argv.to_str().ok_or_else(|| {
+                HookResult::failure(
+                    HookExitCode::InvalidInput,
+                    "coexistence argv must be valid UTF-8",
+                )
             })?;
-            if payload.len() > MAX_PROVIDER_PAYLOAD_BYTES {
+            let original_argv =
+                serde_json::from_str::<Vec<String>>(encoded_argv).map_err(|_| {
+                    HookResult::failure(
+                        HookExitCode::InvalidInput,
+                        "coexistence argv must be a JSON string array",
+                    )
+                })?;
+            if original_argv.first().is_none_or(String::is_empty) {
                 return Err(HookResult::failure(
                     HookExitCode::InvalidInput,
-                    "hook payload exceeds 64 KiB",
+                    "coexistence argv must contain a command",
                 ));
             }
-            Ok(payload.as_bytes().to_vec())
+            let payload = bounded_argv_payload(payload)?;
+            Ok(HookInvocation::Coexist {
+                original_argv,
+                payload,
+            })
+        }
+        [mode, payload] if mode == "--json-argv" => {
+            bounded_argv_payload(payload).map(HookInvocation::Direct)
         }
         [mode] if mode == "--json-stdin" => {
             let mut payload = Vec::new();
@@ -164,12 +230,52 @@ fn read_hook_payload<R: Read>(
                     "hook payload exceeds 64 KiB",
                 ));
             }
-            Ok(payload)
+            Ok(HookInvocation::Direct(payload))
         }
         _ => Err(HookResult::failure(
             HookExitCode::Usage,
             "usage: lili-hook --json-argv <json> | --json-stdin",
         )),
+    }
+}
+
+fn bounded_argv_payload(payload: &OsString) -> Result<Vec<u8>, HookResult> {
+    let payload = payload.to_str().ok_or_else(|| {
+        HookResult::failure(HookExitCode::InvalidInput, "hook argv must be valid UTF-8")
+    })?;
+    if payload.len() > MAX_PROVIDER_PAYLOAD_BYTES {
+        return Err(HookResult::failure(
+            HookExitCode::InvalidInput,
+            "hook payload exceeds 64 KiB",
+        ));
+    }
+    Ok(payload.as_bytes().to_vec())
+}
+
+fn launch_original_notify(argv: &[String], payload: &[u8]) -> bool {
+    let Some(program) = argv.first().filter(|program| !program.is_empty()) else {
+        return false;
+    };
+    let Ok(payload) = std::str::from_utf8(payload) else {
+        return false;
+    };
+    Command::new(program)
+        .args(&argv[1..])
+        .arg(payload)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+fn isolate_coexistence_result(original_started: bool, lili_result: HookResult) -> HookResult {
+    if lili_result.exit_code == HookExitCode::Success {
+        lili_result
+    } else if original_started {
+        HookResult::isolated_success()
+    } else {
+        lili_result
     }
 }
 
@@ -253,6 +359,53 @@ mod tests {
                 .unwrap_err()
                 .exit_code,
             HookExitCode::Usage
+        );
+    }
+
+    #[test]
+    fn coexistence_preserves_original_argv_and_appends_one_payload() {
+        let payload = String::from_utf8(payload()).unwrap();
+        let encoded = serde_json::to_string(&vec![
+            "existing-notifier".to_owned(),
+            "--channel".to_owned(),
+            "pet".to_owned(),
+        ])
+        .unwrap();
+        let invocation = read_hook_invocation(
+            &[
+                OsString::from("--integration-id"),
+                OsString::from(LILI_INTEGRATION_ID),
+                OsString::from("--coexist-notify-json"),
+                OsString::from(encoded),
+                OsString::from(&payload),
+            ],
+            &mut Cursor::new(Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(
+            invocation,
+            HookInvocation::Coexist {
+                original_argv: vec![
+                    "existing-notifier".to_owned(),
+                    "--channel".to_owned(),
+                    "pet".to_owned(),
+                ],
+                payload: payload.into_bytes(),
+            }
+        );
+    }
+
+    #[test]
+    fn coexistence_failures_do_not_mask_the_other_delivery() {
+        let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed");
+        assert_eq!(
+            isolate_coexistence_result(true, lili_failure).exit_code,
+            HookExitCode::Success
+        );
+        let lili_success = HookResult::success(HookOutcome::Delivered);
+        assert_eq!(
+            isolate_coexistence_result(false, lili_success).exit_code,
+            HookExitCode::Success
         );
     }
 

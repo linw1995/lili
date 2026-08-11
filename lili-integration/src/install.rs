@@ -11,8 +11,9 @@ use thiserror::Error;
 use toml_edit::{Array, DocumentMut, value};
 
 use crate::{
-    HOOKS_FILE_NAME, InstallPlanStatus, IntegrationInstallPlan, IntegrationKind,
-    LILI_INTEGRATION_ID, PlannedFileAction, build_install_plan, inspect_with_version, sha256_hex,
+    HOOKS_FILE_NAME, InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan,
+    IntegrationKind, LILI_INTEGRATION_ID, PlannedFileAction, build_coexistence_install_plan,
+    build_install_plan, inspect_with_version, sha256_hex,
 };
 
 const PROVENANCE_FILE_NAME: &str = "integration.json";
@@ -36,7 +37,9 @@ pub struct IntegrationProvenance {
     pub integration_id: String,
     pub installed_at_ms: u64,
     pub hook_binary: PathBuf,
+    pub mode: IntegrationInstallMode,
     pub notify_argv: Vec<String>,
+    pub previous_notify_argv: Option<Vec<String>>,
     pub hook_commands: Vec<String>,
     pub config: InstalledFileProvenance,
     pub hooks: InstalledFileProvenance,
@@ -152,17 +155,37 @@ fn validate_plan(plan: &IntegrationInstallPlan) -> Result<(), InstallError> {
         || plan.notify.argv.first().map(Path::new) != Some(plan.hook_binary.as_path())
         || plan.notify.argv.get(1).map(String::as_str) != Some("--integration-id")
         || plan.notify.argv.get(2).map(String::as_str) != Some(LILI_INTEGRATION_ID)
-        || plan.notify.argv.get(3).map(String::as_str) != Some("--json-argv")
         || plan.verification_command.first() != plan.notify.argv.first()
     {
         return Err(InstallError::InvalidPlan);
+    }
+    match (plan.mode, plan.previous_notify_argv.as_deref()) {
+        (IntegrationInstallMode::Exclusive, None)
+            if plan.notify.argv.len() == 4
+                && plan.notify.argv.get(3).map(String::as_str) == Some("--json-argv") => {}
+        (IntegrationInstallMode::Coexist, Some(previous))
+            if !previous.is_empty()
+                && plan.notify.argv.len() == 5
+                && plan.notify.argv.get(3).map(String::as_str) == Some("--coexist-notify-json")
+                && plan.notify.argv.get(4) == serde_json::to_string(previous).ok().as_ref() => {}
+        (IntegrationInstallMode::Coexist, None)
+            if plan.notify.argv.len() == 4
+                && plan.notify.argv.get(3).map(String::as_str) == Some("--json-argv") => {}
+        _ => return Err(InstallError::InvalidPlan),
     }
     Ok(())
 }
 
 fn validate_current_plan(plan: &IntegrationInstallPlan) -> Result<(), InstallError> {
     let inspection = inspect_with_version(&plan.codex_home, plan.codex_version.clone());
-    let expected = build_install_plan(&inspection, &plan.hook_binary, plan_timestamp(plan)?);
+    let expected = match plan.mode {
+        IntegrationInstallMode::Exclusive => {
+            build_install_plan(&inspection, &plan.hook_binary, plan_timestamp(plan)?)
+        }
+        IntegrationInstallMode::Coexist => {
+            build_coexistence_install_plan(&inspection, &plan.hook_binary, plan_timestamp(plan)?)
+        }
+    };
     if expected != *plan {
         return Err(InstallError::InvalidPlan);
     }
@@ -322,7 +345,9 @@ fn build_provenance(
         integration_id: LILI_INTEGRATION_ID.to_owned(),
         installed_at_ms,
         hook_binary: plan.hook_binary.clone(),
+        mode: plan.mode,
         notify_argv: plan.notify.argv.clone(),
+        previous_notify_argv: plan.previous_notify_argv.clone(),
         hook_commands,
         config: InstalledFileProvenance {
             path: plan.config_change.target.clone(),
@@ -475,7 +500,7 @@ pub enum InstallError {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::{build_install_plan, inspect_with_version};
+    use crate::{build_coexistence_install_plan, build_install_plan, inspect_with_version};
 
     use super::*;
 
@@ -567,5 +592,36 @@ mod tests {
             "model = \"second\"\n"
         );
         assert!(!temp.0.join(HOOKS_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn coexistence_install_is_idempotent_and_records_original_argv() {
+        let temp = TempDir::new();
+        fs::write(
+            temp.0.join(crate::CONFIG_FILE_NAME),
+            "notify = [\"existing\", \"--channel\", \"pet\"]\n",
+        )
+        .unwrap();
+        let hook_binary = temp.0.join("bin/lili-hook");
+        let inspection = inspect_with_version(&temp.0, Some("0.147.0".to_owned()));
+        let plan = build_coexistence_install_plan(&inspection, &hook_binary, 42);
+        let first = install_with_verifier(&plan, |_| Ok(())).unwrap();
+        let provenance: IntegrationProvenance =
+            serde_json::from_slice(&fs::read(first.provenance).unwrap()).unwrap();
+        assert_eq!(provenance.mode, IntegrationInstallMode::Coexist);
+        assert_eq!(
+            provenance.previous_notify_argv,
+            Some(vec![
+                "existing".to_owned(),
+                "--channel".to_owned(),
+                "pet".to_owned(),
+            ])
+        );
+
+        let inspection = inspect_with_version(&temp.0, Some("0.147.0".to_owned()));
+        let plan = build_coexistence_install_plan(&inspection, &hook_binary, 43);
+        assert_eq!(plan.config_change.action, PlannedFileAction::Unchanged);
+        let second = install_with_verifier(&plan, |_| Ok(())).unwrap();
+        assert!(!second.changed);
     }
 }

@@ -18,8 +18,9 @@ pub use install::{
     install_with_verifier, load_plan,
 };
 pub use plan::{
-    InstallPlanStatus, IntegrationInstallPlan, PlannedFileAction, PlannedFileChange,
-    PlannedHookEntry, PlannedNotifyEntry, build_install_plan,
+    InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, PlannedFileAction,
+    PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry, build_coexistence_install_plan,
+    build_install_plan,
 };
 
 pub const INTEGRATION_SCHEMA_VERSION: u16 = 1;
@@ -75,6 +76,8 @@ pub struct IntegrationFileInspection {
 pub struct NotifyInspection {
     pub kind: IntegrationKind,
     pub argument_count: usize,
+    #[serde(skip)]
+    pub(crate) argv: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -279,6 +282,7 @@ fn missing_notify() -> NotifyInspection {
     NotifyInspection {
         kind: IntegrationKind::Missing,
         argument_count: 0,
+        argv: None,
     }
 }
 
@@ -290,6 +294,7 @@ fn inspect_notify(document: &DocumentMut) -> NotifyInspection {
         return NotifyInspection {
             kind: IntegrationKind::Invalid,
             argument_count: 0,
+            argv: None,
         };
     };
     let values = array
@@ -300,18 +305,21 @@ fn inspect_notify(document: &DocumentMut) -> NotifyInspection {
         return NotifyInspection {
             kind: IntegrationKind::Invalid,
             argument_count: array.len(),
+            argv: None,
         };
     };
+    let kind = if values
+        .iter()
+        .any(|value| value.contains(LILI_INTEGRATION_ID))
+    {
+        IntegrationKind::Lili
+    } else {
+        IntegrationKind::Other
+    };
     NotifyInspection {
-        kind: if values
-            .iter()
-            .any(|value| value.contains(LILI_INTEGRATION_ID))
-        {
-            IntegrationKind::Lili
-        } else {
-            IntegrationKind::Other
-        },
+        kind,
         argument_count: values.len(),
+        argv: Some(values.into_iter().map(str::to_owned).collect()),
     }
 }
 
