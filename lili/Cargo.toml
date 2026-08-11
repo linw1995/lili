@@ -20,6 +20,7 @@ hmac.workspace = true
 lili-app-state = { path = "../lili-app-state" }
 lili-pet = { path = "../lili-pet" }
 lili-server = { path = "../lili-server" }
+lili-session = { path = "../lili-session" }
 rcgen = "0.14"
 rustls = "0.23"
 serde.workspace = true

@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post, put},
 };
 use leptos::prelude::*;
-use lili_app_state::{AppState, UserSettings};
+use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
 use lili_ui::App;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -40,6 +40,7 @@ struct Health {
 struct Diagnostics {
     status: &'static str,
     transport: &'static str,
+    ingestion: IngestionDiagnostics,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -101,10 +102,11 @@ async fn update_settings(
     Json(state.replace_settings(settings).await)
 }
 
-async fn diagnostics() -> Json<Diagnostics> {
+async fn diagnostics(State(state): State<AppState>) -> Json<Diagnostics> {
     Json(Diagnostics {
         status: "ok",
         transport: "fixture",
+        ingestion: state.ingestion_diagnostics().await,
     })
 }
 

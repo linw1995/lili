@@ -41,7 +41,7 @@
 
 - [x] 4.1 Define the bounded authenticated forwarding protocol, rotating instance credentials, nonce replay window, acknowledgement semantics, and platform endpoint abstraction.
 - [x] 4.2 Implement owner-only Unix domain socket delivery with peer checks on macOS/Linux and named-pipe delivery with current-user ACLs on Windows.
-- [ ] 4.3 Implement the native ingestion actor that verifies messages, reduces accepted events once, publishes snapshots, and exposes aggregate rejection diagnostics.
+- [x] 4.3 Implement the native ingestion actor that verifies messages, reduces accepted events once, publishes snapshots, and exposes aggregate rejection diagnostics.
 - [ ] 4.4 Implement atomic owner-only offline spooling, claim-by-rename consumption, age/count/byte limits, priority-aware eviction, crash recovery, and aggregate drop metrics.
 - [ ] 4.5 Implement `lili-hook` modes for JSON argv and JSON stdin with strict input bounds, short connection deadlines, spool fallback, deterministic exit codes, and no approval output.
 - [ ] 4.6 Add adversarial tests for forged MACs, replayed nonces, wrong peer ownership, partial frames, oversized messages, symlinked spool paths, concurrent forwarders, and interrupted spool writes.

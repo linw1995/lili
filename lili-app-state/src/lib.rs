@@ -1,3 +1,4 @@
+mod ingestion;
 mod persistence;
 
 use std::sync::Arc;
@@ -11,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+pub use ingestion::{
+    DEFAULT_INGESTION_QUEUE_CAPACITY, IngestionDiagnostics, IngestionError, NativeIngestionActor,
+    NativeIngestionHandle, RejectionCategory,
+};
 pub use persistence::{
     AppStateStore, PersistenceError, PersistentApplicationState, WindowPlacement,
 };
@@ -37,6 +42,7 @@ pub struct AppState {
     session_reducer: Arc<Mutex<SessionReducer>>,
     pet_catalog: Arc<PetCatalog>,
     pet_asset: Arc<ApprovedPetAsset>,
+    ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +93,7 @@ impl AppState {
             session_reducer: Arc::new(Mutex::new(reducer)),
             pet_catalog: Arc::new(pet_catalog),
             pet_asset: Arc::new(pet_asset),
+            ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
         }
     }
 
@@ -139,6 +146,14 @@ impl AppState {
             window_placement,
             self.session_reducer.lock().await.persistent_state(),
         )
+    }
+
+    pub async fn ingestion_diagnostics(&self) -> IngestionDiagnostics {
+        self.ingestion_diagnostics.read().await.clone()
+    }
+
+    pub(crate) async fn replace_ingestion_diagnostics(&self, diagnostics: IngestionDiagnostics) {
+        *self.ingestion_diagnostics.write().await = diagnostics;
     }
 }
 

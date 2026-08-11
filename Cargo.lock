@@ -2584,6 +2584,7 @@ dependencies = [
  "lili-app-state",
  "lili-pet",
  "lili-server",
+ "lili-session",
  "objc2",
  "objc2-foundation",
  "objc2-security",

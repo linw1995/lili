@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
-use lili_app_state::{AppState, AppStateStore, WindowPlacement};
+use lili_app_state::{
+    AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, NativeIngestionActor,
+    NativeIngestionHandle, WindowPlacement,
+};
 use lili_pet::{PetCatalog, resolve_codex_home};
 use lili_server::{StaticAssets, build_router};
+use lili_session::{BoundForwardingEndpoint, ForwardingTransportError};
 use loopback::LoopbackServer;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
@@ -40,7 +44,12 @@ fn run_desktop(smoke: bool) {
         cfg!(debug_assertions),
     )
     .map(StaticAssets::new);
-    let (state, state_store) = load_app_state();
+    let (state, state_store, codex_home) = load_app_state();
+    if let Some(codex_home) = codex_home
+        && let Err(error) = start_native_ingestion(&codex_home, state.clone())
+    {
+        tracing::warn!(%error, "native event ingestion was not started");
+    }
     let loopback = LoopbackServer::bind(build_router(state.clone(), assets))
         .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
@@ -120,12 +129,12 @@ fn run_desktop(smoke: bool) {
     });
 }
 
-fn load_app_state() -> (AppState, Option<AppStateStore>) {
+fn load_app_state() -> (AppState, Option<AppStateStore>, Option<PathBuf>) {
     let codex_home = match resolve_codex_home() {
         Ok(codex_home) => codex_home,
         Err(error) => {
             tracing::warn!(%error, "Codex home was not resolved");
-            return (AppState::default(), None);
+            return (AppState::default(), None, None);
         }
     };
     let store = AppStateStore::for_codex_home(&codex_home);
@@ -134,20 +143,87 @@ fn load_app_state() -> (AppState, Option<AppStateStore>) {
             let pet_catalog = PetCatalog::load_with_selection(&codex_home, state.selected_pet_id());
             let state = AppState::with_persistent_state(pet_catalog, state)
                 .expect("validated application state must restore");
-            (state, Some(store))
+            (state, Some(store), Some(codex_home))
         }
-        Ok(None) => (
-            AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
-            Some(store),
-        ),
+        Ok(None) => {
+            let state = AppState::with_pet_catalog(PetCatalog::load(&codex_home));
+            (state, Some(store), Some(codex_home))
+        }
         Err(error) => {
             tracing::warn!(%error, "persisted application state was ignored");
             (
                 AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
                 None,
+                Some(codex_home),
             )
         }
     }
+}
+
+fn start_native_ingestion(
+    codex_home: &Path,
+    state: AppState,
+) -> Result<(), ForwardingTransportError> {
+    let runtime_dir = codex_home.join("lili").join("runtime");
+    let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
+        let endpoint = BoundForwardingEndpoint::bind(&runtime_dir)?;
+        let credentials = endpoint.credentials();
+        let (handle, actor) =
+            NativeIngestionActor::channel(state, credentials, DEFAULT_INGESTION_QUEUE_CAPACITY)
+                .await;
+        Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
+    })?;
+    tauri::async_runtime::spawn(actor.run());
+    tauri::async_runtime::spawn(serve_native_ingestion(endpoint, handle));
+    Ok(())
+}
+
+async fn serve_native_ingestion(endpoint: BoundForwardingEndpoint, handle: NativeIngestionHandle) {
+    loop {
+        match endpoint.accept().await {
+            Ok(connection) => {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(handle_native_connection(connection, handle));
+            }
+            Err(error) => {
+                let _ = handle.record_transport_rejection().await;
+                tracing::warn!(%error, "native event connection was rejected");
+            }
+        }
+    }
+}
+
+async fn handle_native_connection(
+    mut connection: lili_session::ForwardingConnection,
+    handle: NativeIngestionHandle,
+) {
+    let payload = match connection.read_payload().await {
+        Ok(payload) => payload,
+        Err(error) => {
+            let _ = handle.record_transport_rejection().await;
+            tracing::warn!(%error, "native event frame was rejected");
+            return;
+        }
+    };
+    let now_ms = unix_time_ms();
+    match handle.ingest(payload, now_ms).await {
+        Ok(acknowledgement) => {
+            if let Err(error) = connection.write_acknowledgement(&acknowledgement).await {
+                tracing::warn!(%error, "native event acknowledgement failed");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "native event message was rejected"),
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn current_window_placement(window: &tauri::WebviewWindow) -> Option<WindowPlacement> {
