@@ -6,11 +6,10 @@ use crate::{
     DisplayProjectContext, DisplaySummary, EventId, NormalizedSessionEvent, ProviderId,
     ProviderInputV1, ProviderProjectInputV1, SESSION_SCHEMA_VERSION, SessionEventKind, SessionId,
     SourceCapabilities, TurnId,
-    types::{MAX_PROJECT_LABEL_CHARS, MAX_SUMMARY_CHARS},
+    types::{MAX_PROJECT_LABEL_CHARS, MAX_SOURCE_DISCRIMINATOR_CHARS, MAX_SUMMARY_CHARS},
 };
 
 pub const MAX_PROVIDER_PAYLOAD_BYTES: usize = 64 * 1024;
-const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NormalizationError {

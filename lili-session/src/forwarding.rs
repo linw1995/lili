@@ -372,6 +372,10 @@ impl ForwardingVerifier {
             .chain_update(signing_bytes)
             .verify_slice(&supplied_mac)
             .map_err(|_| ForwardingProtocolError::InvalidMac)?;
+        message
+            .event
+            .validate()
+            .map_err(|_| ForwardingProtocolError::InvalidEvent)?;
 
         self.prune_nonces(now_ms);
         if self.accepted_nonce_set.contains_key(&message.nonce) {
@@ -494,6 +498,7 @@ pub enum ForwardingProtocolError {
     Expired,
     ReplayedNonce,
     MismatchedAcknowledgement,
+    InvalidEvent,
     Randomness,
 }
 
@@ -514,6 +519,7 @@ impl fmt::Display for ForwardingProtocolError {
             Self::MismatchedAcknowledgement => {
                 "forwarding acknowledgement does not match the message"
             }
+            Self::InvalidEvent => "forwarding event violates normalized invariants",
             Self::Randomness => "secure randomness is unavailable",
         };
         formatter.write_str(message)

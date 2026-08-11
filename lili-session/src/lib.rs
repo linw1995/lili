@@ -1,6 +1,7 @@
 mod forwarding;
 mod normalization;
 mod reducer;
+mod spool;
 mod transport;
 mod types;
 
@@ -17,16 +18,19 @@ pub use reducer::{
     DEFAULT_MINIMUM_DWELL_MS, ReducerRestoreError, ReductionOutcome, SessionReducer,
     SessionReducerState,
 };
+pub use spool::{
+    ClaimedSpoolRecord, SpoolEnqueueOutcome, SpoolError, SpoolLimits, SpoolMetrics, SpoolStore,
+};
 pub use transport::{
     BoundForwardingEndpoint, ForwardingConnection, ForwardingCredentialStore,
     ForwardingTransportError, deliver_forwarding_message,
 };
 pub use types::{
     DisplayProjectContext, DisplaySummary, DisplayValueError, EventId, IdentityError,
-    NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
-    PresentationState, ProviderCapabilitiesInputV1, ProviderId, ProviderInputV1,
-    ProviderProjectInputV1, SessionEventKind, SessionId, SessionPhase, SessionSummary,
-    SessionViewSnapshot, SourceCapabilities, TurnId,
+    NormalizedEventValidationError, NormalizedSessionEvent, Notification, NotificationId,
+    NotificationKind, NotificationState, PresentationState, ProviderCapabilitiesInputV1,
+    ProviderId, ProviderInputV1, ProviderProjectInputV1, SessionEventKind, SessionId, SessionPhase,
+    SessionSummary, SessionViewSnapshot, SourceCapabilities, TurnId,
 };
 
 pub const SESSION_SCHEMA_VERSION: u16 = 1;

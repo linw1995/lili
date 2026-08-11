@@ -13,7 +13,7 @@ use lili_app_state::{
 };
 use lili_pet::{PetCatalog, resolve_codex_home};
 use lili_server::{StaticAssets, build_router};
-use lili_session::{BoundForwardingEndpoint, ForwardingTransportError};
+use lili_session::{BoundForwardingEndpoint, ForwardingTransportError, SpoolStore};
 use loopback::LoopbackServer;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
@@ -45,7 +45,8 @@ fn run_desktop(smoke: bool) {
     )
     .map(StaticAssets::new);
     let (state, state_store, codex_home) = load_app_state();
-    if let Some(codex_home) = codex_home
+    if !smoke
+        && let Some(codex_home) = codex_home
         && let Err(error) = start_native_ingestion(&codex_home, state.clone())
     {
         tracing::warn!(%error, "native event ingestion was not started");
@@ -174,8 +175,55 @@ fn start_native_ingestion(
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
     })?;
     tauri::async_runtime::spawn(actor.run());
-    tauri::async_runtime::spawn(serve_native_ingestion(endpoint, handle));
+    let spool = SpoolStore::for_codex_home(codex_home);
+    tauri::async_runtime::spawn(run_native_services(endpoint, handle, spool));
     Ok(())
+}
+
+async fn run_native_services(
+    endpoint: BoundForwardingEndpoint,
+    handle: NativeIngestionHandle,
+    spool: SpoolStore,
+) {
+    if let Err(error) = spool.recover_claims() {
+        tracing::warn!(%error, "offline event claims were not recovered");
+    }
+    drain_offline_spool(&spool, &handle).await;
+    serve_native_ingestion(endpoint, handle).await;
+}
+
+async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
+    if let Ok(metrics) = spool.metrics() {
+        let _ = handle.set_spool_metrics(metrics).await;
+    }
+    loop {
+        let claim = match spool.claim_next(unix_time_ms()) {
+            Ok(Some(claim)) => claim,
+            Ok(None) => break,
+            Err(error) => {
+                tracing::warn!(%error, "offline event spool could not be read");
+                break;
+            }
+        };
+        match handle.ingest_spooled(claim.event().clone()).await {
+            Ok(_) => {
+                if let Err(error) = claim.commit() {
+                    tracing::warn!(%error, "accepted offline event was not committed");
+                    break;
+                }
+            }
+            Err(error) => {
+                if let Err(release_error) = claim.release() {
+                    tracing::warn!(%release_error, "offline event claim was not released");
+                }
+                tracing::warn!(%error, "offline event ingestion became unavailable");
+                break;
+            }
+        }
+    }
+    if let Ok(metrics) = spool.metrics() {
+        let _ = handle.set_spool_metrics(metrics).await;
+    }
 }
 
 async fn serve_native_ingestion(endpoint: BoundForwardingEndpoint, handle: NativeIngestionHandle) {

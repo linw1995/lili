@@ -7,6 +7,7 @@ use crate::SESSION_SCHEMA_VERSION;
 const MAX_ID_BYTES: usize = 256;
 pub const MAX_PROJECT_LABEL_CHARS: usize = 128;
 pub const MAX_SUMMARY_CHARS: usize = 320;
+pub const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 128;
 
 macro_rules! bounded_identity {
     ($name:ident, $label:literal) => {
@@ -242,7 +243,58 @@ impl NormalizedSessionEvent {
     pub const fn current_version() -> u16 {
         SESSION_SCHEMA_VERSION
     }
+
+    pub fn validate(&self) -> Result<(), NormalizedEventValidationError> {
+        if self.version != SESSION_SCHEMA_VERSION {
+            return Err(NormalizedEventValidationError::UnsupportedVersion);
+        }
+        if !matches!(
+            self.event_type,
+            SessionEventKind::SessionStarted | SessionEventKind::SessionEnded
+        ) && self.turn_id.is_none()
+        {
+            return Err(NormalizedEventValidationError::MissingTurn);
+        }
+        if let Some(project) = &self.project {
+            DisplayProjectContext::parse(project.label.clone())
+                .map_err(|_| NormalizedEventValidationError::InvalidProject)?;
+        }
+        if let Some(summary) = &self.summary {
+            DisplaySummary::parse(summary.text.clone(), summary.truncated, summary.redacted)
+                .map_err(|_| NormalizedEventValidationError::InvalidSummary)?;
+        }
+        if self.source_discriminator.is_empty()
+            || self.source_discriminator.chars().count() > MAX_SOURCE_DISCRIMINATOR_CHARS
+            || self.source_discriminator.chars().any(char::is_control)
+        {
+            return Err(NormalizedEventValidationError::InvalidSource);
+        }
+        Ok(())
+    }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NormalizedEventValidationError {
+    UnsupportedVersion,
+    MissingTurn,
+    InvalidProject,
+    InvalidSummary,
+    InvalidSource,
+}
+
+impl fmt::Display for NormalizedEventValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedVersion => "normalized event version is unsupported",
+            Self::MissingTurn => "normalized turn event is missing a turn identity",
+            Self::InvalidProject => "normalized event project is invalid",
+            Self::InvalidSummary => "normalized event summary is invalid",
+            Self::InvalidSource => "normalized event source is invalid",
+        })
+    }
+}
+
+impl std::error::Error for NormalizedEventValidationError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

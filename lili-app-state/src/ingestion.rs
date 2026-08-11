@@ -1,6 +1,6 @@
 use lili_session::{
     ForwardingAck, ForwardingAckDisposition, ForwardingCredentials, ForwardingProtocolError,
-    ForwardingVerifier, ReductionOutcome,
+    ForwardingVerifier, NormalizedSessionEvent, ReductionOutcome, SpoolMetrics,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -30,6 +30,9 @@ pub struct IngestionDiagnostics {
     pub expired_rejections: u64,
     pub malformed_rejections: u64,
     pub transport_rejections: u64,
+    pub spool_expired_drops: u64,
+    pub spool_limit_drops: u64,
+    pub spool_malformed_drops: u64,
 }
 
 impl IngestionDiagnostics {
@@ -74,6 +77,30 @@ impl NativeIngestionHandle {
     pub async fn record_transport_rejection(&self) -> Result<(), IngestionError> {
         self.sender
             .send(IngestionCommand::TransportRejected)
+            .await
+            .map_err(|_| IngestionError::Unavailable)
+    }
+
+    pub async fn ingest_spooled(
+        &self,
+        event: NormalizedSessionEvent,
+    ) -> Result<ReductionOutcome, IngestionError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender
+            .send(IngestionCommand::IngestSpooled {
+                event,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| IngestionError::Unavailable)?;
+        response_receiver
+            .await
+            .map_err(|_| IngestionError::Unavailable)
+    }
+
+    pub async fn set_spool_metrics(&self, metrics: SpoolMetrics) -> Result<(), IngestionError> {
+        self.sender
+            .send(IngestionCommand::SetSpoolMetrics(metrics))
             .await
             .map_err(|_| IngestionError::Unavailable)
     }
@@ -126,6 +153,16 @@ impl NativeIngestionActor {
                         .record_rejection(RejectionCategory::Transport);
                     self.publish_diagnostics().await;
                 }
+                IngestionCommand::IngestSpooled { event, response } => {
+                    let outcome = self.reduce_event(event).await;
+                    let _ = response.send(outcome);
+                }
+                IngestionCommand::SetSpoolMetrics(metrics) => {
+                    self.diagnostics.spool_expired_drops = metrics.expired_drops;
+                    self.diagnostics.spool_limit_drops = metrics.limit_drops;
+                    self.diagnostics.spool_malformed_drops = metrics.malformed_drops;
+                    self.publish_diagnostics().await;
+                }
             }
         }
     }
@@ -143,30 +180,35 @@ impl NativeIngestionActor {
                 return Err(IngestionError::Protocol(error));
             }
         };
-        let outcome = self
-            .state
-            .apply_session_event(verified.event().clone())
-            .await;
+        let outcome = self.reduce_event(verified.event().clone()).await;
         let disposition = match outcome {
+            ReductionOutcome::Applied { .. } | ReductionOutcome::IgnoredStale => {
+                ForwardingAckDisposition::Accepted
+            }
+            ReductionOutcome::Duplicate => ForwardingAckDisposition::Duplicate,
+        };
+        Ok(verified.acknowledgement(disposition))
+    }
+
+    async fn reduce_event(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        let outcome = self.state.apply_session_event(event).await;
+        match outcome {
             ReductionOutcome::Applied { .. } => {
                 self.diagnostics.accepted_messages =
                     self.diagnostics.accepted_messages.saturating_add(1);
                 let _ = self.snapshot_sender.send(self.state.snapshot().await);
-                ForwardingAckDisposition::Accepted
             }
             ReductionOutcome::Duplicate => {
                 self.diagnostics.duplicate_events =
                     self.diagnostics.duplicate_events.saturating_add(1);
-                ForwardingAckDisposition::Duplicate
             }
             ReductionOutcome::IgnoredStale => {
                 self.diagnostics.accepted_messages =
                     self.diagnostics.accepted_messages.saturating_add(1);
-                ForwardingAckDisposition::Accepted
             }
-        };
+        }
         self.publish_diagnostics().await;
-        Ok(verified.acknowledgement(disposition))
+        outcome
     }
 
     async fn publish_diagnostics(&self) {
@@ -183,6 +225,11 @@ enum IngestionCommand {
         response: oneshot::Sender<Result<ForwardingAck, IngestionError>>,
     },
     TransportRejected,
+    IngestSpooled {
+        event: NormalizedSessionEvent,
+        response: oneshot::Sender<ReductionOutcome>,
+    },
+    SetSpoolMetrics(SpoolMetrics),
 }
 
 fn rejection_category(error: ForwardingProtocolError) -> RejectionCategory {
@@ -200,6 +247,7 @@ fn rejection_category(error: ForwardingProtocolError) -> RejectionCategory {
         | ForwardingProtocolError::InvalidCredential
         | ForwardingProtocolError::InvalidNonce
         | ForwardingProtocolError::MismatchedAcknowledgement
+        | ForwardingProtocolError::InvalidEvent
         | ForwardingProtocolError::Randomness => RejectionCategory::Malformed,
     }
 }
@@ -307,6 +355,22 @@ mod tests {
                 .authentication_rejections,
             1
         );
+
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn trusted_spooled_event_is_reduced_before_claim_commit() {
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let (handle, actor) = NativeIngestionActor::channel(state.clone(), credentials, 1).await;
+        let task = tokio::spawn(actor.run());
+        assert_eq!(
+            handle.ingest_spooled(event()).await.unwrap(),
+            ReductionOutcome::Applied { revision: 1 }
+        );
+        assert_eq!(state.snapshot().await.revision, 1);
 
         drop(handle);
         task.await.unwrap();
