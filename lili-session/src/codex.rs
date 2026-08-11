@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -17,6 +17,102 @@ const USER_PROMPT_SUBMIT_HOOK: &str = "UserPromptSubmit";
 const PERMISSION_REQUEST_HOOK: &str = "PermissionRequest";
 const STOP_HOOK: &str = "Stop";
 const SESSION_END_HOOK: &str = "SessionEnd";
+
+pub const TESTED_CODEX_VERSION: &str = "0.147.0";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexIntegrationSurface {
+    Notify,
+    SessionStart,
+    UserPromptSubmit,
+    PermissionRequest,
+    Stop,
+    SessionEnd,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingLifecycleCoverage {
+    SessionStart,
+    Active,
+    Attention,
+    Completion,
+    SessionEnd,
+    Failure,
+    AttentionResolution,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastAcceptedCodexEvent {
+    pub event_id: String,
+    pub event_type: crate::SessionEventKind,
+    pub occurred_at_ms: u64,
+    pub surface: CodexIntegrationSurface,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAdapterDiagnostics {
+    pub tested_codex_version: String,
+    pub codex_version: Option<String>,
+    pub discovered_surfaces: Vec<CodexIntegrationSurface>,
+    pub missing_lifecycle_coverage: Vec<MissingLifecycleCoverage>,
+    pub last_accepted_event: Option<LastAcceptedCodexEvent>,
+    pub remediation: Vec<String>,
+}
+
+impl CodexAdapterDiagnostics {
+    pub fn with_discovery(
+        codex_version: Option<&str>,
+        surfaces: impl IntoIterator<Item = CodexIntegrationSurface>,
+    ) -> Self {
+        let mut discovered_surfaces = surfaces.into_iter().collect::<Vec<_>>();
+        discovered_surfaces.sort_unstable();
+        discovered_surfaces.dedup();
+        let codex_version = bounded_version(codex_version);
+        let missing_lifecycle_coverage = missing_coverage(&discovered_surfaces);
+        let remediation = remediation(codex_version.as_deref(), &missing_lifecycle_coverage);
+        Self {
+            tested_codex_version: TESTED_CODEX_VERSION.to_owned(),
+            codex_version,
+            discovered_surfaces,
+            missing_lifecycle_coverage,
+            last_accepted_event: None,
+            remediation,
+        }
+    }
+
+    pub fn record_accepted_event(&mut self, event: &NormalizedSessionEvent) {
+        if event.provider.as_str() != "codex" {
+            return;
+        }
+        let Some(surface) = surface_from_source(&event.source_discriminator) else {
+            return;
+        };
+        if let Err(index) = self.discovered_surfaces.binary_search(&surface) {
+            self.discovered_surfaces.insert(index, surface);
+        }
+        self.missing_lifecycle_coverage = missing_coverage(&self.discovered_surfaces);
+        self.remediation = remediation(
+            self.codex_version.as_deref(),
+            &self.missing_lifecycle_coverage,
+        );
+        self.last_accepted_event = Some(LastAcceptedCodexEvent {
+            event_id: event.event_id.as_str().to_owned(),
+            event_type: event.event_type,
+            occurred_at_ms: event.occurred_at_ms,
+            surface,
+        });
+    }
+}
+
+impl Default for CodexAdapterDiagnostics {
+    fn default() -> Self {
+        Self::with_discovery(None, [])
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct NotifyInput {
@@ -206,6 +302,79 @@ fn lifecycle_source(
     Ok(source)
 }
 
+fn bounded_version(version: Option<&str>) -> Option<String> {
+    let version = version?.trim();
+    if version.is_empty() || version.len() > 64 || version.chars().any(char::is_control) {
+        return None;
+    }
+    Some(version.to_owned())
+}
+
+fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
+    if source == "notify" || source.starts_with("notify:") {
+        return Some(CodexIntegrationSurface::Notify);
+    }
+    match source.split(':').nth(1) {
+        Some(SESSION_START_HOOK) => Some(CodexIntegrationSurface::SessionStart),
+        Some(USER_PROMPT_SUBMIT_HOOK) => Some(CodexIntegrationSurface::UserPromptSubmit),
+        Some(PERMISSION_REQUEST_HOOK) => Some(CodexIntegrationSurface::PermissionRequest),
+        Some(STOP_HOOK) => Some(CodexIntegrationSurface::Stop),
+        Some(SESSION_END_HOOK) => Some(CodexIntegrationSurface::SessionEnd),
+        _ => None,
+    }
+}
+
+fn missing_coverage(surfaces: &[CodexIntegrationSurface]) -> Vec<MissingLifecycleCoverage> {
+    let has = |surface| surfaces.binary_search(&surface).is_ok();
+    let mut missing = Vec::new();
+    if !has(CodexIntegrationSurface::SessionStart) {
+        missing.push(MissingLifecycleCoverage::SessionStart);
+    }
+    if !has(CodexIntegrationSurface::UserPromptSubmit) {
+        missing.push(MissingLifecycleCoverage::Active);
+    }
+    if !has(CodexIntegrationSurface::PermissionRequest) {
+        missing.push(MissingLifecycleCoverage::Attention);
+    }
+    if !has(CodexIntegrationSurface::Notify) && !has(CodexIntegrationSurface::Stop) {
+        missing.push(MissingLifecycleCoverage::Completion);
+    }
+    if !has(CodexIntegrationSurface::SessionEnd) {
+        missing.push(MissingLifecycleCoverage::SessionEnd);
+    }
+    missing.push(MissingLifecycleCoverage::Failure);
+    missing.push(MissingLifecycleCoverage::AttentionResolution);
+    missing
+}
+
+fn remediation(codex_version: Option<&str>, missing: &[MissingLifecycleCoverage]) -> Vec<String> {
+    let mut guidance = Vec::new();
+    if codex_version.is_none() {
+        guidance.push("Run lili integrate inspect before changing Codex configuration.".to_owned());
+    } else if codex_version != Some(TESTED_CODEX_VERSION) {
+        guidance
+            .push("Review version-keyed fixture compatibility before enabling changes.".to_owned());
+    }
+    if missing.iter().any(|coverage| {
+        !matches!(
+            coverage,
+            MissingLifecycleCoverage::Failure | MissingLifecycleCoverage::AttentionResolution
+        )
+    }) {
+        guidance.push(
+            "Preview integration changes and enable only documented hook surfaces.".to_owned(),
+        );
+    }
+    if missing.contains(&MissingLifecycleCoverage::Failure)
+        || missing.contains(&MissingLifecycleCoverage::AttentionResolution)
+    {
+        guidance.push(
+            "Do not infer unsupported lifecycle distinctions from unrelated hooks.".to_owned(),
+        );
+    }
+    guidance
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +491,54 @@ mod tests {
         assert_eq!(
             normalize_lifecycle_json(payload, 42),
             Err(NormalizationError::UnsupportedEventType)
+        );
+    }
+
+    #[test]
+    fn compatibility_diagnostics_are_honest_about_missing_coverage() {
+        let mut diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(TESTED_CODEX_VERSION),
+            [
+                CodexIntegrationSurface::Notify,
+                CodexIntegrationSurface::SessionStart,
+                CodexIntegrationSurface::UserPromptSubmit,
+                CodexIntegrationSurface::PermissionRequest,
+                CodexIntegrationSurface::Stop,
+                CodexIntegrationSurface::SessionEnd,
+            ],
+        );
+        assert_eq!(diagnostics.codex_version.as_deref(), Some("0.147.0"));
+        assert_eq!(
+            diagnostics.missing_lifecycle_coverage,
+            [
+                MissingLifecycleCoverage::Failure,
+                MissingLifecycleCoverage::AttentionResolution
+            ]
+        );
+
+        let event = normalize_notify_json(NOTIFY_FIXTURE, 42).unwrap();
+        diagnostics.record_accepted_event(&event);
+        let last = diagnostics.last_accepted_event.unwrap();
+        assert_eq!(last.surface, CodexIntegrationSurface::Notify);
+        assert_eq!(last.event_type, SessionEventKind::TurnCompleted);
+    }
+
+    #[test]
+    fn unknown_or_unverified_versions_get_safe_remediation() {
+        let unknown = CodexAdapterDiagnostics::default();
+        assert!(unknown.codex_version.is_none());
+        assert!(
+            unknown
+                .remediation
+                .iter()
+                .any(|guidance| guidance.contains("integrate inspect"))
+        );
+        let newer = CodexAdapterDiagnostics::with_discovery(Some("0.148.0"), []);
+        assert!(
+            newer
+                .remediation
+                .iter()
+                .any(|guidance| guidance.contains("version-keyed fixture"))
         );
     }
 }

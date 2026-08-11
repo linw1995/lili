@@ -229,6 +229,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_expose_honest_adapter_compatibility() {
+        let response = build_router(AppState::default(), None)
+            .oneshot(
+                Request::get("/api/v1/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let diagnostics: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let adapter = &diagnostics["ingestion"]["codexAdapter"];
+        assert_eq!(adapter["testedCodexVersion"], "0.147.0");
+        assert!(adapter["codexVersion"].is_null());
+        assert_eq!(adapter["discoveredSurfaces"], serde_json::json!([]));
+        assert!(
+            adapter["missingLifecycleCoverage"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("failure"))
+        );
+        assert!(!adapter["remediation"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn shell_contains_ssr_marker() {
         let response = build_router(AppState::default(), None)
             .oneshot(Request::get("/").body(Body::empty()).unwrap())

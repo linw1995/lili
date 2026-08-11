@@ -1,6 +1,7 @@
 use lili_session::{
-    ForwardingAck, ForwardingAckDisposition, ForwardingCredentials, ForwardingProtocolError,
-    ForwardingVerifier, NormalizedSessionEvent, ReductionOutcome, SpoolMetrics,
+    CodexAdapterDiagnostics, ForwardingAck, ForwardingAckDisposition, ForwardingCredentials,
+    ForwardingProtocolError, ForwardingVerifier, NormalizedSessionEvent, ReductionOutcome,
+    SpoolMetrics,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +34,7 @@ pub struct IngestionDiagnostics {
     pub spool_expired_drops: u64,
     pub spool_limit_drops: u64,
     pub spool_malformed_drops: u64,
+    pub codex_adapter: CodexAdapterDiagnostics,
 }
 
 impl IngestionDiagnostics {
@@ -191,6 +193,7 @@ impl NativeIngestionActor {
     }
 
     async fn reduce_event(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        self.diagnostics.codex_adapter.record_accepted_event(&event);
         let outcome = self.state.apply_session_event(event).await;
         match outcome {
             ReductionOutcome::Applied { .. } => {
@@ -262,7 +265,10 @@ pub enum IngestionError {
 
 #[cfg(test)]
 mod tests {
-    use lili_session::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
+    use lili_session::{
+        CodexIntegrationSurface, ProviderCapabilitiesInputV1, ProviderInputV1,
+        normalize_provider_input,
+    };
 
     use super::*;
 
@@ -278,7 +284,7 @@ mod tests {
             project: None,
             summary: None,
             capabilities: ProviderCapabilitiesInputV1::default(),
-            source_discriminator: None,
+            source_discriminator: Some("notify:codex-tui".to_owned()),
         })
         .unwrap()
     }
@@ -326,6 +332,19 @@ mod tests {
         let diagnostics = state.ingestion_diagnostics().await;
         assert_eq!(diagnostics.accepted_messages, 1);
         assert_eq!(diagnostics.duplicate_events, 1);
+        assert_eq!(
+            diagnostics.codex_adapter.discovered_surfaces,
+            [CodexIntegrationSurface::Notify]
+        );
+        assert_eq!(
+            diagnostics
+                .codex_adapter
+                .last_accepted_event
+                .as_ref()
+                .unwrap()
+                .event_id,
+            "event-1"
+        );
 
         drop(handle);
         task.await.unwrap();

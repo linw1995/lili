@@ -53,7 +53,7 @@
 - [x] 5.2 Implement the `notify` adapter for terminal turn events, including thread, turn, client, working-directory, and bounded assistant-summary normalization when fields are present.
 - [x] 5.3 Implement observer-only lifecycle adapters that map available hooks to session start, active, attention, stop, and end events while advertising unsupported distinctions instead of inferring them.
 - [x] 5.4 Verify that `PermissionRequest` forwarding returns no decision, never acknowledges a permission, and remains bounded when Lili is stopped, hung, or restarting.
-- [ ] 5.5 Add adapter compatibility diagnostics showing Codex version, discovered surfaces, missing lifecycle coverage, last accepted event, and safe remediation guidance.
+- [x] 5.5 Add adapter compatibility diagnostics showing Codex version, discovered surfaces, missing lifecycle coverage, last accepted event, and safe remediation guidance.
 - [ ] 5.6 Add end-to-end fixture runs that invoke the packaged hook binary exactly as Codex does and observe one normalized notification in the native reducer.
 
 ## 6. Reversible Codex Integration Management
