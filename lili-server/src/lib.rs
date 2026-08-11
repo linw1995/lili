@@ -12,6 +12,7 @@ use axum::{
 use leptos::prelude::*;
 use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
 use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
+use lili_core::{DiagnosticPrivacy, diagnostic_privacy};
 use lili_session::{NotificationId, ReductionOutcome};
 use lili_ui::App;
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,7 @@ struct Diagnostics {
     ingestion: IngestionDiagnostics,
     actions: EffectiveActionsView,
     action_audit: Vec<ActionAuditEntry>,
+    privacy: DiagnosticPrivacy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -137,6 +139,7 @@ async fn diagnostics(State(state): State<AppState>) -> Json<Diagnostics> {
         ingestion,
         actions,
         action_audit,
+        privacy: diagnostic_privacy(),
     })
 }
 
@@ -413,6 +416,14 @@ mod tests {
                 .contains(&serde_json::json!("failure"))
         );
         assert!(!adapter["remediation"].as_array().unwrap().is_empty());
+        assert_eq!(diagnostics["privacy"]["schemaVersion"], 1);
+        assert_eq!(diagnostics["privacy"]["contentPolicy"], "metadata_only");
+        assert!(
+            diagnostics["privacy"]["excludedFields"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("mac_secret"))
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
+        .json()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
@@ -16,7 +17,12 @@ async fn main() {
         .expect("failed to bind fixture web server");
     let router = build_fixture_router(Some(StaticAssets::new("dist")));
 
-    tracing::info!(%address, "fixture web server listening");
+    tracing::info!(
+        component = "fixture_server",
+        operation = "listen",
+        outcome = "success",
+        address = %address
+    );
     axum::serve(listener, router)
         .await
         .expect("fixture web server stopped unexpectedly");

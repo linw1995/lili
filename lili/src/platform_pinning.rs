@@ -228,13 +228,11 @@ mod macos {
             .with_webview(move |platform_webview| unsafe {
                 let webview = &*(platform_webview.inner().cast::<WKWebView>());
                 let Some(original) = webview.navigationDelegate() else {
-                    tracing::error!(
-                        "WKWebView has no navigation delegate; TLS pinning failed closed"
-                    );
+                    crate::diagnostics::error("tls_pinning", "install", "missing_delegate");
                     return;
                 };
                 let Some(mtm) = MainThreadMarker::new() else {
-                    tracing::error!("TLS pinning was not installed on the main thread");
+                    crate::diagnostics::error("tls_pinning", "install", "wrong_thread");
                     return;
                 };
                 let delegate =
@@ -247,7 +245,7 @@ mod macos {
                     OBJC_ASSOCIATION_RETAIN_NONATOMIC,
                 );
                 let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) else {
-                    tracing::error!("invalid loopback bootstrap URL; TLS pinning failed closed");
+                    crate::diagnostics::error("tls_pinning", "navigate", "invalid_url");
                     return;
                 };
                 let request = NSURLRequest::requestWithURL(&url);

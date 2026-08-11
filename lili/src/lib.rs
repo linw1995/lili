@@ -1,4 +1,5 @@
 mod desktop_smoke;
+mod diagnostics;
 pub mod hook_forwarder;
 mod integration_cli;
 mod ipc_signer;
@@ -32,6 +33,7 @@ use tauri::{
 use tokio::sync::oneshot;
 
 pub fn run() {
+    diagnostics::init();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if let Some(exit_code) = integration_cli::try_run(&arguments) {
         if exit_code != 0 {
@@ -71,9 +73,9 @@ fn run_desktop(smoke: bool) {
         .expect("failed to configure tray lifecycle");
     if !smoke
         && let Some(codex_home) = codex_home.as_deref()
-        && let Err(error) = start_native_ingestion(codex_home, state.clone())
+        && start_native_ingestion(codex_home, state.clone()).is_err()
     {
-        tracing::warn!(%error, "native event ingestion was not started");
+        diagnostics::warn("ingestion", "start", "transport_unavailable");
     }
     let loopback = LoopbackServer::bind(build_native_router(state.clone(), assets))
         .expect("failed to bind secure loopback transport");
@@ -123,9 +125,9 @@ fn run_desktop(smoke: bool) {
     }
     let window = builder.build().expect("failed to create pet window");
     if let Some(saved_window_placement) = saved_window_placement.as_ref()
-        && let Err(error) = apply_reachable_window_placement(&window, saved_window_placement)
+        && apply_reachable_window_placement(&window, saved_window_placement).is_err()
     {
-        tracing::warn!(%error, "saved window placement could not be restored");
+        diagnostics::warn("window", "restore_placement", "placement_rejected");
     }
     platform_pinning::install_and_navigate(&window, bootstrap_url, certificate_sha256)
         .expect("failed to install loopback certificate pinning");
@@ -156,8 +158,8 @@ fn run_desktop(smoke: bool) {
                     .as_ref()
                     .and_then(current_window_placement);
                 let persistent = tauri::async_runtime::block_on(state.persistent_state(placement));
-                if let Err(error) = store.save(&persistent) {
-                    tracing::warn!(%error, "application state was not persisted");
+                if store.save(&persistent).is_err() {
+                    diagnostics::warn("state", "persist", "write_failed");
                 }
             }
             if let Some(shutdown_tx) = shutdown_tx.take() {
@@ -175,9 +177,15 @@ fn configure_native_actions(codex_home: &Path, state: &AppState) {
     let configured =
         tauri::async_runtime::block_on(state.configure_actions(loaded, DEFAULT_GLOBAL_CONCURRENCY));
     if configured {
-        tracing::info!(enabled_count, diagnostic_count, "native actions configured");
+        diagnostics::info_with_counts(
+            "actions",
+            "configure",
+            "configured",
+            enabled_count,
+            diagnostic_count,
+        );
     } else {
-        tracing::warn!("native action supervisor configuration was rejected");
+        diagnostics::warn("actions", "configure", "supervisor_rejected");
     }
 }
 
@@ -189,8 +197,8 @@ fn load_app_state() -> (
 ) {
     let codex_home = match resolve_codex_home() {
         Ok(codex_home) => codex_home,
-        Err(error) => {
-            tracing::warn!(%error, "Codex home was not resolved");
+        Err(_) => {
+            diagnostics::warn("configuration", "resolve_home", "invalid_home");
             return (AppState::default(), None, None, None);
         }
     };
@@ -207,8 +215,8 @@ fn load_app_state() -> (
             let state = AppState::with_pet_catalog(PetCatalog::load(&codex_home));
             (state, Some(store), Some(codex_home), None)
         }
-        Err(error) => {
-            tracing::warn!(%error, "persisted application state was ignored");
+        Err(_) => {
+            diagnostics::warn("state", "restore", "invalid_state");
             (
                 AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
                 None,
@@ -243,8 +251,8 @@ async fn run_native_services(
     handle: NativeIngestionHandle,
     spool: SpoolStore,
 ) {
-    if let Err(error) = spool.recover_claims() {
-        tracing::warn!(%error, "offline event claims were not recovered");
+    if spool.recover_claims().is_err() {
+        diagnostics::warn("spool", "recover_claims", "recovery_failed");
     }
     drain_offline_spool(&spool, &handle).await;
     serve_native_ingestion(endpoint, handle).await;
@@ -258,23 +266,23 @@ async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle)
         let claim = match spool.claim_next(unix_time_ms()) {
             Ok(Some(claim)) => claim,
             Ok(None) => break,
-            Err(error) => {
-                tracing::warn!(%error, "offline event spool could not be read");
+            Err(_) => {
+                diagnostics::warn("spool", "claim", "read_failed");
                 break;
             }
         };
         match handle.ingest_spooled(claim.event().clone()).await {
             Ok(_) => {
-                if let Err(error) = claim.commit() {
-                    tracing::warn!(%error, "accepted offline event was not committed");
+                if claim.commit().is_err() {
+                    diagnostics::warn("spool", "commit", "commit_failed");
                     break;
                 }
             }
-            Err(error) => {
-                if let Err(release_error) = claim.release() {
-                    tracing::warn!(%release_error, "offline event claim was not released");
+            Err(_) => {
+                if claim.release().is_err() {
+                    diagnostics::warn("spool", "release", "release_failed");
                 }
-                tracing::warn!(%error, "offline event ingestion became unavailable");
+                diagnostics::warn("ingestion", "reduce_spooled", "unavailable");
                 break;
             }
         }
@@ -291,9 +299,9 @@ async fn serve_native_ingestion(endpoint: BoundForwardingEndpoint, handle: Nativ
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(handle_native_connection(connection, handle));
             }
-            Err(error) => {
+            Err(_) => {
                 let _ = handle.record_transport_rejection().await;
-                tracing::warn!(%error, "native event connection was rejected");
+                diagnostics::warn("ingestion", "accept_connection", "transport_rejected");
             }
         }
     }
@@ -305,20 +313,24 @@ async fn handle_native_connection(
 ) {
     let payload = match connection.read_payload().await {
         Ok(payload) => payload,
-        Err(error) => {
+        Err(_) => {
             let _ = handle.record_transport_rejection().await;
-            tracing::warn!(%error, "native event frame was rejected");
+            diagnostics::warn("ingestion", "read_frame", "transport_rejected");
             return;
         }
     };
     let now_ms = unix_time_ms();
     match handle.ingest(payload, now_ms).await {
         Ok(acknowledgement) => {
-            if let Err(error) = connection.write_acknowledgement(&acknowledgement).await {
-                tracing::warn!(%error, "native event acknowledgement failed");
+            if connection
+                .write_acknowledgement(&acknowledgement)
+                .await
+                .is_err()
+            {
+                diagnostics::warn("ingestion", "write_acknowledgement", "transport_failed");
             }
         }
-        Err(error) => tracing::warn!(%error, "native event message was rejected"),
+        Err(_) => diagnostics::warn("ingestion", "verify_message", "message_rejected"),
     }
 }
 
@@ -418,8 +430,8 @@ fn ensure_window_reachable(window: &tauri::WebviewWindow) {
     let Some(current) = current_window_placement(window) else {
         return;
     };
-    if let Err(error) = apply_reachable_window_placement(window, &current) {
-        tracing::warn!(%error, "window reachability could not be enforced");
+    if apply_reachable_window_placement(window, &current).is_err() {
+        diagnostics::warn("window", "enforce_reachability", "placement_rejected");
     }
 }
 

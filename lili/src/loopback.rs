@@ -115,17 +115,18 @@ impl LoopbackServer {
             });
             let server = match axum_server::from_tcp_rustls(self.listener, self.tls_config) {
                 Ok(server) => server,
-                Err(error) => {
-                    tracing::error!(%error, "failed to initialize HTTPS loopback listener");
+                Err(_) => {
+                    crate::diagnostics::error("loopback", "initialize", "listener_failed");
                     return;
                 }
             };
-            if let Err(error) = server
+            if server
                 .handle(handle)
                 .serve(self.router.into_make_service())
                 .await
+                .is_err()
             {
-                tracing::error!(%error, "HTTPS loopback transport stopped unexpectedly");
+                crate::diagnostics::error("loopback", "serve", "transport_stopped");
             }
         });
     }

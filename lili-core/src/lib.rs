@@ -1,5 +1,9 @@
+mod diagnostics;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub use diagnostics::{DiagnosticPrivacy, Redacted, diagnostic_privacy};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
