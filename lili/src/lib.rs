@@ -1,4 +1,5 @@
 mod desktop_smoke;
+pub mod hook_forwarder;
 mod ipc_signer;
 mod loopback;
 mod platform_pinning;
