@@ -4,9 +4,11 @@ mod persistence;
 use std::sync::Arc;
 
 use lili_actions::ActionSummary;
+use lili_core::{PetLifecycleState, PetPresentationState};
 use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
 use lili_session::{
-    NormalizedSessionEvent, NotificationId, ReductionOutcome, SessionReducer, SessionViewSnapshot,
+    NormalizedSessionEvent, NotificationId, NotificationState, PresentationState, ReductionOutcome,
+    SessionReducer, SessionViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -110,6 +112,30 @@ impl AppState {
         snapshot.session_state = self.session_reducer.lock().await.snapshot();
         snapshot.revision = snapshot.session_state.revision;
         snapshot
+    }
+
+    pub async fn pet_presentation(&self) -> PetPresentationState {
+        let snapshot = self.snapshot().await;
+        PetPresentationState {
+            revision: snapshot.revision,
+            lifecycle: match snapshot.session_state.presentation {
+                PresentationState::Idle => PetLifecycleState::Idle,
+                PresentationState::Running => PetLifecycleState::Running,
+                PresentationState::Review => PetLifecycleState::Review,
+                PresentationState::Failed => PetLifecycleState::Failed,
+                PresentationState::Waiting => PetLifecycleState::Waiting,
+            },
+            pet_asset_id: snapshot.pet_asset_id,
+            pet_label: snapshot
+                .selected_pet
+                .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name),
+            unread_notification_count: snapshot
+                .session_state
+                .notifications
+                .iter()
+                .filter(|notification| notification.state == NotificationState::Unread)
+                .count(),
+        }
     }
 
     pub async fn settings(&self) -> UserSettings {
@@ -263,5 +289,32 @@ mod tests {
             SessionPhase::Completed
         );
         assert_eq!(snapshot.session_state.notifications.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pet_presentation_is_derived_in_native_state() {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-presentation".to_owned()),
+            session_id: Some("session-private".to_owned()),
+            turn_id: Some("turn-private".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let presentation = state.pet_presentation().await;
+        assert_eq!(presentation.revision, 1);
+        assert_eq!(presentation.lifecycle, PetLifecycleState::Review);
+        assert_eq!(presentation.unread_notification_count, 1);
+        let serialized = serde_json::to_string(&presentation).unwrap();
+        assert!(!serialized.contains("session-private"));
+        assert!(!serialized.contains("turn-private"));
     }
 }

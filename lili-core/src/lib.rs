@@ -36,3 +36,36 @@ impl PetId {
         &self.0
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PetLifecycleState {
+    #[default]
+    Idle,
+    Running,
+    Review,
+    Failed,
+    Waiting,
+}
+
+impl PetLifecycleState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Review => "review",
+            Self::Failed => "failed",
+            Self::Waiting => "waiting",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetPresentationState {
+    pub revision: u64,
+    pub lifecycle: PetLifecycleState,
+    pub pet_asset_id: Option<String>,
+    pub pet_label: String,
+    pub unread_notification_count: usize,
+}
