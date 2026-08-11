@@ -21,6 +21,8 @@
     "format-check"
     "lint"
     "test"
+    "coverage"
+    "crap"
     "audit"
     "license-check"
     "web-build"

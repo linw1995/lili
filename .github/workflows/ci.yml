@@ -44,6 +44,45 @@ jobs:
       - run: nix run .#workflow-lint
       - run: nix run .#codex-matrix
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Generate native coverage reports
+        run: nix run .#coverage
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: target/coverage/result/
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: target/coverage/result/lcov.info
+          flags: rust
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  crap:
+    needs: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage
+          path: target/coverage/result/
+      - name: Enforce CRAP metric threshold
+        run: nix run .#crap
+      - name: Upload CRAP artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: crap
+          path: target/coverage/result/crap.md
+
   linux-desktop:
     runs-on: ubuntu-latest
     steps:

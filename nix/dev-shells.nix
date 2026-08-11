@@ -15,6 +15,16 @@
 in {
   default = toolchain.mkDevShell shellArgs;
 
+  coverage = toolchain.mkDevShell (shellArgs
+    // {
+      packages = shellArgs.packages ++ toolchain.coverageTools;
+    });
+
+  crap = toolchain.mkDevShell (shellArgs
+    // {
+      packages = shellArgs.packages ++ toolchain.crapTools;
+    });
+
   e2e = toolchain.mkDevShell (shellArgs
     // {
       packages = shellArgs.packages ++ [pkgs.playwright-test];

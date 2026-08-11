@@ -100,6 +100,22 @@ in {
     '';
   };
 
+  coverage = mkWorkspaceApp {
+    name = "coverage";
+    runtimeInputs = toolchain.buildTools ++ toolchain.coverageTools;
+    text = ''
+      exec bash scripts/run-cov.sh "$@"
+    '';
+  };
+
+  crap = mkWorkspaceApp {
+    name = "crap";
+    runtimeInputs = toolchain.crapTools;
+    text = ''
+      exec bash scripts/run-crap.sh "$@"
+    '';
+  };
+
   audit = mkWorkspaceApp {
     name = "audit";
     runtimeInputs = [pkgs.cargo-audit toolchain.rustToolchain];

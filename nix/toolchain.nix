@@ -22,6 +22,19 @@
   fuzzRustToolchain = pkgs.rust-bin.nightly."2026-08-01".minimal.override {
     extensions = ["rust-src"];
   };
+  cargoCrap = pkgs.rustPlatform.buildRustPackage rec {
+    pname = "cargo-crap";
+    version = "0.2.2";
+
+    src = pkgs.fetchurl {
+      url = "https://static.crates.io/crates/${pname}/${pname}-${version}.crate";
+      name = "${pname}-${version}.tar.gz";
+      hash = "sha256-Ej+k1P4Am2AXD8PVhrcrCdisA/0AAOI/8j2x0ULuOmY=";
+    };
+
+    cargoHash = "sha256-vzkGNzQrVOtfpGLniGTdPRQfwA9jn5elXhudrFC7w9g=";
+    doCheck = false;
+  };
   trunk = pkgs.writeShellApplication {
     name = "trunk";
     text = ''
@@ -50,6 +63,7 @@
 in
   assert pkgs.wasm-bindgen-cli_0_2_126.version == wasmBindgenVersion; {
     inherit
+      cargoCrap
       darwinEnv
       cargoTauriVersion
       fuzzRustToolchain
@@ -85,6 +99,16 @@ in
       pkgs.prek
       pkgs.python3
       pkgs.taplo
+    ];
+
+    coverageTools = [
+      pkgs.grcov
+      rustToolchain
+    ];
+
+    crapTools = [
+      cargoCrap
+      rustToolchain
     ];
 
     linuxBuildInputs = pkgs.lib.optionals isLinux [

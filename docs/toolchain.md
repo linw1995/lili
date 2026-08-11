@@ -30,6 +30,12 @@ Rust and npm dependency updates are separate operations. Use Cargo and npm comma
 
 Normal development and build applications use locked dependency resolution. `scripts/check-lockfiles.sh` can wrap a command and fail if it mutates any lockfile.
 
+## Coverage and CRAP reports
+
+`nix run .#coverage` runs the locked workspace test graph with LLVM coverage instrumentation and writes LCOV, Cobertura, HTML, and Markdown reports under `target/coverage/result/`. CI uploads the directory as the `coverage` artifact and submits `lcov.info` to Codecov using the repository policy in `codecov.yml`.
+
+`nix run .#crap` consumes the same LCOV report, writes `target/coverage/result/crap.md`, and rejects production functions above the default CRAP threshold of 30. Generate coverage before running the CRAP gate. Verification-only platform acceptance binaries and build scripts are excluded from the metric.
+
 ## Release assembly
 
 `nix run .#build` runs the supported Codex matrix gate, creates the platform-standard Tauri bundles, and assembles a versioned archive under `release/`. The archive contains the desktop and hook binaries, fallback pet, release Web assets, integration and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The assembler rejects source test fixtures and files that contain the current development workspace path.
