@@ -25,7 +25,8 @@ pub use reducer::{
     SessionReducerState,
 };
 pub use spool::{
-    ClaimedSpoolRecord, SpoolEnqueueOutcome, SpoolError, SpoolLimits, SpoolMetrics, SpoolStore,
+    ClaimedSpoolRecord, MAX_SPOOL_RECORD_BYTES, SpoolEnqueueOutcome, SpoolError, SpoolLimits,
+    SpoolMetrics, SpoolStore, decode_spool_record,
 };
 pub use transport::{
     BoundForwardingEndpoint, ForwardingConnection, ForwardingCredentialStore,

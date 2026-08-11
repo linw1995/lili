@@ -18,6 +18,7 @@
     "build-css"
     "format"
     "lint"
+    "fuzz"
     "prek"
     "e2e"
   ];

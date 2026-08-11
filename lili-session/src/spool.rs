@@ -15,7 +15,7 @@ use crate::{NormalizedSessionEvent, SessionEventKind};
 const SPOOL_VERSION: u16 = 1;
 const METRICS_FILE_NAME: &str = "metrics.json";
 const LOCK_DIRECTORY_NAME: &str = ".lock";
-const MAX_RECORD_BYTES: u64 = 64 * 1024;
+pub const MAX_SPOOL_RECORD_BYTES: usize = 64 * 1024;
 const MAX_METRICS_BYTES: u64 = 4 * 1024;
 const LOCK_RETRY_COUNT: usize = 250;
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(2);
@@ -106,11 +106,11 @@ impl SpoolStore {
             event: event.clone(),
         };
         let payload = serde_json::to_vec(&record).map_err(|_| SpoolError::MalformedRecord)?;
-        if payload.len() as u64 > MAX_RECORD_BYTES {
+        if payload.len() > MAX_SPOOL_RECORD_BYTES {
             return Err(SpoolError::RecordTooLarge);
         }
         let pending_path = self.directory.join(pending_file_name(enqueued_at_ms)?);
-        atomic_write(&pending_path, &payload, MAX_RECORD_BYTES)?;
+        atomic_write(&pending_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
         let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
         let retained = self.enforce_limits(candidates, &mut metrics)?;
         self.save_metrics_unlocked(&metrics)?;
@@ -437,18 +437,28 @@ fn read_record(path: &Path) -> Result<(SpoolRecord, u64), SpoolError> {
         return Err(SpoolError::UnsafePath);
     }
     validate_private_metadata(&metadata)?;
-    if metadata.len() > MAX_RECORD_BYTES {
+    if metadata.len() > MAX_SPOOL_RECORD_BYTES as u64 {
         return Err(SpoolError::RecordTooLarge);
     }
     let mut payload = Vec::with_capacity(metadata.len() as usize);
     File::open(path)?
-        .take(MAX_RECORD_BYTES + 1)
+        .take(MAX_SPOOL_RECORD_BYTES as u64 + 1)
         .read_to_end(&mut payload)?;
-    if payload.len() as u64 > MAX_RECORD_BYTES {
+    let record = decode_spool_record_inner(&payload)?;
+    Ok((record, metadata.len()))
+}
+
+pub fn decode_spool_record(payload: &[u8]) -> Result<(u64, NormalizedSessionEvent), SpoolError> {
+    let record = decode_spool_record_inner(payload)?;
+    Ok((record.enqueued_at_ms, record.event))
+}
+
+fn decode_spool_record_inner(payload: &[u8]) -> Result<SpoolRecord, SpoolError> {
+    if payload.len() > MAX_SPOOL_RECORD_BYTES {
         return Err(SpoolError::RecordTooLarge);
     }
     let record: SpoolRecord =
-        serde_json::from_slice(&payload).map_err(|_| SpoolError::MalformedRecord)?;
+        serde_json::from_slice(payload).map_err(|_| SpoolError::MalformedRecord)?;
     if record.version != SPOOL_VERSION {
         return Err(SpoolError::UnsupportedVersion(record.version));
     }
@@ -456,7 +466,7 @@ fn read_record(path: &Path) -> Result<(SpoolRecord, u64), SpoolError> {
         .event
         .validate()
         .map_err(|_| SpoolError::InvalidEvent)?;
-    Ok((record, metadata.len()))
+    Ok(record)
 }
 
 fn validate_record_file(path: &Path) -> Result<(), SpoolError> {

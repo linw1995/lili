@@ -91,7 +91,7 @@
 
 - [x] 9.1 Add tests proving Web and fixture builds cannot access local IPC credentials, arbitrary pet paths, action execution, Codex configuration mutation, or native process APIs.
 - [x] 9.2 Add structured logging and diagnostics that redact raw prompts, full assistant messages, commands, approval arguments, credentials, MAC secrets, and inherited environment values.
-- [ ] 9.3 Fuzz manifest, provider payload, forwarding frame, spool record, action configuration, and interaction context parsers with bounded-memory assertions.
+- [x] 9.3 Fuzz manifest, provider payload, forwarding frame, spool record, action configuration, and interaction context parsers with bounded-memory assertions.
 - [ ] 9.4 Add failure-injection tests across config replacement, credential rotation, socket restart, spool claim, reducer acceptance, WebView reload, child spawn, and shutdown phases.
 - [ ] 9.5 Document the trust boundary, local data layout, retained metadata, integration changes, action authority, backup and uninstall procedure, and unsupported private Codex surfaces.
 

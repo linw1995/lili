@@ -6,7 +6,7 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-lockfiles=(flake.lock Cargo.lock package-lock.json)
+lockfiles=(flake.lock Cargo.lock fuzz/Cargo.lock package-lock.json)
 before="$(mktemp)"
 after="$(mktemp)"
 trap 'rm -f "$before" "$after"' EXIT

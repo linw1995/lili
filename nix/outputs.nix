@@ -36,6 +36,7 @@ in
         build-css = mkApp "build-css" "Build the Lili stylesheet";
         format = mkApp "format" "Format the Lili workspace";
         lint = mkApp "lint" "Lint the Lili workspace";
+        fuzz = mkApp "fuzz" "Run a bounded parser fuzz target";
         prek = mkApp "prek" "Run repository hooks";
         e2e = mkApp "e2e" "Run browser end-to-end tests";
         desktop-smoke = mkApp "desktop-smoke" "Run the desktop smoke verifier";

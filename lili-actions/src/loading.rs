@@ -13,8 +13,8 @@ use crate::{
     MAX_GLOBAL_CONCURRENCY, WorkingDirectoryPolicy,
 };
 
-const MAX_ACTION_CONFIG_BYTES: u64 = 256 * 1024;
-const MAX_ACTION_ENTRIES: usize = 128;
+pub const MAX_ACTION_CONFIG_BYTES: usize = 256 * 1024;
+pub const MAX_ACTION_ENTRIES: usize = 128;
 const MAX_ACTION_ID_BYTES: usize = 128;
 const MAX_COMMAND_PART_BYTES: usize = 16 * 1024;
 const MAX_ENVIRONMENT_ENTRIES: usize = 64;
@@ -233,11 +233,11 @@ pub fn load_actions_file(path: &Path, context: &ActionLoadContext) -> LoadedActi
         }
         Err(_) => return global_failure(ActionDiagnosticCode::InvalidFile),
     };
-    if metadata.len() > MAX_ACTION_CONFIG_BYTES {
+    if metadata.len() > MAX_ACTION_CONFIG_BYTES as u64 {
         return global_failure(ActionDiagnosticCode::TooLarge);
     }
     match fs::read_to_string(path) {
-        Ok(contents) if contents.len() as u64 <= MAX_ACTION_CONFIG_BYTES => {
+        Ok(contents) if contents.len() <= MAX_ACTION_CONFIG_BYTES => {
             load_actions_str(&contents, context)
         }
         Ok(_) => global_failure(ActionDiagnosticCode::TooLarge),
@@ -246,7 +246,7 @@ pub fn load_actions_file(path: &Path, context: &ActionLoadContext) -> LoadedActi
 }
 
 pub fn load_actions_str(contents: &str, context: &ActionLoadContext) -> LoadedActions {
-    if contents.len() as u64 > MAX_ACTION_CONFIG_BYTES {
+    if contents.len() > MAX_ACTION_CONFIG_BYTES {
         return global_failure(ActionDiagnosticCode::TooLarge);
     }
     let Ok(table) = toml::from_str::<toml::Table>(contents) else {

@@ -70,6 +70,18 @@ in {
     '';
   };
 
+  fuzz = mkWorkspaceApp {
+    name = "fuzz";
+    runtimeInputs = [pkgs.cargo-fuzz toolchain.fuzzRustToolchain];
+    text = ''
+      if [[ $# -eq 0 ]]; then
+        cargo fuzz list
+        exit 0
+      fi
+      exec cargo fuzz run "$@"
+    '';
+  };
+
   prek = mkWorkspaceApp {
     name = "prek";
     runtimeInputs = [pkgs.prek];

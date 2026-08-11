@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::{PetManifest, SPRITE_VERSION_NUMBER};
 
 pub const DEFAULT_PET_ID: &str = "lili";
-const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+pub const MAX_PET_MANIFEST_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackageOrigin {
@@ -164,19 +164,15 @@ fn load_package(
     if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
         return Err(PackageLoadError::InvalidManifestFile);
     }
-    if manifest_metadata.len() > MAX_MANIFEST_BYTES {
+    if manifest_metadata.len() > MAX_PET_MANIFEST_BYTES as u64 {
         return Err(PackageLoadError::ManifestTooLarge);
     }
 
     let mut bytes = Vec::with_capacity(manifest_metadata.len() as usize);
     File::open(&manifest_path)?
-        .take(MAX_MANIFEST_BYTES + 1)
+        .take(MAX_PET_MANIFEST_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-        return Err(PackageLoadError::ManifestTooLarge);
-    }
-    let manifest: PetManifest = serde_json::from_slice(&bytes)?;
-    validate_manifest(&manifest)?;
+    let manifest = parse_pet_manifest(&bytes).map_err(PackageLoadError::Manifest)?;
 
     let relative_asset = Path::new(manifest.spritesheet_path());
     if relative_asset.as_os_str().is_empty()
@@ -206,18 +202,43 @@ fn load_package(
     })
 }
 
-fn validate_manifest(manifest: &PetManifest) -> Result<(), PackageLoadError> {
-    PetId::parse(manifest.id()).ok_or(PackageLoadError::InvalidIdentifier)?;
+pub fn parse_pet_manifest(payload: &[u8]) -> Result<PetManifest, PetManifestError> {
+    if payload.len() > MAX_PET_MANIFEST_BYTES {
+        return Err(PetManifestError::TooLarge);
+    }
+    let manifest = serde_json::from_slice(payload).map_err(|_| PetManifestError::Malformed)?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_manifest(manifest: &PetManifest) -> Result<(), PetManifestError> {
+    PetId::parse(manifest.id()).ok_or(PetManifestError::InvalidIdentifier)?;
     if manifest.display_name().trim().is_empty() || manifest.display_name().len() > 128 {
-        return Err(PackageLoadError::InvalidDisplayName);
+        return Err(PetManifestError::InvalidDisplayName);
     }
     if manifest.description().len() > 512 {
-        return Err(PackageLoadError::InvalidDescription);
+        return Err(PetManifestError::InvalidDescription);
     }
     if manifest.sprite_version_number() != SPRITE_VERSION_NUMBER {
-        return Err(PackageLoadError::UnsupportedVersion);
+        return Err(PetManifestError::UnsupportedVersion);
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum PetManifestError {
+    #[error("pet.json exceeds 64 KiB")]
+    TooLarge,
+    #[error("pet.json is malformed")]
+    Malformed,
+    #[error("pet identifier is invalid")]
+    InvalidIdentifier,
+    #[error("display name is empty or exceeds 128 bytes")]
+    InvalidDisplayName,
+    #[error("description exceeds 512 bytes")]
+    InvalidDescription,
+    #[error("spriteVersionNumber must be 2")]
+    UnsupportedVersion,
 }
 
 fn issue(package_dir: PathBuf, message: impl Into<String>) -> DiscoveryIssue {
@@ -235,14 +256,8 @@ enum PackageLoadError {
     InvalidManifestFile,
     #[error("pet.json exceeds 64 KiB")]
     ManifestTooLarge,
-    #[error("pet identifier is invalid")]
-    InvalidIdentifier,
-    #[error("display name is empty or exceeds 128 bytes")]
-    InvalidDisplayName,
-    #[error("description exceeds 512 bytes")]
-    InvalidDescription,
-    #[error("spriteVersionNumber must be 2")]
-    UnsupportedVersion,
+    #[error("{0}")]
+    Manifest(PetManifestError),
     #[error("spritesheetPath must be a confined relative path")]
     InvalidAssetPath,
     #[error("spritesheetPath must resolve to a file")]
@@ -251,8 +266,6 @@ enum PackageLoadError {
     EscapingAssetPath,
     #[error("package I/O failed: {0}")]
     Io(#[from] std::io::Error),
-    #[error("pet.json is malformed: {0}")]
-    Json(#[from] serde_json::Error),
 }
 
 #[cfg(test)]

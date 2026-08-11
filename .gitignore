@@ -6,3 +6,6 @@
 /result
 /playwright-report/
 /test-results/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/target/

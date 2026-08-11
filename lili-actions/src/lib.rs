@@ -21,8 +21,8 @@ pub const MAX_INTERACTION_CONTEXT_BYTES: usize = 16 * 1024;
 pub use execution::{ActionSpawnError, SpawnedAction, spawn_action};
 pub use loading::{
     ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
-    EffectiveActionsView, LoadedAction, LoadedActions, action_config_path, load_actions_file,
-    load_actions_str,
+    EffectiveActionsView, LoadedAction, LoadedActions, MAX_ACTION_CONFIG_BYTES, MAX_ACTION_ENTRIES,
+    action_config_path, load_actions_file, load_actions_str,
 };
 pub use supervisor::{
     ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor,
@@ -45,7 +45,7 @@ pub enum NotificationFilterKind {
     Failure,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PetLifecycleSnapshotV1 {
     Idle,
@@ -55,7 +55,7 @@ pub enum PetLifecycleSnapshotV1 {
     Waiting,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetSnapshotV1 {
     pub pet_id: String,
@@ -63,7 +63,7 @@ pub struct PetSnapshotV1 {
     pub lifecycle: PetLifecycleSnapshotV1,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayEventSummaryV1 {
     pub text: String,
@@ -71,7 +71,7 @@ pub struct DisplayEventSummaryV1 {
     pub redacted: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationSnapshotV1 {
     pub notification_id: String,
@@ -85,7 +85,7 @@ pub struct NotificationSnapshotV1 {
     pub summary: Option<DisplayEventSummaryV1>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionContextV1 {
     pub version: u16,
@@ -132,6 +132,45 @@ impl InteractionContextV1 {
             notification: Some(notification),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InteractionContextError {
+    #[error("interaction context exceeds its byte limit")]
+    TooLarge,
+    #[error("interaction context is malformed")]
+    Malformed,
+    #[error("interaction context violates schema invariants")]
+    Invalid,
+}
+
+pub fn decode_interaction_context(
+    payload: &[u8],
+) -> Result<InteractionContextV1, InteractionContextError> {
+    if payload.len() > MAX_INTERACTION_CONTEXT_BYTES {
+        return Err(InteractionContextError::TooLarge);
+    }
+    let context: InteractionContextV1 =
+        serde_json::from_slice(payload).map_err(|_| InteractionContextError::Malformed)?;
+    if context.version != INTERACTION_CONTEXT_VERSION
+        || context.pet.pet_id.is_empty()
+        || context.pet.pet_id.len() > 128
+        || context.pet.label.len() > 128
+        || context
+            .pet
+            .pet_id
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.'))
+        || match context.trigger {
+            InteractionTrigger::NotificationActivate => context.notification.is_none(),
+            InteractionTrigger::PetClick | InteractionTrigger::PetDoubleClick => {
+                context.notification.is_some()
+            }
+        }
+    {
+        return Err(InteractionContextError::Invalid);
+    }
+    Ok(context)
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -349,6 +388,7 @@ command = "echo unsafe"
 
         let encoded = serde_json::to_vec(&context).unwrap();
         assert!(encoded.len() <= MAX_INTERACTION_CONTEXT_BYTES);
+        assert_eq!(decode_interaction_context(&encoded).unwrap(), context);
         let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(value["version"], INTERACTION_CONTEXT_VERSION);
         assert_eq!(value["trigger"], "notification_activate");
@@ -357,5 +397,9 @@ command = "echo unsafe"
         assert!(value.get("environment").is_none());
         assert!(value.get("credentials").is_none());
         assert!(value.get("rawPayload").is_none());
+        assert_eq!(
+            decode_interaction_context(&vec![b'x'; MAX_INTERACTION_CONTEXT_BYTES + 1]),
+            Err(InteractionContextError::TooLarge)
+        );
     }
 }

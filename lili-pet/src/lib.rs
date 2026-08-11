@@ -9,8 +9,9 @@ use lili_core::PetId;
 use serde::{Deserialize, Serialize};
 
 pub use discovery::{
-    DEFAULT_PET_ID, DiscoveredPackage, DiscoveryIssue, DiscoveryReport, PackageOrigin,
-    default_pet_path, discover_pet_packages, resolve_codex_home,
+    DEFAULT_PET_ID, DiscoveredPackage, DiscoveryIssue, DiscoveryReport, MAX_PET_MANIFEST_BYTES,
+    PackageOrigin, PetManifestError, default_pet_path, discover_pet_packages, parse_pet_manifest,
+    resolve_codex_home,
 };
 pub use rendering::{AnimationScheduler, DirectionLookupError, LookDirectionSelector};
 pub use selection::{

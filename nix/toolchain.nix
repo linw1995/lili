@@ -14,6 +14,9 @@
       ["wasm32-unknown-unknown"]
       ++ pkgs.lib.optionals isDarwin ["x86_64-apple-darwin"];
   };
+  fuzzRustToolchain = pkgs.rust-bin.nightly."2026-08-01".minimal.override {
+    extensions = ["rust-src"];
+  };
   trunk = pkgs.writeShellApplication {
     name = "trunk";
     text = ''
@@ -41,7 +44,17 @@
   '';
 in
   assert pkgs.wasm-bindgen-cli_0_2_126.version == wasmBindgenVersion; {
-    inherit darwinEnv isDarwin isLinux rustToolchain rustVersion trunk wasmBindgenVersion wasmEnv;
+    inherit
+      darwinEnv
+      fuzzRustToolchain
+      isDarwin
+      isLinux
+      rustToolchain
+      rustVersion
+      trunk
+      wasmBindgenVersion
+      wasmEnv
+      ;
 
     mkDevShell =
       if isDarwin
