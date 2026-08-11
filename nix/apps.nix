@@ -36,7 +36,6 @@ in {
     runtimeInputs =
       toolchain.buildTools
       ++ [
-        pkgs.cargo-license
         pkgs.coreutils
         pkgs.findutils
         pkgs.gnutar
@@ -111,10 +110,11 @@ in {
 
   license-check = mkWorkspaceApp {
     name = "license-check";
-    runtimeInputs = [pkgs.cargo-deny pkgs.python3 toolchain.rustToolchain];
+    runtimeInputs = [pkgs.cargo-about pkgs.cargo-deny pkgs.python3 toolchain.rustToolchain];
     text = ''
       python3 scripts/check-license-policy.py
-      exec cargo deny --locked check licenses
+      cargo deny --locked check licenses
+      exec bash scripts/check-third-party-notices.sh
     '';
   };
 

@@ -21,7 +21,10 @@
     "targets": "all",
     "licenseFile": "../LICENSE",
     "resources": {
-      "../dist/": "web"
+      "../dist/": "web",
+      "../LICENSE": "legal/LICENSE",
+      "../NOTICE": "legal/NOTICE",
+      "../THIRD_PARTY_NOTICES.html": "legal/THIRD_PARTY_NOTICES.html"
     },
     "icon": [
       "icons/32x32.png",

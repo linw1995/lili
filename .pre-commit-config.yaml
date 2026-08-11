@@ -15,5 +15,12 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: third-party-notices
+        name: third-party-notices
+        entry: bash scripts/check-third-party-notices.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
 default_stages: [pre-commit]
 fail_fast: false

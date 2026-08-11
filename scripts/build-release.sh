@@ -58,9 +58,7 @@ cp lili-pet/assets/fallback/pet.json lili-pet/assets/fallback/spritesheet.webp "
 cp README.md "$release_root/"
 cp docs/security-and-operations.md docs/toolchain.md "$release_root/docs/"
 cp examples/actions.toml "$release_root/examples/"
-cp LICENSE NOTICE "$release_root/"
-cargo license --json --avoid-build-deps --avoid-dev-deps \
-  --output "$release_root/THIRD-PARTY-NOTICES.json"
+cp LICENSE NOTICE THIRD_PARTY_NOTICES.html "$release_root/"
 
 signature_kind="platform-standard"
 if [[ "$(uname -s)" == "Darwin" ]] && find "$release_root/bundles" -name '*.app' -type d -print -quit | grep -q .; then

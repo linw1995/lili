@@ -21,7 +21,7 @@ const required = [
   /^web\/index\.html$/,
   /^LICENSE$/,
   /^NOTICE$/,
-  /^THIRD-PARTY-NOTICES\.json$/,
+  /^THIRD_PARTY_NOTICES\.html$/,
 ];
 
 async function collect(directory, prefix = "") {
