@@ -36,6 +36,7 @@ jobs:
       - run: nix run .#lint
       - run: nix run .#test
       - run: nix run .#audit
+      - run: nix run .#license-check
       - run: nix run .#web-build
       - run: nix run .#fuzz-smoke
       - run: nix run .#e2e

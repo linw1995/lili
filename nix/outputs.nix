@@ -39,6 +39,7 @@ in
         lint = mkApp "lint" "Lint the Lili workspace";
         test = mkApp "test" "Run workspace tests";
         audit = mkApp "audit" "Audit Rust dependencies";
+        license-check = mkApp "license-check" "Enforce dependency license policy";
         web-build = mkApp "web-build" "Build the release Web application";
         spec-validate = mkApp "spec-validate" "Validate the OpenSpec change strictly";
         workflow-lint = mkApp "workflow-lint" "Lint GitHub Actions workflows";

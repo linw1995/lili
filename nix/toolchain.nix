@@ -80,7 +80,10 @@ in
 
     qualityTools = [
       pkgs.alejandra
+      pkgs.cargo-about
+      pkgs.cargo-deny
       pkgs.prek
+      pkgs.python3
       pkgs.taplo
     ];
 

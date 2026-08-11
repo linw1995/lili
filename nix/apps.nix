@@ -109,6 +109,15 @@ in {
     '';
   };
 
+  license-check = mkWorkspaceApp {
+    name = "license-check";
+    runtimeInputs = [pkgs.cargo-deny pkgs.python3 toolchain.rustToolchain];
+    text = ''
+      python3 scripts/check-license-policy.py
+      exec cargo deny --locked check licenses
+    '';
+  };
+
   web-build = mkWorkspaceApp {
     name = "web-build";
     text = ''
@@ -172,7 +181,7 @@ in {
 
   prek = mkWorkspaceApp {
     name = "prek";
-    runtimeInputs = [pkgs.prek];
+    runtimeInputs = toolchain.buildTools ++ toolchain.qualityTools;
     text = ''
       exec prek run --all-files "$@"
     '';

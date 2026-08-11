@@ -22,6 +22,7 @@
     "lint"
     "test"
     "audit"
+    "license-check"
     "web-build"
     "spec-validate"
     "workflow-lint"
