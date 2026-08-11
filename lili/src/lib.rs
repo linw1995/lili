@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
+use lili_actions::{
+    ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, action_config_path, load_actions_file,
+};
 use lili_app_state::{
     AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, DEFAULT_VISIBLE_WINDOW_MARGIN,
     DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, WindowPlacement,
@@ -57,6 +60,9 @@ fn run_desktop(smoke: bool) {
     )
     .map(StaticAssets::new);
     let (state, state_store, codex_home, saved_window_placement) = load_app_state();
+    if !smoke && let Some(codex_home) = codex_home.as_deref() {
+        configure_native_actions(codex_home, &state);
+    }
     app.manage(DesktopPersistence {
         state: state.clone(),
         store: state_store.clone(),
@@ -159,6 +165,20 @@ fn run_desktop(smoke: bool) {
             }
         }
     });
+}
+
+fn configure_native_actions(codex_home: &Path, state: &AppState) {
+    let context = ActionLoadContext::for_codex_home(codex_home);
+    let loaded = load_actions_file(&action_config_path(codex_home), &context);
+    let enabled_count = loaded.enabled().len();
+    let diagnostic_count = loaded.effective().diagnostics.len();
+    let configured =
+        tauri::async_runtime::block_on(state.configure_actions(loaded, DEFAULT_GLOBAL_CONCURRENCY));
+    if configured {
+        tracing::info!(enabled_count, diagnostic_count, "native actions configured");
+    } else {
+        tracing::warn!("native action supervisor configuration was rejected");
+    }
 }
 
 fn load_app_state() -> (

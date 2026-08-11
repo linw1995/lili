@@ -102,7 +102,7 @@ pub struct EffectiveActionView {
     pub environment_names: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveActionsView {
     pub schema_version: Option<u16>,

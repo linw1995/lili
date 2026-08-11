@@ -2581,6 +2581,7 @@ dependencies = [
  "block2",
  "getrandom 0.4.3",
  "hmac",
+ "lili-actions",
  "lili-app-state",
  "lili-core",
  "lili-integration",

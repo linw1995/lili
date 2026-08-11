@@ -10,7 +10,7 @@ use axum::{
     routing::{get, post, put},
 };
 use leptos::prelude::*;
-use lili_actions::InteractionTrigger;
+use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
 use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
 use lili_session::{NotificationId, ReductionOutcome};
 use lili_ui::App;
@@ -39,10 +39,13 @@ struct Health {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Diagnostics {
     status: &'static str,
     transport: &'static str,
     ingestion: IngestionDiagnostics,
+    actions: EffectiveActionsView,
+    action_audit: Vec<ActionAuditEntry>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -115,10 +118,17 @@ async fn update_settings(
 }
 
 async fn diagnostics(State(state): State<AppState>) -> Json<Diagnostics> {
+    let (ingestion, actions, action_audit) = tokio::join!(
+        state.ingestion_diagnostics(),
+        state.effective_actions(),
+        state.action_audit(),
+    );
     Json(Diagnostics {
         status: "ok",
         transport: "fixture",
-        ingestion: state.ingestion_diagnostics().await,
+        ingestion,
+        actions,
+        action_audit,
     })
 }
 
@@ -163,8 +173,12 @@ async fn interaction(
         }
         _ => None,
     };
+    let accepted = match binding {
+        Some(context) => state.dispatch_interaction(context).await.accepted,
+        None => false,
+    };
     Json(InteractionResponse {
-        accepted: binding.is_some(),
+        accepted,
         request_id,
     })
 }
@@ -448,6 +462,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interaction_endpoint_dispatches_native_action_and_exposes_redacted_audit() {
+        let (state, notification_id) = state_with_notification().await;
+        let loaded = lili_actions::load_actions_str(
+            r#"
+version = 1
+
+[[action]]
+id = "open-session"
+trigger = "notification_activate"
+command = ["/bin/sh", "-c", "printf private-output"]
+debounce_ms = 0
+"#,
+            &lili_actions::ActionLoadContext::new("/", "/", Vec::new()),
+        );
+        assert!(state.configure_actions(loaded, 1).await);
+        let router = build_router(state.clone(), None);
+        let activation = serde_json::json!({
+            "trigger": "notification_click",
+            "notification_id": notification_id,
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/interactions")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(activation.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        for _ in 0..100 {
+            if !state.action_audit().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(state.action_audit().await.len(), 1);
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 1);
+
+        let response = router
+            .oneshot(
+                Request::get("/api/v1/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let diagnostics: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(diagnostics["actions"]["actions"][0]["id"], "open-session");
+        assert_eq!(diagnostics["actionAudit"][0]["eventId"], "event-card");
+        let serialized = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!serialized.contains("private-output"));
+        assert!(!serialized.contains("/bin/sh"));
     }
 
     #[tokio::test]

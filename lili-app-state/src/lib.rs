@@ -1,11 +1,15 @@
 mod ingestion;
 mod persistence;
 
-use std::sync::Arc;
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 use lili_actions::{
-    ActionExecutionOutcome, ActionExecutionResult, ActionSummary, DisplayEventSummaryV1,
-    InteractionContextV1, InteractionTrigger, NotificationFilterKind, NotificationSnapshotV1,
+    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSummary,
+    ActionSupervisor, DisplayEventSummaryV1, EffectiveActionsView, InteractionContextV1,
+    InteractionTrigger, LoadedActions, NotificationFilterKind, NotificationSnapshotV1,
     PetLifecycleSnapshotV1, PetSnapshotV1,
 };
 use lili_core::{
@@ -29,6 +33,8 @@ pub use persistence::{
     AppStateStore, DEFAULT_VISIBLE_WINDOW_MARGIN, DisplayWorkArea, PersistenceError,
     PersistentApplicationState, ResolvedWindowPlacement, WindowPlacement, resolve_window_placement,
 };
+
+const DISPATCH_HISTORY_LIMIT: usize = 2_048;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ViewSnapshot {
@@ -63,7 +69,42 @@ pub struct AppState {
     pet_asset: Arc<RwLock<ApprovedPetAsset>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
     action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
+    action_runtime: Arc<RwLock<ActionRuntimeState>>,
+    dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractionDispatchReceipt {
+    pub accepted: bool,
+    pub action_count: usize,
+}
+
+#[derive(Clone, Default)]
+struct ActionRuntimeState {
+    supervisor: Option<ActionSupervisor>,
+    effective: EffectiveActionsView,
+}
+
+#[derive(Default)]
+struct DispatchHistory {
+    order: VecDeque<Uuid>,
+    identities: HashSet<Uuid>,
+}
+
+impl DispatchHistory {
+    fn accept(&mut self, interaction_id: Uuid) -> bool {
+        if !self.identities.insert(interaction_id) {
+            return false;
+        }
+        self.order.push_back(interaction_id);
+        if self.order.len() > DISPATCH_HISTORY_LIMIT
+            && let Some(expired) = self.order.pop_front()
+        {
+            self.identities.remove(&expired);
+        }
+        true
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +163,8 @@ impl AppState {
             pet_asset: Arc::new(RwLock::new(pet_asset)),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
             action_feedback: Arc::new(RwLock::new(None)),
+            action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
+            dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
         }
     }
@@ -281,6 +324,75 @@ impl AppState {
         *self.action_feedback.write().await = Some(feedback);
         self.publish_presentation().await;
         true
+    }
+
+    pub async fn configure_actions(
+        &self,
+        loaded: LoadedActions,
+        global_concurrency: usize,
+    ) -> bool {
+        let effective = loaded.effective().clone();
+        let summaries = loaded.summaries();
+        let supervisor = ActionSupervisor::new(loaded, global_concurrency);
+        let configured = supervisor.is_some();
+        *self.action_runtime.write().await = ActionRuntimeState {
+            supervisor,
+            effective,
+        };
+        self.snapshot.write().await.actions = summaries;
+        self.publish_presentation().await;
+        configured
+    }
+
+    pub async fn effective_actions(&self) -> EffectiveActionsView {
+        self.action_runtime.read().await.effective.clone()
+    }
+
+    pub async fn action_audit(&self) -> Vec<ActionAuditEntry> {
+        let supervisor = self.action_runtime.read().await.supervisor.clone();
+        match supervisor {
+            Some(supervisor) => supervisor.audit_snapshot().await,
+            None => Vec::new(),
+        }
+    }
+
+    pub async fn dispatch_interaction(
+        &self,
+        context: InteractionContextV1,
+    ) -> InteractionDispatchReceipt {
+        if !self
+            .dispatched_interactions
+            .lock()
+            .await
+            .accept(context.interaction_id)
+        {
+            return InteractionDispatchReceipt {
+                accepted: false,
+                action_count: 0,
+            };
+        }
+        let supervisor = self.action_runtime.read().await.supervisor.clone();
+        let Some(supervisor) = supervisor else {
+            return InteractionDispatchReceipt {
+                accepted: true,
+                action_count: 0,
+            };
+        };
+        let action_ids = supervisor.matching_action_ids(&context);
+        let action_count = action_ids.len();
+        for action_id in action_ids {
+            let state = self.clone();
+            let supervisor = supervisor.clone();
+            let context = context.clone();
+            tokio::spawn(async move {
+                let result = supervisor.execute(&action_id, &context).await;
+                state.publish_action_result(&result).await;
+            });
+        }
+        InteractionDispatchReceipt {
+            accepted: true,
+            action_count,
+        }
     }
 
     pub async fn persistent_state(
@@ -478,6 +590,26 @@ mod tests {
     };
 
     use super::*;
+
+    #[cfg(unix)]
+    fn test_actions(source: &str) -> LoadedActions {
+        lili_actions::load_actions_str(
+            source,
+            &lili_actions::ActionLoadContext::new("/", "/", Vec::new()),
+        )
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_action_audit(state: &AppState, entries: usize) -> Vec<ActionAuditEntry> {
+        for _ in 0..100 {
+            let audit = state.action_audit().await;
+            if audit.len() >= entries {
+                return audit;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("action audit did not reach the expected length");
+    }
 
     #[tokio::test]
     async fn app_state_serializes_concurrent_duplicate_reduction() {
@@ -740,6 +872,126 @@ mod tests {
         assert_eq!(feedback.action_id, "open-session");
         assert_eq!(feedback.kind, PetActionFeedbackKind::Failure);
         assert_eq!(feedback.message, "Action could not start");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interaction_dispatches_each_matching_action_at_most_once() {
+        let state = AppState::default();
+        let loaded = test_actions(
+            r#"
+version = 1
+
+[[action]]
+id = "wave"
+trigger = "pet_click"
+command = ["/bin/sh", "-c", "exit 0"]
+debounce_ms = 0
+
+[[action]]
+id = "jump"
+trigger = "pet_double_click"
+command = ["/bin/sh", "-c", "exit 0"]
+debounce_ms = 0
+"#,
+        );
+        assert!(state.configure_actions(loaded, 1).await);
+        let context = state
+            .bind_interaction(Uuid::new_v4(), 1, InteractionTrigger::PetClick, None)
+            .await
+            .unwrap();
+        let (left, right) = tokio::join!(
+            state.dispatch_interaction(context.clone()),
+            state.dispatch_interaction(context),
+        );
+        assert!(left.accepted ^ right.accepted);
+        assert_eq!(left.action_count + right.action_count, 1);
+        let audit = wait_for_action_audit(&state, 1).await;
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].action_id, "wave");
+        assert_eq!(audit[0].outcome, ActionExecutionOutcome::Succeeded);
+
+        let double_click = state
+            .bind_interaction(Uuid::new_v4(), 2, InteractionTrigger::PetDoubleClick, None)
+            .await
+            .unwrap();
+        let dispatch = state.dispatch_interaction(double_click).await;
+        assert!(dispatch.accepted);
+        assert_eq!(dispatch.action_count, 1);
+        let audit = wait_for_action_audit(&state, 2).await;
+        assert_eq!(audit[1].action_id, "jump");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn notification_dispatch_keeps_bound_event_during_concurrent_updates() {
+        let state = AppState::default();
+        let loaded = test_actions(
+            r#"
+version = 1
+
+[[action]]
+id = "open-completion"
+trigger = "notification_activate"
+command = ["/bin/sh", "-c", "exit 0"]
+debounce_ms = 0
+
+[action.filters]
+notification_kinds = ["completion"]
+providers = ["codex"]
+"#,
+        );
+        assert!(state.configure_actions(loaded, 1).await);
+        let clicked = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-clicked-dispatch".to_owned()),
+            session_id: Some("session-clicked-dispatch".to_owned()),
+            turn_id: Some("turn-clicked-dispatch".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(clicked).await;
+        let notification_id = state.snapshot().await.session_state.notifications[0]
+            .id
+            .clone();
+        let context = state
+            .bind_interaction(
+                Uuid::new_v4(),
+                11,
+                InteractionTrigger::NotificationActivate,
+                Some(&notification_id),
+            )
+            .await
+            .unwrap();
+        let newer = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("attention_required".to_owned()),
+            event_id: Some("event-newer-dispatch".to_owned()),
+            session_id: Some("session-newer-dispatch".to_owned()),
+            turn_id: Some("turn-newer-dispatch".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        let (dispatch, _) = tokio::join!(
+            state.dispatch_interaction(context),
+            state.apply_session_event(newer),
+        );
+        assert!(dispatch.accepted);
+        assert_eq!(dispatch.action_count, 1);
+        let audit = wait_for_action_audit(&state, 1).await;
+        assert_eq!(audit[0].event_id.as_deref(), Some("event-clicked-dispatch"));
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 2);
     }
 
     #[tokio::test]

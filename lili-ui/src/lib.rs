@@ -107,6 +107,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         == ClickDecision::Double
                     {
                         controller.update(|controller| controller.trigger_jump(animation_clock_ms()));
+                        activate_native_pet("pet_double_click");
                     }
                 }
                 on:pointercancel=move |_| {
@@ -128,6 +129,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         controller.update(|controller| {
                             controller.trigger_wave(animation_clock_ms());
                         });
+                        activate_native_pet("pet_click");
                     }
                 }
             >
@@ -830,6 +832,7 @@ fn start_animation_clock(
         signals.reduced_motion.set(motion_is_reduced);
         if signals.clicks.write().poll(now_ms) == ClickDecision::Single {
             controller.update(|controller| controller.trigger_wave(now_ms));
+            activate_native_pet("pet_click");
         }
         let render = if motion_is_reduced {
             signals.gaze.set(None);
@@ -883,6 +886,14 @@ export function activateNativeNotification(id) {
   });
 }
 
+export function activateNativePet(trigger) {
+  void fetch('/api/v1/interactions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ trigger, notification_id: null }),
+  });
+}
+
 export function dismissNativeNotification(id) {
   void fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
 }
@@ -890,6 +901,9 @@ export function dismissNativeNotification(id) {
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
     fn activate_native_notification(id: &str);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativePet)]
+    fn activate_native_pet(trigger: &str);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = dismissNativeNotification)]
     fn dismiss_native_notification(id: &str);
