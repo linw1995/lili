@@ -1,4 +1,5 @@
 mod discovery;
+mod selection;
 mod validation;
 
 use std::time::Duration;
@@ -9,6 +10,10 @@ use serde::{Deserialize, Serialize};
 pub use discovery::{
     DEFAULT_PET_ID, DiscoveredPackage, DiscoveryIssue, DiscoveryReport, PackageOrigin,
     default_pet_path, discover_pet_packages, resolve_codex_home,
+};
+pub use selection::{
+    AvailablePet, CatalogDiagnostic, PetAssetSource, PetCatalog, SelectionError,
+    persist_selected_pet, selection_path,
 };
 pub use validation::{
     AtlasFormat, AtlasMetadata, AtlasValidationError, ValidatedPetPackage,
@@ -142,6 +147,24 @@ pub struct FrameDescriptor {
     column: u8,
     duration: Duration,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AtlasCell {
+    row: u8,
+    column: u8,
+}
+
+impl AtlasCell {
+    pub const fn row(self) -> u8 {
+        self.row
+    }
+
+    pub const fn column(self) -> u8 {
+        self.column
+    }
+}
+
+pub const NEUTRAL_LOOK_CELL: AtlasCell = AtlasCell { row: 0, column: 6 };
 
 impl FrameDescriptor {
     pub const fn row(self) -> u8 {
@@ -278,6 +301,10 @@ mod tests {
         assert_eq!((ATLAS_WIDTH, ATLAS_HEIGHT), (1536, 2288));
         assert_eq!((ATLAS_COLUMNS, ATLAS_ROWS), (8, 11));
         assert_eq!((CELL_WIDTH, CELL_HEIGHT), (192, 208));
+        assert_eq!(
+            (NEUTRAL_LOOK_CELL.row(), NEUTRAL_LOOK_CELL.column()),
+            (0, 6)
+        );
     }
 
     #[test]

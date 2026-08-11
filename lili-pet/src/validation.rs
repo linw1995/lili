@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::BufReader,
+    io::{BufRead, BufReader, Cursor, Seek},
     path::{Path, PathBuf},
 };
 
@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::{
     ATLAS_COLUMNS, ATLAS_HEIGHT, ATLAS_ROWS, ATLAS_WIDTH, CELL_HEIGHT, CELL_WIDTH,
-    DiscoveredPackage, PetDefinition, STANDARD_ANIMATIONS,
+    DiscoveredPackage, NEUTRAL_LOOK_CELL, PetDefinition, STANDARD_ANIMATIONS,
 };
 
 const MAX_ENCODED_ATLAS_BYTES: u64 = 32 * 1024 * 1024;
@@ -93,22 +93,47 @@ pub fn validate_discovered_package(
 
 fn validate_atlas(path: &Path) -> Result<AtlasMetadata, AtlasValidationError> {
     let encoded_bytes = fs::metadata(path)?.len();
+    validate_readers(image_reader(path)?, image_reader(path)?, encoded_bytes)
+}
+
+fn image_reader(path: &Path) -> Result<ImageReader<BufReader<File>>, AtlasValidationError> {
+    Ok(ImageReader::new(BufReader::new(File::open(path)?)).with_guessed_format()?)
+}
+
+pub(crate) fn validate_atlas_bytes(
+    bytes: &'static [u8],
+) -> Result<AtlasMetadata, AtlasValidationError> {
+    let encoded_bytes = bytes.len() as u64;
+    validate_readers(
+        ImageReader::new(Cursor::new(bytes)).with_guessed_format()?,
+        ImageReader::new(Cursor::new(bytes)).with_guessed_format()?,
+        encoded_bytes,
+    )
+}
+
+fn validate_readers<R1, R2>(
+    metadata_reader: ImageReader<R1>,
+    decode_reader: ImageReader<R2>,
+    encoded_bytes: u64,
+) -> Result<AtlasMetadata, AtlasValidationError>
+where
+    R1: BufRead + Seek,
+    R2: BufRead + Seek,
+{
     if encoded_bytes == 0 || encoded_bytes > MAX_ENCODED_ATLAS_BYTES {
         return Err(AtlasValidationError::EncodedSize(encoded_bytes));
     }
-
-    let reader = image_reader(path)?;
-    let format = match reader.format() {
+    let format = match metadata_reader.format() {
         Some(ImageFormat::Png) => AtlasFormat::Png,
         Some(ImageFormat::WebP) => AtlasFormat::WebP,
         _ => return Err(AtlasValidationError::UnsupportedFormat),
     };
-    let (width, height) = reader.into_dimensions()?;
+    let (width, height) = metadata_reader.into_dimensions()?;
     if (width, height) != (ATLAS_WIDTH, ATLAS_HEIGHT) {
         return Err(AtlasValidationError::Geometry { width, height });
     }
 
-    let decoded = image_reader(path)?.decode()?;
+    let decoded = decode_reader.decode()?;
     if (decoded.width(), decoded.height()) != (ATLAS_WIDTH, ATLAS_HEIGHT) {
         return Err(AtlasValidationError::Geometry {
             width: decoded.width(),
@@ -128,10 +153,6 @@ fn validate_atlas(path: &Path) -> Result<AtlasMetadata, AtlasValidationError> {
     })
 }
 
-fn image_reader(path: &Path) -> Result<ImageReader<BufReader<File>>, AtlasValidationError> {
-    Ok(ImageReader::new(BufReader::new(File::open(path)?)).with_guessed_format()?)
-}
-
 fn validate_cells(image: &RgbaImage) -> Result<(), AtlasValidationError> {
     let mut visible_cells = [[false; ATLAS_COLUMNS as usize]; ATLAS_ROWS as usize];
     let mut transparent_pixel = false;
@@ -149,6 +170,15 @@ fn validate_cells(image: &RgbaImage) -> Result<(), AtlasValidationError> {
     for spec in STANDARD_ANIMATIONS {
         for column in 0..ATLAS_COLUMNS {
             let visible = visible_cells[spec.row() as usize][column as usize];
+            if (spec.row(), column) == (NEUTRAL_LOOK_CELL.row(), NEUTRAL_LOOK_CELL.column()) {
+                if !visible {
+                    return Err(AtlasValidationError::EmptyUsedCell {
+                        row: spec.row(),
+                        column,
+                    });
+                }
+                continue;
+            }
             if (column as usize) < spec.frame_count() && !visible {
                 return Err(AtlasValidationError::EmptyUsedCell {
                     row: spec.row(),
@@ -227,6 +257,11 @@ mod tests {
                 );
             }
         }
+        image.put_pixel(
+            u32::from(NEUTRAL_LOOK_CELL.column()) * CELL_WIDTH + CELL_WIDTH / 2,
+            u32::from(NEUTRAL_LOOK_CELL.row()) * CELL_HEIGHT + CELL_HEIGHT / 2,
+            image::Rgba([80, 60, 40, 255]),
+        );
         for row in 9..ATLAS_ROWS as u32 {
             for column in 0..ATLAS_COLUMNS as u32 {
                 image.put_pixel(

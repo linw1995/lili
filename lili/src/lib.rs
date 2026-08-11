@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
 use lili_app_state::AppState;
+use lili_pet::{PetCatalog, resolve_codex_home};
 use lili_server::{StaticAssets, build_router};
 use loopback::LoopbackServer;
 use tauri::{
@@ -39,8 +40,14 @@ fn run_desktop(smoke: bool) {
         cfg!(debug_assertions),
     )
     .map(StaticAssets::new);
-    let loopback = LoopbackServer::bind(build_router(AppState::default(), assets))
-        .expect("failed to bind secure loopback transport");
+    let pet_catalog = resolve_codex_home()
+        .map(|codex_home| PetCatalog::load(&codex_home))
+        .unwrap_or_default();
+    let loopback = LoopbackServer::bind(build_router(
+        AppState::with_pet_catalog(pet_catalog),
+        assets,
+    ))
+    .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();
     let origin = loopback.origin();

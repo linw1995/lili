@@ -31,11 +31,11 @@ The system SHALL accept only `spriteVersionNumber: 2` packages whose PNG or WebP
 - **THEN** the package is excluded and the UI reports a package-specific diagnostic while retaining a usable fallback pet
 
 ### Requirement: Render standard animation rows exactly
-The system SHALL render standard rows with the v2 frame counts and timing sequences: idle row 0 columns 0-5 at `280, 110, 110, 140, 140, 320 ms`; running-right row 1 columns 0-7 at `120 ms` per frame and `220 ms` for the final frame; running-left row 2 with the same columns and timing; waving row 3 columns 0-3 at `140 ms` per frame and `280 ms` for the final frame; jumping row 4 columns 0-4 at `140 ms` per frame and `280 ms` for the final frame; failed row 5 columns 0-7 at `140 ms` per frame and `240 ms` for the final frame; waiting row 6 columns 0-5 at `150 ms` per frame and `260 ms` for the final frame; running row 7 columns 0-5 at `120 ms` per frame and `220 ms` for the final frame; and review row 8 columns 0-5 at `150 ms` per frame and `280 ms` for the final frame.
+The system SHALL render standard rows with the v2 frame counts and timing sequences: idle row 0 columns 0-5 at `280, 110, 110, 140, 140, 320 ms`; reserved neutral look cell at row 0 column 6; running-right row 1 columns 0-7 at `120 ms` per frame and `220 ms` for the final frame; running-left row 2 with the same columns and timing; waving row 3 columns 0-3 at `140 ms` per frame and `280 ms` for the final frame; jumping row 4 columns 0-4 at `140 ms` per frame and `280 ms` for the final frame; failed row 5 columns 0-7 at `140 ms` per frame and `240 ms` for the final frame; waiting row 6 columns 0-5 at `150 ms` per frame and `260 ms` for the final frame; running row 7 columns 0-5 at `120 ms` per frame and `220 ms` for the final frame; and review row 8 columns 0-5 at `150 ms` per frame and `280 ms` for the final frame.
 
 #### Scenario: Standard animation plays
 - **WHEN** the behavior state selects a standard animation
-- **THEN** only that row's used frames play in order with the contract-defined durations and unused cells are never displayed
+- **THEN** only that row's used frames play in order with the contract-defined durations, the neutral cell remains outside the idle loop, and unused cells are never displayed
 
 ### Requirement: Render all look directions in clockwise order
 The system SHALL map rows 9 and 10 to the 16 clockwise look directions from `000` through `337.5` degrees, where `000` means up and the no-vector deadzone falls back to idle.
