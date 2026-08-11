@@ -458,6 +458,12 @@ fn unix_time_ms() -> u64 {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use uuid::Uuid;
 
     use super::*;
@@ -465,6 +471,28 @@ mod tests {
         ActionLoadContext, InteractionTrigger, PetLifecycleSnapshotV1, PetSnapshotV1,
         load_actions_str,
     };
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "lili-action-supervisor-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn interaction() -> InteractionContextV1 {
         InteractionContextV1::for_pet(
@@ -481,6 +509,15 @@ mod tests {
     }
 
     fn supervisor(command: &[&str], policy: &str, debounce_ms: u64) -> ActionSupervisor {
+        supervisor_with_timeout(command, policy, debounce_ms, 100)
+    }
+
+    fn supervisor_with_timeout(
+        command: &[&str],
+        policy: &str,
+        debounce_ms: u64,
+        timeout_ms: u64,
+    ) -> ActionSupervisor {
         let command = command
             .iter()
             .map(|part| format!("{part:?}"))
@@ -494,7 +531,7 @@ version = 1
 id = "test"
 trigger = "pet_click"
 command = [{command}]
-timeout_ms = 100
+timeout_ms = {timeout_ms}
 debounce_ms = {debounce_ms}
 
 [action.concurrency]
@@ -652,5 +689,92 @@ debounce_ms = 0
         let serialized = serde_json::to_string(&audit).unwrap();
         assert!(!serialized.contains("private-output"));
         assert!(!serialized.contains("environment"));
+    }
+
+    #[tokio::test]
+    async fn executable_removed_after_load_is_a_bounded_spawn_failure() {
+        let temp = TempDir::new();
+        let executable = temp.0.join("removed-executable");
+        let target = if Path::new("/usr/bin/true").is_file() {
+            "/usr/bin/true"
+        } else {
+            "/bin/true"
+        };
+        std::os::unix::fs::symlink(target, &executable).unwrap();
+        let executable_string = executable.to_string_lossy();
+        let supervisor = supervisor(
+            &[executable_string.as_ref()],
+            "mode = \"reject\"\nmax_parallel = 1\nqueue_capacity = 0",
+            0,
+        );
+        fs::remove_file(&executable).unwrap();
+
+        let result = supervisor.execute("test", &interaction()).await;
+        assert_eq!(result.outcome, ActionExecutionOutcome::SpawnFailed);
+        assert_eq!(result.exit_code, None);
+        assert!(result.stdout.bytes().is_empty());
+        assert!(result.stderr.bytes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nonzero_exit_is_reported_without_crashing_the_supervisor() {
+        let supervisor = supervisor(
+            &["/bin/sh", "-c", "exit 7"],
+            "mode = \"reject\"\nmax_parallel = 1\nqueue_capacity = 0",
+            0,
+        );
+        let result = supervisor.execute("test", &interaction()).await;
+        assert_eq!(result.outcome, ActionExecutionOutcome::NonZeroExit);
+        assert_eq!(result.exit_code, Some(7));
+    }
+
+    #[tokio::test]
+    async fn application_shutdown_cancels_the_entire_action_process_group() {
+        let temp = TempDir::new();
+        let pid_file = temp.0.join("grandchild.pid");
+        let pid_file_string = pid_file.to_string_lossy();
+        let supervisor = supervisor_with_timeout(
+            &[
+                "/bin/sh",
+                "-c",
+                "sleep 30 & child=$!; printf %s \"$child\" > \"$1\"; wait",
+                "lili-action-test",
+                pid_file_string.as_ref(),
+            ],
+            "mode = \"reject\"\nmax_parallel = 1\nqueue_capacity = 0",
+            0,
+            30_000,
+        );
+        let running = tokio::spawn(async move { supervisor.execute("test", &interaction()).await });
+        let grandchild = wait_for_pid(&pid_file).await;
+        assert!(process_exists(grandchild));
+
+        running.abort();
+        let _ = running.await;
+        for _ in 0..100 {
+            if !process_exists(grandchild) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("action grandchild survived runtime shutdown");
+    }
+
+    async fn wait_for_pid(path: &Path) -> i32 {
+        for _ in 0..100 {
+            if let Ok(value) = fs::read_to_string(path)
+                && let Ok(pid) = value.parse()
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("action grandchild pid was not published");
+    }
+
+    fn process_exists(pid: i32) -> bool {
+        // A zero signal checks the validated child identity without changing process state.
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || !matches!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH))
     }
 }

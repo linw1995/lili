@@ -85,7 +85,7 @@
 - [x] 8.5 Implement global and per-action concurrency, debounce, queue/reject policy, timeout, bounded output capture, and cross-platform process-tree termination.
 - [x] 8.6 Implement the bounded privacy-preserving execution audit and action result feedback without mutating session state or automatically dismissing failed notification actions.
 - [x] 8.7 Bind notification activation, pet click, and pet double-click to configured actions and verify each accepted interaction dispatches at most once under concurrent session updates.
-- [ ] 8.8 Add injection, missing executable, nonzero exit, timeout, output flood, environment leak, rapid-click, concurrency saturation, and application-shutdown tests.
+- [x] 8.8 Add injection, missing executable, nonzero exit, timeout, output flood, environment leak, rapid-click, concurrency saturation, and application-shutdown tests.
 
 ## 9. Security, Privacy, and Fault Verification
 

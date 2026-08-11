@@ -994,6 +994,49 @@ providers = ["codex"]
         assert_eq!(state.pet_presentation().await.unread_notification_count, 2);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rapid_click_debounce_emits_only_one_ui_result() {
+        let state = AppState::default();
+        let loaded = test_actions(
+            r#"
+version = 1
+
+[[action]]
+id = "wave-once"
+trigger = "pet_click"
+command = ["/bin/sh", "-c", "exit 0"]
+debounce_ms = 1000
+"#,
+        );
+        assert!(state.configure_actions(loaded, 1).await);
+        let mut presentations = state.subscribe_pet_presentation();
+        let first = state
+            .bind_interaction(Uuid::new_v4(), 1, InteractionTrigger::PetClick, None)
+            .await
+            .unwrap();
+        assert!(state.dispatch_interaction(first).await.accepted);
+        wait_for_action_audit(&state, 1).await;
+        presentations.changed().await.unwrap();
+        let first_feedback = presentations
+            .borrow_and_update()
+            .action_feedback
+            .clone()
+            .unwrap();
+        assert_eq!(first_feedback.kind, PetActionFeedbackKind::Success);
+
+        let second = state
+            .bind_interaction(Uuid::new_v4(), 2, InteractionTrigger::PetClick, None)
+            .await
+            .unwrap();
+        assert!(state.dispatch_interaction(second).await.accepted);
+        let audit = wait_for_action_audit(&state, 2).await;
+        assert_eq!(audit[0].outcome, ActionExecutionOutcome::Succeeded);
+        assert_eq!(audit[1].outcome, ActionExecutionOutcome::Debounced);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!presentations.has_changed().unwrap());
+    }
+
     #[tokio::test]
     async fn presentation_subscriber_observes_only_monotonic_applied_revisions() {
         let state = AppState::default();

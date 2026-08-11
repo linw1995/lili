@@ -373,8 +373,13 @@ command = [{command}]
         } else {
             "/usr/bin/cat"
         };
+        let marker = std::env::temp_dir().join(format!(
+            "lili-action-injection-marker-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
         let action = load_action(&format!("{cat:?}"), "VISIBLE = \"allowed\"");
-        let context = interaction("$(touch /tmp/not-an-action); ' quoted");
+        let context = interaction(&format!("$(touch {}); ' quoted", marker.display()));
         let output = spawn_action(&action, &context)
             .await
             .unwrap()
@@ -386,6 +391,7 @@ command = [{command}]
         let received: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(received["pet"]["label"], context.pet.label);
         assert_eq!(action.arguments().len(), 0);
+        assert!(!marker.exists());
     }
 
     #[tokio::test]
