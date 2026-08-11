@@ -61,7 +61,8 @@ fn run_desktop(smoke: bool) {
             .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
             .local(false)
             .window("pet")
-            .permission("allow-sign-loopback-request");
+            .permission("allow-sign-loopback-request")
+            .permission("core:window:allow-start-dragging");
         if smoke {
             capability.permission("allow-complete-desktop-smoke")
         } else {

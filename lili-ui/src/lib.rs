@@ -9,7 +9,11 @@ pub fn App(#[prop(optional)] pet_asset_url: String) -> impl IntoView {
             data-ssr-marker="lili-ready"
             data-pet-asset-url=pet_asset_url
         >
-            <section class="pet-sprite" aria-label="Lili desktop pet">
+            <section
+                class="pet-sprite"
+                aria-label="Lili desktop pet"
+                data-tauri-drag-region="deep"
+            >
                 <img class="pet-atlas" src=asset_source alt="" aria-hidden="true"/>
             </section>
         </main>
@@ -41,6 +45,7 @@ mod tests {
         .to_html();
         assert!(html.contains("class=\"pet-sprite\""));
         assert!(html.contains("class=\"pet-atlas\""));
+        assert!(html.contains("data-tauri-drag-region=\"deep\""));
         assert!(html.contains("/pet-assets/opaque-id"));
         assert!(!html.contains("/api/v1/pet-assets/"));
         assert!(!html.contains("spritesheet.webp"));

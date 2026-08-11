@@ -36,6 +36,10 @@ The system SHALL map idle to row 0, attention required to waiting row 6, an acti
 ### Requirement: Support gaze and drag behavior
 The pet SHALL look toward the pointer while hover tracking is active, SHALL use running-left or running-right during horizontal drag movement, and SHALL persist the final clamped position when dragging ends.
 
+#### Scenario: User grabs the visible pet
+- **WHEN** the primary pointer presses and moves within the pet sprite
+- **THEN** native window dragging starts from the pet hit region without making the transparent window margin draggable
+
 #### Scenario: User drags the pet to the right
 - **WHEN** horizontal drag velocity is positive beyond the movement threshold
 - **THEN** the pet displays running-right until the drag slows or ends
