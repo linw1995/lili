@@ -375,6 +375,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalized_event_errors_have_safe_public_messages() {
+        let errors = [
+            NormalizedEventValidationError::UnsupportedVersion,
+            NormalizedEventValidationError::MissingTurn,
+            NormalizedEventValidationError::InvalidProject,
+            NormalizedEventValidationError::InvalidSummary,
+            NormalizedEventValidationError::InvalidSource,
+        ];
+
+        for error in errors {
+            assert!(error.to_string().starts_with("normalized "));
+        }
+    }
+
+    #[test]
     fn identities_reject_empty_oversized_and_control_values() {
         assert!(SessionId::parse("").is_err());
         assert!(TurnId::parse("x".repeat(MAX_ID_BYTES + 1)).is_err());

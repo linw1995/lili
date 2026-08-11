@@ -755,6 +755,26 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn restore_errors_have_safe_public_messages() {
+        let errors = [
+            ReducerRestoreError::TooManySessions,
+            ReducerRestoreError::TooManyTurns,
+            ReducerRestoreError::TooManyNotifications,
+            ReducerRestoreError::TooManyRecentEvents,
+            ReducerRestoreError::DuplicateSession,
+            ReducerRestoreError::DuplicateTurn,
+            ReducerRestoreError::DuplicateNotification,
+            ReducerRestoreError::DuplicateRecentEvent,
+            ReducerRestoreError::InvalidCurrentTurn,
+            ReducerRestoreError::InvalidNotificationState,
+        ];
+
+        for error in errors {
+            assert!(error.to_string().starts_with("persisted reducer "));
+        }
+    }
+
     fn event(
         event_id: &str,
         event_type: &str,

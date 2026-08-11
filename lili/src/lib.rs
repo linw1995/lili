@@ -769,4 +769,19 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn tray_integration_statuses_have_stable_labels() {
+        let statuses = [
+            TrayIntegrationStatus::Installed,
+            TrayIntegrationStatus::Partial,
+            TrayIntegrationStatus::NotConfigured,
+            TrayIntegrationStatus::NeedsAttention,
+            TrayIntegrationStatus::Unavailable,
+        ];
+
+        for status in statuses {
+            assert!(status.label().starts_with("Integration: "));
+        }
+    }
 }

@@ -577,6 +577,34 @@ const fn diagnostic_message(code: ActionDiagnosticCode) -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_diagnostic_code_has_a_stable_message() {
+        let codes = [
+            ActionDiagnosticCode::Missing,
+            ActionDiagnosticCode::InvalidFile,
+            ActionDiagnosticCode::TooLarge,
+            ActionDiagnosticCode::MalformedDocument,
+            ActionDiagnosticCode::UnsupportedVersion,
+            ActionDiagnosticCode::TooManyEntries,
+            ActionDiagnosticCode::MalformedEntry,
+            ActionDiagnosticCode::InvalidIdentifier,
+            ActionDiagnosticCode::DuplicateIdentifier,
+            ActionDiagnosticCode::EmptyCommand,
+            ActionDiagnosticCode::InvalidCommand,
+            ActionDiagnosticCode::ExecutableNotFound,
+            ActionDiagnosticCode::InvalidTimeout,
+            ActionDiagnosticCode::InvalidDebounce,
+            ActionDiagnosticCode::InvalidConcurrency,
+            ActionDiagnosticCode::InvalidWorkingDirectory,
+            ActionDiagnosticCode::InvalidEnvironment,
+            ActionDiagnosticCode::InvalidFilter,
+        ];
+
+        for code in codes {
+            assert!(diagnostic_message(code).starts_with("action "));
+        }
+    }
+
     fn context() -> ActionLoadContext {
         let executable = std::env::current_exe().unwrap();
         ActionLoadContext::new(

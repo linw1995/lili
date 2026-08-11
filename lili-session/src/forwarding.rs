@@ -558,6 +558,33 @@ mod tests {
     }
 
     #[test]
+    fn protocol_errors_have_safe_public_messages() {
+        let errors = [
+            ForwardingProtocolError::TooLarge,
+            ForwardingProtocolError::Malformed,
+            ForwardingProtocolError::UnsupportedVersion(2),
+            ForwardingProtocolError::InvalidEndpoint,
+            ForwardingProtocolError::InvalidInstanceId,
+            ForwardingProtocolError::InvalidCredential,
+            ForwardingProtocolError::InvalidNonce,
+            ForwardingProtocolError::InvalidMac,
+            ForwardingProtocolError::WrongInstance,
+            ForwardingProtocolError::Expired,
+            ForwardingProtocolError::ReplayedNonce,
+            ForwardingProtocolError::MismatchedAcknowledgement,
+            ForwardingProtocolError::InvalidEvent,
+            ForwardingProtocolError::Randomness,
+        ];
+
+        for error in errors {
+            let message = error.to_string();
+            assert!(
+                message.starts_with("forwarding ") || message == "secure randomness is unavailable"
+            );
+        }
+    }
+
+    #[test]
     fn signed_message_and_acknowledgement_round_trip() {
         let credentials = ForwardingCredentials::generate().unwrap();
         let message = credentials.sign(event(), 1_000).unwrap();
