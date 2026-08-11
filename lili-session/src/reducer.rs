@@ -46,13 +46,15 @@ struct SessionRecord {
     turns: BTreeMap<TurnId, TurnRecord>,
     project: Option<DisplayProjectContext>,
     updated_at_ms: u64,
+    last_event_id: EventId,
     ended: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TurnRecord {
     phase: SessionPhase,
     updated_at_ms: u64,
+    last_event_id: EventId,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -95,6 +97,12 @@ impl SessionReducer {
             );
         }
         if let Some(kind) = transition.notification {
+            if matches!(
+                kind,
+                NotificationKind::Completion | NotificationKind::Failure
+            ) {
+                self.remove_superseded_terminal_notifications(&event);
+            }
             self.insert_notification(&event, kind);
         }
         self.refresh_presentation(event.occurred_at_ms);
@@ -166,12 +174,13 @@ impl SessionReducer {
         match event.event_type {
             SessionEventKind::SessionStarted => {
                 if let Some(session) = self.sessions.get_mut(&key) {
-                    if event.occurred_at_ms < session.updated_at_ms || !session.ended {
+                    if event_order(event) <= session_order(session) || !session.ended {
                         return Transition::default();
                     }
                     session.ended = false;
                     session.current_turn_id = None;
                     session.updated_at_ms = event.occurred_at_ms;
+                    session.last_event_id.clone_from(&event.event_id);
                     if event.project.is_some() {
                         session.project.clone_from(&event.project);
                     }
@@ -184,14 +193,18 @@ impl SessionReducer {
                 }
             }
             SessionEventKind::SessionEnded => {
-                let Some(session) = self.sessions.get_mut(&key) else {
-                    return Transition::default();
-                };
-                if event.occurred_at_ms < session.updated_at_ms || session.ended {
-                    return Transition::default();
+                if let Some(session) = self.sessions.get_mut(&key) {
+                    if event_order(event) <= session_order(session) || session.ended {
+                        return Transition::default();
+                    }
+                    session.ended = true;
+                    session.updated_at_ms = event.occurred_at_ms;
+                    session.last_event_id.clone_from(&event.event_id);
+                } else {
+                    let mut session = SessionRecord::new(event);
+                    session.ended = true;
+                    self.sessions.insert(key, session);
                 }
-                session.ended = true;
-                session.updated_at_ms = event.occurred_at_ms;
                 Transition {
                     changed: true,
                     resolve_attention: true,
@@ -210,31 +223,11 @@ impl SessionReducer {
             .clone();
         let key = (event.provider.clone(), event.session_id.clone());
 
-        if event.event_type == SessionEventKind::AttentionResolved {
-            let Some(session) = self.sessions.get_mut(&key) else {
-                return Transition::default();
-            };
-            let Some(turn) = session.turns.get_mut(&turn_id) else {
-                return Transition::default();
-            };
-            if event.occurred_at_ms < turn.updated_at_ms || turn.phase != SessionPhase::Attention {
-                return Transition::default();
-            }
-            turn.phase = SessionPhase::Active;
-            turn.updated_at_ms = event.occurred_at_ms;
-            update_session_after_turn(session, event, &turn_id);
-            return Transition {
-                changed: true,
-                resolve_attention: true,
-                ..Transition::default()
-            };
-        }
-
         let session = self
             .sessions
             .entry(key)
             .or_insert_with(|| SessionRecord::new(event));
-        let previous = session.turns.get(&turn_id).copied();
+        let previous = session.turns.get(&turn_id);
         let Some(next_phase) = next_turn_phase(previous, event) else {
             return Transition::default();
         };
@@ -243,6 +236,7 @@ impl SessionReducer {
             TurnRecord {
                 phase: next_phase,
                 updated_at_ms: event.occurred_at_ms,
+                last_event_id: event.event_id.clone(),
             },
         );
         session.ended = false;
@@ -258,7 +252,9 @@ impl SessionReducer {
             },
             resolve_attention: matches!(
                 event.event_type,
-                SessionEventKind::TurnCompleted | SessionEventKind::TurnFailed
+                SessionEventKind::AttentionResolved
+                    | SessionEventKind::TurnCompleted
+                    | SessionEventKind::TurnFailed
             ),
         }
     }
@@ -296,6 +292,18 @@ impl SessionReducer {
                 notification.state = NotificationState::Resolved;
             }
         }
+    }
+
+    fn remove_superseded_terminal_notifications(&mut self, event: &NormalizedSessionEvent) {
+        self.notifications.retain(|_, notification| {
+            notification.provider != event.provider
+                || notification.session_id != event.session_id
+                || notification.turn_id != event.turn_id
+                || !matches!(
+                    notification.kind,
+                    NotificationKind::Completion | NotificationKind::Failure
+                )
+        });
     }
 
     fn remember_event(&mut self, event: (ProviderId, EventId)) {
@@ -379,6 +387,7 @@ impl SessionRecord {
             turns: BTreeMap::new(),
             project: event.project.clone(),
             updated_at_ms: event.occurred_at_ms,
+            last_event_id: event.event_id.clone(),
             ended: false,
         }
     }
@@ -404,27 +413,29 @@ impl SessionRecord {
 }
 
 fn next_turn_phase(
-    previous: Option<TurnRecord>,
+    previous: Option<&TurnRecord>,
     event: &NormalizedSessionEvent,
 ) -> Option<SessionPhase> {
     if let Some(previous) = previous {
-        if event.occurred_at_ms < previous.updated_at_ms
-            || matches!(
-                previous.phase,
-                SessionPhase::Completed | SessionPhase::Failed
-            )
-        {
+        if event_order(event) <= turn_order(previous) {
             return None;
         }
-        if previous.phase == SessionPhase::Attention
-            && event.event_type == SessionEventKind::TurnStarted
-        {
+        let previous_terminal = matches!(
+            previous.phase,
+            SessionPhase::Completed | SessionPhase::Failed
+        );
+        let incoming_terminal = matches!(
+            event.event_type,
+            SessionEventKind::TurnCompleted | SessionEventKind::TurnFailed
+        );
+        if previous_terminal && !incoming_terminal {
             return None;
         }
     }
     match event.event_type {
         SessionEventKind::TurnStarted => Some(SessionPhase::Active),
         SessionEventKind::AttentionRequired => Some(SessionPhase::Attention),
+        SessionEventKind::AttentionResolved => Some(SessionPhase::Active),
         SessionEventKind::TurnCompleted => Some(SessionPhase::Completed),
         SessionEventKind::TurnFailed => Some(SessionPhase::Failed),
         _ => None,
@@ -440,18 +451,31 @@ fn update_session_after_turn(
         session
             .turns
             .get(current_id)
-            .map(|turn| (turn.updated_at_ms, current_id))
+            .map(|turn| (turn.updated_at_ms, &turn.last_event_id, current_id))
     });
-    let incoming_order = (event.occurred_at_ms, turn_id);
+    let incoming_order = (event.occurred_at_ms, &event.event_id, turn_id);
     if current_order.is_none_or(|current| incoming_order >= current) {
         session.current_turn_id = Some(turn_id.clone());
     }
     if event.occurred_at_ms >= session.updated_at_ms {
         session.updated_at_ms = event.occurred_at_ms;
+        session.last_event_id.clone_from(&event.event_id);
         if event.project.is_some() {
             session.project.clone_from(&event.project);
         }
     }
+}
+
+fn event_order(event: &NormalizedSessionEvent) -> (u64, &EventId) {
+    (event.occurred_at_ms, &event.event_id)
+}
+
+fn session_order(session: &SessionRecord) -> (u64, &EventId) {
+    (session.updated_at_ms, &session.last_event_id)
+}
+
+fn turn_order(turn: &TurnRecord) -> (u64, &EventId) {
+    (turn.updated_at_ms, &turn.last_event_id)
 }
 
 fn notification_id(provider: &ProviderId, event_id: &EventId) -> NotificationId {

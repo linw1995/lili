@@ -34,7 +34,7 @@
 - [x] 3.2 Implement payload normalization with additive-field tolerance, required-field validation, summary redaction and truncation, stable fallback event identity, and raw-payload exclusion from errors.
 - [x] 3.3 Implement the serialized session reducer with per-turn monotonic terminal states, new-turn generations, deduplication, attention resolution, notification acknowledgement, and snapshot revisions.
 - [x] 3.4 Implement deterministic concurrent-session presentation priority and minimum animation dwell without coupling notification ordering to the currently displayed session.
-- [ ] 3.5 Add table-driven and property tests for duplicated, reordered, stale, concurrent, missing-field, and new-provider-field event sequences.
+- [x] 3.5 Add table-driven and property tests for duplicated, reordered, stale, concurrent, missing-field, and new-provider-field event sequences.
 - [ ] 3.6 Add bounded persistence for selected pet, window placement, unread normalized notifications, and reducer metadata with version rejection and atomic replacement tests.
 
 ## 4. Private Event Delivery and Offline Recovery
