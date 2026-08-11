@@ -38,6 +38,7 @@ in
         lint = mkApp "lint" "Lint the Lili workspace";
         prek = mkApp "prek" "Run repository hooks";
         e2e = mkApp "e2e" "Run browser end-to-end tests";
+        desktop-smoke = mkApp "desktop-smoke" "Run the desktop smoke verifier";
       };
     in {
       inherit apps packages;

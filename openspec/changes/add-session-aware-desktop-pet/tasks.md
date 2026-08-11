@@ -13,7 +13,7 @@
 - [x] 1.11 Add the Leptos SSR shell, hydration entry, static asset build, and fixture-only Web entry point with a deterministic health and SSR marker test.
 - [x] 1.12 Implement the single Axum router with snapshot, event-stream, approved pet-asset, settings, interaction, and diagnostics routes plus strict body limits and security headers.
 - [x] 1.13 Port linw1995's ephemeral HTTPS loopback, certificate pinning, signed mutating-request transport, replay protection, and narrow Tauri capability registration under Lili names.
-- [ ] 1.14 Add a frameless transparent Tauri window, tray lifecycle, packaged Web assets, clean native shutdown, and a desktop smoke-verification entry point driven by the Flake build applications.
+- [x] 1.14 Add a frameless transparent Tauri window, tray lifecycle, packaged Web assets, clean native shutdown, and a desktop smoke-verification entry point driven by the Flake build applications.
 
 ## 2. Codex V2 Pet Compatibility
 

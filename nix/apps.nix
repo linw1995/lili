@@ -19,7 +19,7 @@ in {
   dev = mkWorkspaceApp {
     name = "dev";
     text = ''
-      exec cargo tauri dev --locked "$@"
+      exec cargo tauri dev "$@" -- --locked
     '';
   };
 
@@ -34,14 +34,14 @@ in {
   build = mkWorkspaceApp {
     name = "build";
     text = ''
-      exec cargo tauri build --locked "$@"
+      exec cargo tauri build "$@" -- --locked
     '';
   };
 
   build-app = mkWorkspaceApp {
     name = "build-app";
     text = ''
-      exec cargo tauri build --locked --bundles app "$@"
+      exec cargo tauri build --bundles app "$@" -- --locked
     '';
   };
 
@@ -87,6 +87,14 @@ in {
         export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
       ''}
       exec npx playwright test "$@"
+    '';
+  };
+
+  desktop-smoke = mkWorkspaceApp {
+    name = "desktop-smoke";
+    text = ''
+      trunk build --locked
+      exec cargo run --locked --package lili -- --desktop-smoke
     '';
   };
 }
