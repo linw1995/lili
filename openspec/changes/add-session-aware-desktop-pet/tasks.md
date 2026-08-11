@@ -63,7 +63,7 @@
 - [x] 6.3 Implement atomic install with timestamped backups, unique Lili markers, preservation of unrelated configuration, idempotent re-run behavior, and rollback on verification failure.
 - [x] 6.4 Detect an existing non-Lili `notify` command as a hard conflict and add an explicit coexistence dispatcher mode that isolates failures and preserves original argv semantics.
 - [x] 6.5 Implement provenance-aware uninstall that removes only Lili-owned entries, restores a prior notification command when still safe, and leaves pet packages and unrelated hooks untouched.
-- [ ] 6.6 Add round-trip tests for empty, commented, reordered, existing-hook, conflicting-notify, repeated-install, modified-after-install, uninstall, and corrupted configuration cases.
+- [x] 6.6 Add round-trip tests for empty, commented, reordered, existing-hook, conflicting-notify, repeated-install, modified-after-install, uninstall, and corrupted configuration cases.
 
 ## 7. Pet UI, Notifications, and Window Behavior
 
