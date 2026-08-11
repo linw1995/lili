@@ -11,7 +11,7 @@
 - [x] 1.9 Document the selective Flake input update procedure and add a test proving normal development and build commands do not rewrite any lockfile.
 - [x] 1.10 Create the Rust workspace with `lili-core`, `lili-pet`, `lili-session`, `lili-actions`, `lili-app-state`, `lili-server`, `lili-ui`, `lili-web`, and `lili` members, pinned shared dependencies, formatting, lint, and test configuration.
 - [x] 1.11 Add the Leptos SSR shell, hydration entry, static asset build, and fixture-only Web entry point with a deterministic health and SSR marker test.
-- [ ] 1.12 Implement the single Axum router with snapshot, event-stream, approved pet-asset, settings, interaction, and diagnostics routes plus strict body limits and security headers.
+- [x] 1.12 Implement the single Axum router with snapshot, event-stream, approved pet-asset, settings, interaction, and diagnostics routes plus strict body limits and security headers.
 - [ ] 1.13 Port linw1995's ephemeral HTTPS loopback, certificate pinning, signed mutating-request transport, replay protection, and narrow Tauri capability registration under Lili names.
 - [ ] 1.14 Add a frameless transparent Tauri window, tray lifecycle, packaged Web assets, clean native shutdown, and a desktop smoke-verification entry point driven by the Flake build applications.
 

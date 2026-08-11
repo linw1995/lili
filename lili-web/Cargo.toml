@@ -6,13 +6,8 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
-leptos = { workspace = true, features = ["ssr"] }
-lili-ui = { path = "../lili-ui", features = ["ssr"] }
-serde_json.workspace = true
+lili-app-state = { path = "../lili-app-state" }
+lili-server = { path = "../lili-server" }
 tokio.workspace = true
-tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[dev-dependencies]
-tower.workspace = true
