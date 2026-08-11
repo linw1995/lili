@@ -17,7 +17,7 @@
 
 ## 2. Codex V2 Pet Compatibility
 
-- [ ] 2.1 Define the v2 manifest, atlas geometry, row frame counts, exact frame durations, direction order, and immutable `PetDefinition` domain types with contract tests.
+- [x] 2.1 Define the v2 manifest, atlas geometry, row frame counts, exact frame durations, direction order, and immutable `PetDefinition` domain types with contract tests.
 - [ ] 2.2 Implement `CODEX_HOME` resolution and confined package discovery that rejects absolute, traversal, escaping-link, duplicate-ID, and oversized manifest cases.
 - [ ] 2.3 Implement streaming PNG/WebP metadata and transparency validation for exact `1536x2288` atlases without decoding unbounded images into memory.
 - [ ] 2.4 Add an embedded known-good v2 fallback package and selection persistence by identifier with startup revalidation and package-specific diagnostics.
