@@ -12,7 +12,7 @@ pub use discovery::{
     default_pet_path, discover_pet_packages, resolve_codex_home,
 };
 pub use selection::{
-    AvailablePet, CatalogDiagnostic, PetAssetSource, PetCatalog, SelectionError,
+    AvailablePet, CatalogDiagnostic, LoadedPetAsset, PetAssetSource, PetCatalog, SelectionError,
     persist_selected_pet, selection_path,
 };
 pub use validation::{

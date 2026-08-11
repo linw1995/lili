@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, Cursor, Seek},
+    io::{BufRead, BufReader, Cursor, Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -13,7 +13,7 @@ use crate::{
     DiscoveredPackage, NEUTRAL_LOOK_CELL, PetDefinition, STANDARD_ANIMATIONS,
 };
 
-const MAX_ENCODED_ATLAS_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_ENCODED_ATLAS_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AtlasFormat {
@@ -100,15 +100,28 @@ fn image_reader(path: &Path) -> Result<ImageReader<BufReader<File>>, AtlasValida
     Ok(ImageReader::new(BufReader::new(File::open(path)?)).with_guessed_format()?)
 }
 
-pub(crate) fn validate_atlas_bytes(
-    bytes: &'static [u8],
-) -> Result<AtlasMetadata, AtlasValidationError> {
+pub(crate) fn validate_atlas_bytes(bytes: &[u8]) -> Result<AtlasMetadata, AtlasValidationError> {
     let encoded_bytes = bytes.len() as u64;
     validate_readers(
         ImageReader::new(Cursor::new(bytes)).with_guessed_format()?,
         ImageReader::new(Cursor::new(bytes)).with_guessed_format()?,
         encoded_bytes,
     )
+}
+
+pub(crate) fn read_validated_atlas(
+    path: &Path,
+) -> Result<(Vec<u8>, AtlasMetadata), AtlasValidationError> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() == 0 || metadata.len() > MAX_ENCODED_ATLAS_BYTES {
+        return Err(AtlasValidationError::EncodedSize(metadata.len()));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)?
+        .take(MAX_ENCODED_ATLAS_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    let atlas = validate_atlas_bytes(&bytes)?;
+    Ok((bytes, atlas))
 }
 
 fn validate_readers<R1, R2>(

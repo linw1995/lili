@@ -2617,6 +2617,7 @@ dependencies = [
  "lili-session",
  "serde",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2646,6 +2647,7 @@ dependencies = [
  "http",
  "leptos",
  "lili-app-state",
+ "lili-pet",
  "lili-ui",
  "serde",
  "serde_json",

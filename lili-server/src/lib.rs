@@ -6,7 +6,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
-    response::{Html, Response, Sse, sse::Event},
+    response::{Html, IntoResponse, Response, Sse, sse::Event},
     routing::{get, post, put},
 };
 use leptos::prelude::*;
@@ -120,8 +120,18 @@ async fn interaction(Json(request): Json<InteractionRequest>) -> Json<Interactio
     })
 }
 
-async fn pet_asset(Path(_asset_id): Path<String>) -> StatusCode {
-    StatusCode::NOT_FOUND
+async fn pet_asset(State(state): State<AppState>, Path(asset_id): Path<String>) -> Response {
+    let Some(asset) = state.approved_pet_asset(&asset_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, asset.content_type())
+        .header(
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable",
+        )
+        .body(Body::from(asset.bytes().to_vec()))
+        .expect("approved pet asset response must be valid")
 }
 
 async fn events(State(state): State<AppState>) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
@@ -165,11 +175,39 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use axum::body::to_bytes;
     use http::Request;
     use tower::ServiceExt;
 
     use super::*;
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "lili-server-pet-asset-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[tokio::test]
     async fn health_is_deterministic() {
@@ -207,6 +245,112 @@ mod tests {
             response.headers().get(header::X_CONTENT_TYPE_OPTIONS),
             Some(&HeaderValue::from_static("nosniff"))
         );
+    }
+
+    #[tokio::test]
+    async fn approved_pet_asset_uses_opaque_identity_and_cache_headers() {
+        let state = AppState::default();
+        let snapshot = state.snapshot().await;
+        let asset_id = snapshot.pet_asset_id.unwrap();
+        assert_eq!(asset_id.len(), 32);
+        assert!(asset_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!asset_id.contains('/'));
+
+        let response = build_router(state, None)
+            .oneshot(
+                Request::get(format!("/api/v1/pet-assets/{asset_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("image/webp"))
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static(
+                "private, max-age=31536000, immutable"
+            ))
+        );
+        assert!(
+            response
+                .headers()
+                .contains_key(header::CONTENT_SECURITY_POLICY)
+        );
+        assert_eq!(
+            response.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+            Some(&HeaderValue::from_static("nosniff"))
+        );
+        let body = to_bytes(response.into_body(), 32 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(body.starts_with(b"RIFF"));
+    }
+
+    #[tokio::test]
+    async fn unknown_pet_asset_identity_is_rejected() {
+        let response = build_router(AppState::default(), None)
+            .oneshot(
+                Request::get("/api/v1/pet-assets/not-approved")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn package_reload_invalidates_the_previous_asset_identity() {
+        let temp = TempDir::new();
+        let package_dir = temp.0.join("pet").join("lili");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("pet.json"),
+            r#"{"id":"lili","displayName":"Lili","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state
+            .snapshot()
+            .await
+            .pet_asset_id
+            .expect("fallback must expose an asset identity");
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .expect("fallback identity must resolve");
+        fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let first = AppState::with_pet_catalog(lili_pet::PetCatalog::load(&temp.0));
+        let old_id = first.snapshot().await.pet_asset_id.unwrap();
+        fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+        let reloaded = AppState::with_pet_catalog(lili_pet::PetCatalog::load(&temp.0));
+        let new_id = reloaded.snapshot().await.pet_asset_id.unwrap();
+        assert_ne!(old_id, new_id);
+
+        let old_response = build_router(reloaded.clone(), None)
+            .oneshot(
+                Request::get(format!("/api/v1/pet-assets/{old_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(old_response.status(), StatusCode::NOT_FOUND);
+
+        let new_response = build_router(reloaded, None)
+            .oneshot(
+                Request::get(format!("/api/v1/pet-assets/{new_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(new_response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

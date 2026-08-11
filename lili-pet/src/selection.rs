@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    AtlasMetadata, DEFAULT_PET_ID, PetDefinition, SPRITE_VERSION_NUMBER, ValidatedPetPackage,
-    discover_pet_packages, validate_discovered_package, validation::validate_atlas_bytes,
+    AtlasMetadata, AtlasValidationError, DEFAULT_PET_ID, PetDefinition, SPRITE_VERSION_NUMBER,
+    ValidatedPetPackage, discover_pet_packages, validate_discovered_package,
+    validation::{read_validated_atlas, validate_atlas_bytes},
 };
 
 const SELECTION_VERSION: u8 = 1;
@@ -33,6 +34,22 @@ pub struct AvailablePet {
     source: PetAssetSource,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadedPetAsset {
+    bytes: Vec<u8>,
+    atlas: AtlasMetadata,
+}
+
+impl LoadedPetAsset {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub const fn atlas(&self) -> AtlasMetadata {
+        self.atlas
+    }
+}
+
 impl AvailablePet {
     pub const fn definition(&self) -> &PetDefinition {
         &self.definition
@@ -48,6 +65,18 @@ impl AvailablePet {
 
     pub fn embedded_atlas(&self) -> Option<&'static [u8]> {
         matches!(self.source, PetAssetSource::Embedded).then_some(FALLBACK_ATLAS)
+    }
+
+    pub fn load_asset(&self) -> Result<LoadedPetAsset, AtlasValidationError> {
+        let (bytes, atlas) = match &self.source {
+            PetAssetSource::File(path) => read_validated_atlas(path)?,
+            PetAssetSource::Embedded => {
+                let bytes = FALLBACK_ATLAS.to_vec();
+                let atlas = validate_atlas_bytes(&bytes)?;
+                (bytes, atlas)
+            }
+        };
+        Ok(LoadedPetAsset { bytes, atlas })
     }
 }
 

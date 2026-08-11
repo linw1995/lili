@@ -10,3 +10,4 @@ lili-pet = { path = "../lili-pet" }
 lili-session = { path = "../lili-session" }
 serde.workspace = true
 tokio.workspace = true
+uuid.workspace = true

@@ -21,7 +21,7 @@
 - [x] 2.2 Implement `CODEX_HOME` resolution and confined package discovery that rejects absolute, traversal, escaping-link, duplicate-ID, and oversized manifest cases.
 - [x] 2.3 Implement streaming PNG/WebP metadata and transparency validation for exact `1536x2288` atlases without decoding unbounded images into memory.
 - [x] 2.4 Add an embedded known-good v2 fallback package and selection persistence by identifier with startup revalidation and package-specific diagnostics.
-- [ ] 2.5 Serve only approved atlas assets through opaque server identities with MIME, cache, CSP, and package-change invalidation tests.
+- [x] 2.5 Serve only approved atlas assets through opaque server identities with MIME, cache, CSP, and package-change invalidation tests.
 - [ ] 2.6 Implement the renderer frame scheduler for all standard rows and the screen-coordinate 16-direction lookup with deadzone, timer, and wraparound tests.
 - [ ] 2.7 Add golden compatibility tests against valid custom packages plus wrong-version, wrong-dimension, malformed-image, opaque-background, and escaping-path fixtures.
 

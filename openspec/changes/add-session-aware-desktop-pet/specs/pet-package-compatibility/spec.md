@@ -54,3 +54,18 @@ The system SHALL persist the selected pet identifier rather than an arbitrary as
 #### Scenario: Selected package disappears
 - **WHEN** the persisted pet identifier no longer resolves to a valid package
 - **THEN** the application uses the built-in fallback, preserves the invalid identifier for diagnostics, and remains operable
+
+### Requirement: Serve only approved pet assets
+The system SHALL expose a validated atlas through an opaque generation-scoped asset identity, return its validated image MIME type with private immutable caching and the application CSP, and never expose an arbitrary filesystem path to the renderer.
+
+#### Scenario: Approved atlas is requested
+- **WHEN** the renderer requests the active generation's opaque asset identity
+- **THEN** the server returns the validated atlas with its image MIME type, private immutable cache policy, CSP, and content-sniffing protection
+
+#### Scenario: Package generation changes
+- **WHEN** package state is revalidated after a package change
+- **THEN** a new opaque identity is issued and the prior identity no longer resolves
+
+#### Scenario: Unknown asset identity is requested
+- **WHEN** a request supplies an identity that is not registered for the active generation
+- **THEN** the server returns not found without interpreting the identity as a path
