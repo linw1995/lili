@@ -36,12 +36,13 @@ mod tests {
     #[test]
     fn ssr_shell_contains_the_approved_asset_url() {
         let html = view! {
-            <App pet_asset_url="/api/v1/pet-assets/opaque-id".to_owned()/>
+            <App pet_asset_url="/pet-assets/opaque-id".to_owned()/>
         }
         .to_html();
         assert!(html.contains("class=\"pet-sprite\""));
         assert!(html.contains("class=\"pet-atlas\""));
-        assert!(html.contains("/api/v1/pet-assets/opaque-id"));
+        assert!(html.contains("/pet-assets/opaque-id"));
+        assert!(!html.contains("/api/v1/pet-assets/"));
         assert!(!html.contains("spritesheet.webp"));
     }
 }

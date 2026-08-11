@@ -526,7 +526,13 @@ mod tests {
             SECRET.to_owned(),
             signer,
         );
-        let router = Router::new().route("/", any(|| async { StatusCode::NO_CONTENT }));
+        let router = Router::new()
+            .route("/", any(|| async { StatusCode::NO_CONTENT }))
+            .route(
+                "/pet-assets/opaque-id",
+                any(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route("/api/v1/snapshot", any(|| async { StatusCode::NO_CONTENT }));
         (protect(router, security.clone()), security)
     }
 
@@ -561,6 +567,38 @@ mod tests {
             .oneshot(
                 Request::get("/")
                     .header(HOST, AUTHORITY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authenticated_asset_request_does_not_require_api_signature() {
+        let (app, _) = app();
+        let response = app
+            .oneshot(
+                Request::get("/pet-assets/opaque-id")
+                    .header(HOST, AUTHORITY)
+                    .header(COOKIE, cookie())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn authenticated_api_get_still_requires_signature() {
+        let (app, _) = app();
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/snapshot")
+                    .header(HOST, AUTHORITY)
+                    .header(COOKIE, cookie())
                     .body(Body::empty())
                     .unwrap(),
             )

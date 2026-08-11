@@ -58,13 +58,13 @@ pub fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
     let api = Router::new()
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
-        .route("/pet-assets/{asset_id}", get(pet_asset))
         .route("/settings", get(settings).merge(put(update_settings)))
         .route("/interactions", post(interaction))
         .route("/diagnostics", get(diagnostics));
 
     let mut router = Router::new()
         .route("/health", get(health))
+        .route("/pet-assets/{asset_id}", get(pet_asset))
         .nest("/api/v1", api)
         .fallback(get(ssr_shell))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
@@ -150,7 +150,7 @@ async fn ssr_shell(State(state): State<AppState>) -> Html<String> {
         .snapshot()
         .await
         .pet_asset_id
-        .map(|asset_id| format!("/api/v1/pet-assets/{asset_id}"))
+        .map(|asset_id| format!("/pet-assets/{asset_id}"))
         .unwrap_or_default();
     let app = view! { <App pet_asset_url/> }.to_html();
     Html(format!(
@@ -249,7 +249,8 @@ mod tests {
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("class=\"pet-sprite\""));
         assert!(body.contains("class=\"pet-atlas\""));
-        assert!(body.contains(&format!("/api/v1/pet-assets/{asset_id}")));
+        assert!(body.contains(&format!("/pet-assets/{asset_id}")));
+        assert!(!body.contains("/api/v1/pet-assets/"));
         assert!(!body.contains("spritesheet.webp"));
     }
 
@@ -280,7 +281,7 @@ mod tests {
 
         let response = build_router(state, None)
             .oneshot(
-                Request::get(format!("/api/v1/pet-assets/{asset_id}"))
+                Request::get(format!("/pet-assets/{asset_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -317,7 +318,7 @@ mod tests {
     async fn unknown_pet_asset_identity_is_rejected() {
         let response = build_router(AppState::default(), None)
             .oneshot(
-                Request::get("/api/v1/pet-assets/not-approved")
+                Request::get("/pet-assets/not-approved")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -356,7 +357,7 @@ mod tests {
 
         let old_response = build_router(reloaded.clone(), None)
             .oneshot(
-                Request::get(format!("/api/v1/pet-assets/{old_id}"))
+                Request::get(format!("/pet-assets/{old_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -366,7 +367,7 @@ mod tests {
 
         let new_response = build_router(reloaded, None)
             .oneshot(
-                Request::get(format!("/api/v1/pet-assets/{new_id}"))
+                Request::get(format!("/pet-assets/{new_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
