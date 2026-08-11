@@ -24,7 +24,9 @@ use lili_core::PetId;
 use lili_integration::{IntegrationKind, inspect};
 use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
 use lili_server::{StaticAssets, build_native_router};
-use lili_session::{BoundForwardingEndpoint, ForwardingTransportError, SpoolStore};
+use lili_session::{
+    BoundForwardingEndpoint, ClaimedSpoolRecord, ForwardingTransportError, SpoolStore,
+};
 use loopback::LoopbackServer;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
@@ -202,12 +204,14 @@ fn configure_native_actions(codex_home: &Path, state: &AppState) {
     }
 }
 
-fn load_app_state() -> (
+type LoadedAppState = (
     AppState,
     Option<AppStateStore>,
     Option<PathBuf>,
     Option<WindowPlacement>,
-) {
+);
+
+fn load_app_state() -> LoadedAppState {
     let codex_home = match resolve_codex_home() {
         Ok(codex_home) => codex_home,
         Err(_) => {
@@ -215,6 +219,10 @@ fn load_app_state() -> (
             return (AppState::default(), None, None, None);
         }
     };
+    load_resolved_app_state(codex_home)
+}
+
+fn load_resolved_app_state(codex_home: PathBuf) -> LoadedAppState {
     let store = AppStateStore::for_codex_home(&codex_home);
     match store.load() {
         Ok(Some(state)) => {
@@ -272,36 +280,48 @@ async fn run_native_services(
 }
 
 async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
-    if let Ok(metrics) = spool.metrics() {
-        let _ = handle.set_spool_metrics(metrics).await;
-    }
-    loop {
-        let claim = match spool.claim_next(unix_time_ms()) {
-            Ok(Some(claim)) => claim,
-            Ok(None) => break,
-            Err(_) => {
-                diagnostics::warn("spool", "claim", "read_failed");
-                break;
-            }
-        };
-        match handle.ingest_spooled(claim.event().clone()).await {
-            Ok(_) => {
-                if claim.commit().is_err() {
-                    diagnostics::warn("spool", "commit", "commit_failed");
-                    break;
-                }
-            }
-            Err(_) => {
-                if claim.release().is_err() {
-                    diagnostics::warn("spool", "release", "release_failed");
-                }
-                diagnostics::warn("ingestion", "reduce_spooled", "unavailable");
-                break;
-            }
+    publish_spool_metrics(spool, handle).await;
+    while let Some(claim) = next_spool_claim(spool) {
+        if !ingest_spool_claim(claim, handle).await {
+            break;
         }
     }
+    publish_spool_metrics(spool, handle).await;
+}
+
+async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandle) {
     if let Ok(metrics) = spool.metrics() {
         let _ = handle.set_spool_metrics(metrics).await;
+    }
+}
+
+fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
+    match spool.claim_next(unix_time_ms()) {
+        Ok(claim) => claim,
+        Err(_) => {
+            diagnostics::warn("spool", "claim", "read_failed");
+            None
+        }
+    }
+}
+
+async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionHandle) -> bool {
+    match handle.ingest_spooled(claim.event().clone()).await {
+        Ok(_) => {
+            if claim.commit().is_ok() {
+                true
+            } else {
+                diagnostics::warn("spool", "commit", "commit_failed");
+                false
+            }
+        }
+        Err(_) => {
+            if claim.release().is_err() {
+                diagnostics::warn("spool", "release", "release_failed");
+            }
+            diagnostics::warn("ingestion", "reduce_spooled", "unavailable");
+            false
+        }
     }
 }
 
@@ -324,27 +344,37 @@ async fn handle_native_connection(
     mut connection: lili_session::ForwardingConnection,
     handle: NativeIngestionHandle,
 ) {
-    let payload = match connection.read_payload().await {
+    let Some(payload) = read_forwarding_payload(&mut connection, &handle).await else {
+        return;
+    };
+    let now_ms = unix_time_ms();
+    match handle.ingest(payload, now_ms).await {
+        Ok(acknowledgement)
+            if connection
+                .write_acknowledgement(&acknowledgement)
+                .await
+                .is_err() =>
+        {
+            diagnostics::warn("ingestion", "write_acknowledgement", "transport_failed");
+        }
+        Ok(_) => {}
+        Err(_) => diagnostics::warn("ingestion", "verify_message", "message_rejected"),
+    }
+}
+
+async fn read_forwarding_payload(
+    connection: &mut lili_session::ForwardingConnection,
+    handle: &NativeIngestionHandle,
+) -> Option<Vec<u8>> {
+    match connection.read_payload().await {
         Ok(payload) => payload,
         Err(_) => {
             let _ = handle.record_transport_rejection().await;
             diagnostics::warn("ingestion", "read_frame", "transport_rejected");
-            return;
+            return None;
         }
-    };
-    let now_ms = unix_time_ms();
-    match handle.ingest(payload, now_ms).await {
-        Ok(acknowledgement) => {
-            if connection
-                .write_acknowledgement(&acknowledgement)
-                .await
-                .is_err()
-            {
-                diagnostics::warn("ingestion", "write_acknowledgement", "transport_failed");
-            }
-        }
-        Err(_) => diagnostics::warn("ingestion", "verify_message", "message_rejected"),
     }
+    .into()
 }
 
 fn unix_time_ms() -> u64 {
@@ -417,16 +447,31 @@ fn apply_reachable_window_placement(
     window: &tauri::WebviewWindow,
     saved: &WindowPlacement,
 ) -> Result<WindowPlacement, String> {
+    let resolved = reachable_window_placement(window, saved)?;
+    apply_physical_window_position(window, &resolved)?;
+    Ok(resolved.placement().clone())
+}
+
+fn reachable_window_placement(
+    window: &tauri::WebviewWindow,
+    saved: &WindowPlacement,
+) -> Result<lili_app_state::ResolvedWindowPlacement, String> {
     let size = window.outer_size().map_err(|error| error.to_string())?;
     let displays = display_work_areas(window)?;
-    let resolved = resolve_window_placement(
+    resolve_window_placement(
         saved,
         &displays,
         size.width,
         size.height,
         DEFAULT_VISIBLE_WINDOW_MARGIN,
     )
-    .ok_or_else(|| "no display work area is available".to_owned())?;
+    .ok_or_else(|| "no display work area is available".to_owned())
+}
+
+fn apply_physical_window_position(
+    window: &tauri::WebviewWindow,
+    resolved: &lili_app_state::ResolvedWindowPlacement,
+) -> Result<(), String> {
     let current = window.outer_position().map_err(|error| error.to_string())?;
     if current.x != resolved.physical_x() || current.y != resolved.physical_y() {
         window
@@ -436,7 +481,7 @@ fn apply_reachable_window_placement(
             ))
             .map_err(|error| error.to_string())?;
     }
-    Ok(resolved.placement().clone())
+    Ok(())
 }
 
 fn ensure_window_reachable(window: &tauri::WebviewWindow) {

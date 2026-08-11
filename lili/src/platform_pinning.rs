@@ -189,15 +189,25 @@ mod macos {
             challenge: &NSURLAuthenticationChallenge,
         ) -> Option<*mut NSURLCredential> {
             let protection_space = challenge.protectionSpace();
-            if &*protection_space.authenticationMethod()
-                != unsafe { NSURLAuthenticationMethodServerTrust }
-                || protection_space.host().to_string() != self.ivars().host
-                || protection_space.port() != self.ivars().port as isize
-            {
+            if !self.matches_protection_space(&protection_space) {
                 return None;
             }
             let trust: *mut SecTrust = unsafe { msg_send![&*protection_space, serverTrust] };
             let trust = unsafe { trust.as_ref() }?;
+            unsafe { self.credential_for_trust(trust) }
+        }
+
+        fn matches_protection_space(
+            &self,
+            protection_space: &objc2_foundation::NSURLProtectionSpace,
+        ) -> bool {
+            &*protection_space.authenticationMethod()
+                == unsafe { NSURLAuthenticationMethodServerTrust }
+                && protection_space.host().to_string() == self.ivars().host
+                && protection_space.port() == self.ivars().port as isize
+        }
+
+        unsafe fn credential_for_trust(&self, trust: &SecTrust) -> Option<*mut NSURLCredential> {
             #[allow(deprecated)]
             let certificate = unsafe { trust.certificate_at_index(0) }?;
             let certificate_der = unsafe { certificate.data() };
