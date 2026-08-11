@@ -12,6 +12,7 @@ use crate::{
 };
 
 const MAX_RECENT_EVENT_IDS: usize = 4096;
+pub const DEFAULT_MINIMUM_DWELL_MS: u64 = 750;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReductionOutcome {
@@ -20,13 +21,21 @@ pub enum ReductionOutcome {
     IgnoredStale,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SessionReducer {
     revision: u64,
     sessions: BTreeMap<(ProviderId, SessionId), SessionRecord>,
     notifications: BTreeMap<NotificationId, Notification>,
     recent_event_ids: VecDeque<(ProviderId, EventId)>,
     recent_event_set: BTreeSet<(ProviderId, EventId)>,
+    presentation: PresentationTracker,
+    minimum_dwell_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PresentationTracker {
+    state: PresentationState,
+    since_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +63,13 @@ struct Transition {
 }
 
 impl SessionReducer {
+    pub fn with_minimum_dwell_ms(minimum_dwell_ms: u64) -> Self {
+        Self {
+            minimum_dwell_ms,
+            ..Self::default()
+        }
+    }
+
     pub fn reduce(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
         let event_key = (event.provider.clone(), event.event_id.clone());
         if self.recent_event_set.contains(&event_key) {
@@ -81,13 +97,18 @@ impl SessionReducer {
         if let Some(kind) = transition.notification {
             self.insert_notification(&event, kind);
         }
+        self.refresh_presentation(event.occurred_at_ms);
         self.revision = self.revision.saturating_add(1);
         ReductionOutcome::Applied {
             revision: self.revision,
         }
     }
 
-    pub fn acknowledge_notification(&mut self, id: &NotificationId) -> ReductionOutcome {
+    pub fn acknowledge_notification(
+        &mut self,
+        id: &NotificationId,
+        now_ms: u64,
+    ) -> ReductionOutcome {
         let Some(notification) = self.notifications.get_mut(id) else {
             return ReductionOutcome::IgnoredStale;
         };
@@ -95,6 +116,17 @@ impl SessionReducer {
             return ReductionOutcome::IgnoredStale;
         }
         notification.state = NotificationState::Acknowledged;
+        self.refresh_presentation(now_ms);
+        self.revision = self.revision.saturating_add(1);
+        ReductionOutcome::Applied {
+            revision: self.revision,
+        }
+    }
+
+    pub fn advance_presentation(&mut self, now_ms: u64) -> ReductionOutcome {
+        if !self.refresh_presentation(now_ms) {
+            return ReductionOutcome::IgnoredStale;
+        }
         self.revision = self.revision.saturating_add(1);
         ReductionOutcome::Applied {
             revision: self.revision,
@@ -116,14 +148,14 @@ impl SessionReducer {
         });
         let mut notifications = self.notifications.values().cloned().collect::<Vec<_>>();
         notifications.sort_by(|left, right| {
-            right
-                .occurred_at_ms
-                .cmp(&left.occurred_at_ms)
+            notification_priority(right)
+                .cmp(&notification_priority(left))
+                .then_with(|| right.occurred_at_ms.cmp(&left.occurred_at_ms))
                 .then_with(|| left.id.cmp(&right.id))
         });
         SessionViewSnapshot {
             revision: self.revision,
-            presentation: PresentationState::Idle,
+            presentation: self.presentation.state,
             sessions,
             notifications,
         }
@@ -275,6 +307,67 @@ impl SessionReducer {
             }
         }
     }
+
+    fn refresh_presentation(&mut self, now_ms: u64) -> bool {
+        let desired = self.desired_presentation();
+        if desired == self.presentation.state {
+            return false;
+        }
+        let can_interrupt = desired > self.presentation.state;
+        let dwell_elapsed =
+            now_ms.saturating_sub(self.presentation.since_ms) >= self.minimum_dwell_ms;
+        if !can_interrupt && !dwell_elapsed {
+            return false;
+        }
+        self.presentation = PresentationTracker {
+            state: desired,
+            since_ms: now_ms,
+        };
+        true
+    }
+
+    fn desired_presentation(&self) -> PresentationState {
+        if self.notifications.values().any(|notification| {
+            notification.kind == NotificationKind::Attention
+                && notification.state != NotificationState::Resolved
+        }) {
+            return PresentationState::Waiting;
+        }
+        if self.notifications.values().any(|notification| {
+            notification.kind == NotificationKind::Failure
+                && notification.state == NotificationState::Unread
+        }) {
+            return PresentationState::Failed;
+        }
+        if self.notifications.values().any(|notification| {
+            notification.kind == NotificationKind::Completion
+                && notification.state == NotificationState::Unread
+        }) {
+            return PresentationState::Review;
+        }
+        if self
+            .sessions
+            .values()
+            .any(|session| session.summary().phase == SessionPhase::Active)
+        {
+            return PresentationState::Running;
+        }
+        PresentationState::Idle
+    }
+}
+
+impl Default for SessionReducer {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            sessions: BTreeMap::new(),
+            notifications: BTreeMap::new(),
+            recent_event_ids: VecDeque::new(),
+            recent_event_set: BTreeSet::new(),
+            presentation: PresentationTracker::default(),
+            minimum_dwell_ms: DEFAULT_MINIMUM_DWELL_MS,
+        }
+    }
 }
 
 impl SessionRecord {
@@ -372,6 +465,15 @@ fn notification_id(provider: &ProviderId, event_id: &EventId) -> NotificationId 
         write!(&mut identity, "{byte:02x}").expect("writing to a string cannot fail");
     }
     NotificationId::parse(identity).expect("notification identity is bounded")
+}
+
+fn notification_priority(notification: &Notification) -> u8 {
+    match (notification.kind, notification.state) {
+        (NotificationKind::Attention, state) if state != NotificationState::Resolved => 3,
+        (NotificationKind::Failure, NotificationState::Unread) => 2,
+        (NotificationKind::Completion, NotificationState::Unread) => 1,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -478,7 +580,7 @@ mod tests {
         assert_eq!(snapshot.sessions[0].phase, SessionPhase::Active);
         assert_eq!(snapshot.notifications[0].state, NotificationState::Resolved);
         assert_eq!(
-            reducer.acknowledge_notification(&notification_id),
+            reducer.acknowledge_notification(&notification_id, 12),
             ReductionOutcome::IgnoredStale
         );
     }
@@ -495,11 +597,11 @@ mod tests {
         ));
         let id = reducer.snapshot().notifications[0].id.clone();
         assert_eq!(
-            reducer.acknowledge_notification(&id),
+            reducer.acknowledge_notification(&id, 11),
             ReductionOutcome::Applied { revision: 2 }
         );
         assert_eq!(
-            reducer.acknowledge_notification(&id),
+            reducer.acknowledge_notification(&id, 12),
             ReductionOutcome::IgnoredStale
         );
         assert_eq!(
@@ -529,5 +631,93 @@ mod tests {
                 .iter()
                 .all(|notification| notification.state == NotificationState::Resolved)
         );
+    }
+
+    #[test]
+    fn priority_interrupts_immediately_and_downgrade_honors_dwell() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(100);
+        reducer.reduce(event(
+            "active",
+            "turn_started",
+            "session-active",
+            Some("turn-1"),
+            10,
+        ));
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Running);
+        reducer.reduce(event(
+            "completed",
+            "turn_completed",
+            "session-complete",
+            Some("turn-1"),
+            20,
+        ));
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Review);
+        reducer.reduce(event(
+            "failed",
+            "turn_failed",
+            "session-failed",
+            Some("turn-1"),
+            30,
+        ));
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Failed);
+        reducer.reduce(event(
+            "attention",
+            "attention_required",
+            "session-waiting",
+            Some("turn-1"),
+            40,
+        ));
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Waiting);
+        reducer.reduce(event(
+            "resolved",
+            "attention_resolved",
+            "session-waiting",
+            Some("turn-1"),
+            50,
+        ));
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Waiting);
+        assert_eq!(
+            reducer.advance_presentation(139),
+            ReductionOutcome::IgnoredStale
+        );
+        assert_eq!(
+            reducer.advance_presentation(140),
+            ReductionOutcome::Applied { revision: 6 }
+        );
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Failed);
+    }
+
+    #[test]
+    fn notification_order_is_independent_from_current_session() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "new-completion",
+            "turn_completed",
+            "session-complete",
+            Some("turn-1"),
+            50,
+        ));
+        reducer.reduce(event(
+            "old-attention",
+            "attention_required",
+            "session-attention",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "active",
+            "turn_started",
+            "session-active",
+            Some("turn-1"),
+            100,
+        ));
+        let snapshot = reducer.snapshot();
+        assert_eq!(snapshot.presentation, PresentationState::Waiting);
+        assert_eq!(snapshot.notifications[0].kind, NotificationKind::Attention);
+        assert_eq!(
+            snapshot.notifications[0].session_id.as_str(),
+            "session-attention"
+        );
+        assert_eq!(snapshot.notifications[1].kind, NotificationKind::Completion);
     }
 }

@@ -100,11 +100,15 @@ impl AppState {
         self.session_reducer.lock().await.reduce(event)
     }
 
-    pub async fn acknowledge_notification(&self, id: &NotificationId) -> ReductionOutcome {
+    pub async fn acknowledge_notification(
+        &self,
+        id: &NotificationId,
+        now_ms: u64,
+    ) -> ReductionOutcome {
         self.session_reducer
             .lock()
             .await
-            .acknowledge_notification(id)
+            .acknowledge_notification(id, now_ms)
     }
 }
 
