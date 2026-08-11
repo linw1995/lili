@@ -49,3 +49,25 @@ fn inspect_cli_reports_safe_effective_configuration() {
     assert!(!output.contains("never-print-this"));
     assert!(!output.contains("private-argument"));
 }
+
+#[test]
+fn plan_cli_reports_exact_changes_without_mutating_configuration() {
+    let temp = TempDir::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_lili"))
+        .args(["integrate", "plan"])
+        .env("CODEX_HOME", &temp.0)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(plan["status"], "ready");
+    assert_eq!(plan["configChange"]["action"], "create");
+    assert_eq!(plan["hooksChange"]["action"], "create");
+    assert_eq!(plan["hookAdditions"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        plan["notify"]["argv"][2],
+        lili_integration::LILI_INTEGRATION_ID
+    );
+    assert!(!temp.0.join("config.toml").exists());
+    assert!(!temp.0.join("hooks.json").exists());
+}

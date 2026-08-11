@@ -1,3 +1,5 @@
+mod plan;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -6,8 +8,14 @@ use std::{
 
 use lili_session::{CodexIntegrationSurface, TESTED_CODEX_VERSION};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use toml_edit::{DocumentMut, Item};
+
+pub use plan::{
+    InstallPlanStatus, IntegrationInstallPlan, PlannedFileAction, PlannedFileChange,
+    PlannedHookEntry, PlannedNotifyEntry, build_install_plan,
+};
 
 pub const INTEGRATION_SCHEMA_VERSION: u16 = 1;
 pub const LILI_INTEGRATION_ID: &str = "lili-session-v1";
@@ -54,6 +62,7 @@ pub struct IntegrationFileInspection {
     pub path: PathBuf,
     pub status: IntegrationFileStatus,
     pub symbolic_link: bool,
+    pub content_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -221,6 +230,7 @@ fn read_bounded(path: &Path) -> (IntegrationFileInspection, Option<String>) {
         path: path.to_path_buf(),
         status: IntegrationFileStatus::Missing,
         symbolic_link,
+        content_sha256: None,
     };
     let metadata = match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => metadata,
@@ -241,6 +251,7 @@ fn read_bounded(path: &Path) -> (IntegrationFileInspection, Option<String>) {
     match fs::read_to_string(path) {
         Ok(contents) if contents.len() as u64 <= MAX_CONFIG_BYTES => {
             inspection.status = IntegrationFileStatus::Parsed;
+            inspection.content_sha256 = Some(sha256_hex(contents.as_bytes()));
             (inspection, Some(contents))
         }
         Ok(_) => {
@@ -252,6 +263,11 @@ fn read_bounded(path: &Path) -> (IntegrationFileInspection, Option<String>) {
             (inspection, None)
         }
     }
+}
+
+fn sha256_hex(contents: &[u8]) -> String {
+    let digest = Sha256::digest(contents);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn missing_notify() -> NotifyInspection {

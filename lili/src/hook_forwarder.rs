@@ -1,5 +1,6 @@
 use std::{ffi::OsString, io::Read, path::Path, time::Duration};
 
+use lili_integration::LILI_INTEGRATION_ID;
 use lili_pet::resolve_codex_home;
 use lili_session::{
     ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolStore,
@@ -124,6 +125,18 @@ fn read_hook_payload<R: Read>(
     arguments: &[OsString],
     stdin: &mut R,
 ) -> Result<Vec<u8>, HookResult> {
+    let arguments = match arguments {
+        [flag, integration_id, rest @ ..] if flag == "--integration-id" => {
+            if integration_id != LILI_INTEGRATION_ID {
+                return Err(HookResult::failure(
+                    HookExitCode::Usage,
+                    "unknown integration identity",
+                ));
+            }
+            rest
+        }
+        _ => arguments,
+    };
     match arguments {
         [mode, payload] if mode == "--json-argv" => {
             let payload = payload.to_str().ok_or_else(|| {
@@ -260,5 +273,34 @@ mod tests {
         let result = process_payload(&temp.0, b"not-json", 1_000).await;
         assert_eq!(result.exit_code, HookExitCode::InvalidInput);
         assert!(!SpoolStore::for_codex_home(&temp.0).directory().exists());
+    }
+
+    #[test]
+    fn installed_marker_is_accepted_but_unknown_identity_is_rejected() {
+        let payload = String::from_utf8(payload()).unwrap();
+        let marked = read_hook_payload(
+            &[
+                OsString::from("--integration-id"),
+                OsString::from(LILI_INTEGRATION_ID),
+                OsString::from("--json-argv"),
+                OsString::from(&payload),
+            ],
+            &mut Cursor::new(Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(marked, payload.as_bytes());
+        assert_eq!(
+            read_hook_payload(
+                &[
+                    OsString::from("--integration-id"),
+                    OsString::from("other"),
+                    OsString::from("--json-stdin"),
+                ],
+                &mut Cursor::new(payload.as_bytes()),
+            )
+            .unwrap_err()
+            .exit_code,
+            HookExitCode::Usage
+        );
     }
 }
