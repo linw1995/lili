@@ -6,3 +6,12 @@ license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+hydrate = ["dep:wasm-bindgen", "leptos/hydrate"]
+ssr = ["leptos/ssr"]
+
+[dependencies]
+leptos.workspace = true
+wasm-bindgen = { workspace = true, optional = true }
