@@ -78,7 +78,7 @@
 
 ## 8. Declarative Interaction Actions
 
-- [ ] 8.1 Define `actions.toml` v1, supported interaction triggers, event filters, argv commands, working-directory policies, environment allowlist, timeout, debounce, and concurrency modes.
+- [x] 8.1 Define `actions.toml` v1, supported interaction triggers, event filters, argv commands, working-directory policies, environment allowlist, timeout, debounce, and concurrency modes.
 - [ ] 8.2 Implement tolerant multi-entry loading that disables invalid or duplicate actions independently and exposes the effective redacted configuration with precise diagnostics.
 - [ ] 8.3 Define `InteractionContextV1` and bind accepted interactions to immutable notification or pet snapshots before asynchronous dispatch.
 - [ ] 8.4 Implement direct executable spawning without a shell or event-to-argv interpolation, using a minimal environment and bounded JSON stdin.
