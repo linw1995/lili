@@ -37,6 +37,10 @@ The system SHALL render standard rows with the v2 frame counts and timing sequen
 - **WHEN** the behavior state selects a standard animation
 - **THEN** only that row's used frames play in order with the contract-defined durations, the neutral cell remains outside the idle loop, and unused cells are never displayed
 
+#### Scenario: Animation timer crosses a frame or loop boundary
+- **WHEN** elapsed monotonic time reaches an exact frame boundary or exceeds one or more complete loops
+- **THEN** the scheduler selects the next frame at the boundary and wraps by the contract-defined loop duration without accumulating drift
+
 ### Requirement: Render all look directions in clockwise order
 The system SHALL map rows 9 and 10 to the 16 clockwise look directions from `000` through `337.5` degrees, where `000` means up and the no-vector deadzone falls back to idle.
 
@@ -47,6 +51,10 @@ The system SHALL map rows 9 and 10 to the 16 clockwise look directions from `000
 #### Scenario: Pointer enters the deadzone
 - **WHEN** the pointer vector is within the configured deadzone
 - **THEN** no directional cell is displayed and the pet resumes its applicable non-look animation
+
+#### Scenario: Pointer crosses a direction midpoint
+- **WHEN** the pointer vector crosses the midpoint between adjacent 22.5-degree directions
+- **THEN** the selected cell changes to the nearest clockwise screen-coordinate direction, with midpoint ties resolving clockwise
 
 ### Requirement: Persist pet selection safely
 The system SHALL persist the selected pet identifier rather than an arbitrary asset path and SHALL revalidate the package on each application start.

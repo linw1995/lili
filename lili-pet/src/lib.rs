@@ -1,4 +1,5 @@
 mod discovery;
+mod rendering;
 mod selection;
 mod validation;
 
@@ -11,6 +12,7 @@ pub use discovery::{
     DEFAULT_PET_ID, DiscoveredPackage, DiscoveryIssue, DiscoveryReport, PackageOrigin,
     default_pet_path, discover_pet_packages, resolve_codex_home,
 };
+pub use rendering::{AnimationScheduler, DirectionLookupError, LookDirectionSelector};
 pub use selection::{
     AvailablePet, CatalogDiagnostic, LoadedPetAsset, PetAssetSource, PetCatalog, SelectionError,
     persist_selected_pet, selection_path,
