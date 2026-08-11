@@ -74,7 +74,7 @@
 - [x] 7.5 Implement logical display-coordinate persistence, scale conversion, work-area clamping, display disconnect handling, and a reachable visible margin on every platform.
 - [x] 7.6 Implement pet-anchored notification cards with priority/recency ordering, immutable session context, bounded safe summaries, independent activation, dismissal, and unread state.
 - [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, integration status, settings, diagnostics, and quit while native event ingestion continues when hidden.
-- [ ] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
+- [x] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
 
 ## 8. Declarative Interaction Actions
 

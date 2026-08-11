@@ -33,16 +33,33 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
     let animation = RwSignal::new(initial_render.animation);
     let frame = RwSignal::new(initial_render.frame);
     let wall_clock = RwSignal::new(0_u64);
+    let reduced_motion = RwSignal::new(presentation.get_untracked().reduced_motion);
     #[cfg(feature = "hydrate")]
     {
+        reduced_motion
+            .set(presentation.get_untracked().reduced_motion || system_prefers_reduced_motion());
         let pointer = RwSignal::new(PointerTracker::default());
         let clicks = RwSignal::new(ClickDisambiguator::default());
         let gaze = RwSignal::new(None::<LookFrame>);
         connect_presentation_stream(presentation, controller);
-        start_animation_clock(controller, animation, frame, clicks, gaze, wall_clock);
+        start_animation_clock(
+            controller,
+            AnimationClockSignals {
+                animation,
+                frame,
+                clicks,
+                gaze,
+                wall_clock,
+                presentation,
+                reduced_motion,
+            },
+        );
         let pet_view = view! {
             <section
                 class="pet-sprite"
+                role="button"
+                tabindex="0"
+                aria-keyshortcuts="Enter Space"
                 aria-label=move || {
                     let state = presentation.get();
                     format!("{}, {}", state.pet_label, state.lifecycle.as_str())
@@ -58,6 +75,10 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                     gaze.set(None);
                 }
                 on:pointermove=move |event| {
+                    if reduced_motion.get_untracked() {
+                        gaze.set(None);
+                        return;
+                    }
                     let update = pointer.write().move_to(
                         f64::from(event.screen_x()),
                         f64::from(event.screen_y()),
@@ -100,18 +121,29 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         gaze.set(None);
                     }
                 }
+                on:keydown=move |event| {
+                    if matches!(event.key().as_str(), "Enter" | " ") {
+                        event.prevent_default();
+                        controller.update(|controller| {
+                            controller.trigger_wave(animation_clock_ms());
+                        });
+                    }
+                }
             >
                 <PetImage presentation frame/>
             </section>
         };
-        return view! {
-            <PetShell presentation animation wall_clock pet_view/>
-        };
+        view! {
+            <PetShell presentation animation wall_clock reduced_motion pet_view/>
+        }
     }
     #[cfg(not(feature = "hydrate"))]
     let pet_view = view! {
         <section
             class="pet-sprite"
+            role="button"
+            tabindex="0"
+            aria-keyshortcuts="Enter Space"
             aria-label=move || {
                 let state = presentation.get();
                 format!("{}, {}", state.pet_label, state.lifecycle.as_str())
@@ -124,7 +156,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
     };
     #[cfg(not(feature = "hydrate"))]
     view! {
-        <PetShell presentation animation wall_clock pet_view/>
+        <PetShell presentation animation wall_clock reduced_motion pet_view/>
     }
 }
 
@@ -133,6 +165,7 @@ fn PetShell(
     presentation: RwSignal<PetPresentationState>,
     animation: RwSignal<AnimationState>,
     wall_clock: RwSignal<u64>,
+    reduced_motion: RwSignal<bool>,
     pet_view: impl IntoView + 'static,
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
@@ -161,8 +194,14 @@ fn PetShell(
             data-lifecycle=move || presentation.get().lifecycle.as_str()
             data-unread-count=move || presentation.get().unread_notification_count
             data-animation=move || animation_name(animation.get())
+            data-reduced-motion=move || reduced_motion.get().to_string()
         >
-            <aside class="notification-stack" aria-label="Session notifications">
+            <aside
+                class="notification-stack"
+                aria-label="Session notifications"
+                aria-live="polite"
+                aria-relevant="additions removals"
+            >
                 {notification_cards}
             </aside>
             {pet_view}
@@ -393,6 +432,20 @@ impl AnimationController {
     }
 
     fn render_with_gaze(&mut self, now_ms: u64, gaze: Option<LookFrame>) -> AnimationRender {
+        self.render_mode(now_ms, gaze, false)
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn render_reduced(&mut self, now_ms: u64) -> AnimationRender {
+        self.render_mode(now_ms, None, true)
+    }
+
+    fn render_mode(
+        &mut self,
+        now_ms: u64,
+        gaze: Option<LookFrame>,
+        reduced_motion: bool,
+    ) -> AnimationRender {
         if self
             .temporary
             .is_some_and(|temporary| now_ms >= temporary.expires_at_ms)
@@ -400,7 +453,8 @@ impl AnimationController {
             self.temporary = None;
         }
         self.refresh_selected(now_ms);
-        if self.allows_gaze()
+        if !reduced_motion
+            && self.allows_gaze()
             && let Some(gaze) = gaze
         {
             return AnimationRender {
@@ -408,7 +462,11 @@ impl AnimationController {
                 frame: gaze.into(),
             };
         }
-        let elapsed = now_ms.saturating_sub(self.selected_at_ms);
+        let elapsed = if reduced_motion {
+            0
+        } else {
+            now_ms.saturating_sub(self.selected_at_ms)
+        };
         let mut scheduler = AnimationScheduler::new(self.selected);
         let frame = scheduler.advance(std::time::Duration::from_millis(elapsed));
         AnimationRender {
@@ -514,12 +572,17 @@ fn frame_transform(frame: AtlasFrame) -> String {
 fn animation_clock_ms() -> u64 {
     #[cfg(feature = "hydrate")]
     {
-        return web_sys::window()
+        web_sys::window()
             .and_then(|window| window.performance())
-            .map_or(0, |performance| performance.now().max(0.0) as u64);
+            .map_or(0, |performance| performance.now().max(0.0) as u64)
     }
     #[cfg(not(feature = "hydrate"))]
     0
+}
+
+#[cfg(feature = "hydrate")]
+fn system_prefers_reduced_motion() -> bool {
+    REDUCED_MOTION_QUERY.with(|query| query.as_ref().is_some_and(|query| query.matches()))
 }
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -692,13 +755,21 @@ fn connect_presentation_stream(
 }
 
 #[cfg(feature = "hydrate")]
-fn start_animation_clock(
-    controller: RwSignal<AnimationController>,
+#[derive(Clone, Copy)]
+struct AnimationClockSignals {
     animation: RwSignal<AnimationState>,
     frame: RwSignal<AtlasFrame>,
     clicks: RwSignal<ClickDisambiguator>,
     gaze: RwSignal<Option<LookFrame>>,
     wall_clock: RwSignal<u64>,
+    presentation: RwSignal<PetPresentationState>,
+    reduced_motion: RwSignal<bool>,
+}
+
+#[cfg(feature = "hydrate")]
+fn start_animation_clock(
+    controller: RwSignal<AnimationController>,
+    signals: AnimationClockSignals,
 ) {
     use wasm_bindgen::{JsCast, closure::Closure};
 
@@ -707,15 +778,23 @@ fn start_animation_clock(
     };
     let callback = Closure::<dyn FnMut()>::new(move || {
         let now_ms = animation_clock_ms();
-        wall_clock.set(js_sys::Date::now().max(0.0) as u64);
-        if clicks.write().poll(now_ms) == ClickDecision::Single {
+        signals.wall_clock.set(js_sys::Date::now().max(0.0) as u64);
+        let motion_is_reduced =
+            signals.presentation.get_untracked().reduced_motion || system_prefers_reduced_motion();
+        signals.reduced_motion.set(motion_is_reduced);
+        if signals.clicks.write().poll(now_ms) == ClickDecision::Single {
             controller.update(|controller| controller.trigger_wave(now_ms));
         }
-        let render = controller
-            .write()
-            .render_with_gaze(now_ms, gaze.get_untracked());
-        animation.set(render.animation);
-        frame.set(render.frame);
+        let render = if motion_is_reduced {
+            signals.gaze.set(None);
+            controller.write().render_reduced(now_ms)
+        } else {
+            controller
+                .write()
+                .render_with_gaze(now_ms, signals.gaze.get_untracked())
+        };
+        signals.animation.set(render.animation);
+        signals.frame.set(render.frame);
     });
     let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
         callback.as_ref().unchecked_ref(),
@@ -793,6 +872,8 @@ thread_local! {
 thread_local! {
     static ANIMATION_CLOCK: std::cell::RefCell<Option<AnimationClock>> =
         const { std::cell::RefCell::new(None) };
+    static REDUCED_MOTION_QUERY: Option<web_sys::MediaQueryList> = web_sys::window()
+        .and_then(|window| window.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
 }
 
 #[cfg(feature = "hydrate")]
@@ -835,6 +916,7 @@ mod tests {
                     occurred_at_ms: 10,
                     unread: true,
                 }],
+                reduced_motion: false,
             }/>
         }
         .to_html();
@@ -845,6 +927,11 @@ mod tests {
         assert!(html.contains("data-revision=\"7\""));
         assert!(html.contains("data-lifecycle=\"waiting\""));
         assert!(html.contains("data-unread-count=\"1\""));
+        assert!(html.contains("data-reduced-motion=\"false\""));
+        assert!(html.contains("role=\"button\""));
+        assert!(html.contains("tabindex=\"0\""));
+        assert!(html.contains("aria-keyshortcuts=\"Enter Space\""));
+        assert!(html.contains("aria-live=\"polite\""));
         assert!(html.contains("/pet-assets/opaque-id"));
         assert!(html.contains("data-notification-id=\"notification-safe\""));
         assert!(html.contains("Finished safely"));
@@ -886,6 +973,57 @@ mod tests {
         assert_eq!(relative_time_label(10_000, 7_210_000), "2h ago");
         assert_eq!(relative_time_label(10_000, 172_810_000), "2d ago");
         assert_eq!(relative_time_label(20_000, 10_000), "Now");
+    }
+
+    #[test]
+    fn reduced_motion_uses_stable_representative_frames_without_gaze() {
+        let selector = LookDirectionSelector::new(0.0).unwrap();
+        let gaze = selector.select(100.0, 0.0);
+        let mut controller = AnimationController::new(PetLifecycleState::Idle, 0);
+        let first = controller.render_reduced(0);
+        let later = controller.render_reduced(10_000);
+        assert_eq!(first, later);
+        assert_eq!(first.frame.row, 0);
+        assert_eq!(first.frame.column, 0);
+        assert_ne!(controller.render_with_gaze(10_000, gaze).frame, first.frame);
+
+        controller.trigger_wave(20_000);
+        let waving = controller.render_reduced(20_000);
+        assert_eq!(waving.animation, AnimationState::Waving);
+        assert_eq!(waving.frame.column, 0);
+    }
+
+    #[test]
+    fn accessible_palette_meets_text_and_focus_contrast_thresholds() {
+        assert!(contrast_ratio([255, 255, 255], [24, 28, 36]) >= 4.5);
+        assert!(contrast_ratio([205, 215, 229], [24, 28, 36]) >= 4.5);
+        assert!(contrast_ratio([120, 215, 255], [24, 28, 36]) >= 3.0);
+        let css = include_str!("../../web/lili.css");
+        assert!(css.contains(":focus-visible"));
+        assert!(css.contains("prefers-reduced-motion: reduce"));
+    }
+
+    fn contrast_ratio(foreground: [u8; 3], background: [u8; 3]) -> f64 {
+        let foreground = relative_luminance(foreground);
+        let background = relative_luminance(background);
+        let (lighter, darker) = if foreground > background {
+            (foreground, background)
+        } else {
+            (background, foreground)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fn relative_luminance(color: [u8; 3]) -> f64 {
+        let [red, green, blue] = color.map(|channel| {
+            let channel = f64::from(channel) / 255.0;
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
     }
 
     #[test]

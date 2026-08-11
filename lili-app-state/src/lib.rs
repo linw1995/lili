@@ -106,7 +106,8 @@ impl AppState {
             session_state,
             actions: Vec::new(),
         };
-        let (presentation_sender, _) = watch::channel(presentation_from_view(&initial_snapshot));
+        let (presentation_sender, _) =
+            watch::channel(presentation_from_view(&initial_snapshot, false));
         Self {
             snapshot: Arc::new(RwLock::new(initial_snapshot)),
             settings: Arc::new(RwLock::new(UserSettings::default())),
@@ -150,7 +151,7 @@ impl AppState {
 
     pub async fn pet_presentation(&self) -> PetPresentationState {
         let snapshot = self.snapshot().await;
-        presentation_from_view(&snapshot)
+        presentation_from_view(&snapshot, self.settings.read().await.reduced_motion)
     }
 
     pub fn subscribe_pet_presentation(&self) -> watch::Receiver<PetPresentationState> {
@@ -163,6 +164,7 @@ impl AppState {
 
     pub async fn replace_settings(&self, settings: UserSettings) -> UserSettings {
         *self.settings.write().await = settings.clone();
+        self.publish_presentation().await;
         settings
     }
 
@@ -225,17 +227,18 @@ impl AppState {
 
     async fn publish_presentation(&self) {
         let session_state = self.session_reducer.lock().await.snapshot();
+        let reduced_motion = self.settings.read().await.reduced_motion;
         let presentation = {
             let mut snapshot = self.snapshot.write().await;
             snapshot.session_state = session_state;
             snapshot.revision = snapshot.revision.saturating_add(1);
-            presentation_from_view(&snapshot)
+            presentation_from_view(&snapshot, reduced_motion)
         };
         self.presentation_sender.send_replace(presentation);
     }
 }
 
-fn presentation_from_view(snapshot: &ViewSnapshot) -> PetPresentationState {
+fn presentation_from_view(snapshot: &ViewSnapshot, reduced_motion: bool) -> PetPresentationState {
     let notifications = snapshot
         .session_state
         .notifications
@@ -288,6 +291,7 @@ fn presentation_from_view(snapshot: &ViewSnapshot) -> PetPresentationState {
             .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name.clone()),
         unread_notification_count: notifications.len(),
         notifications,
+        reduced_motion,
     }
 }
 
@@ -504,6 +508,22 @@ mod tests {
         state.replace_pet_catalog(PetCatalog::default()).await;
         presentations.changed().await.unwrap();
         assert_eq!(presentations.borrow_and_update().revision, 1);
+        assert_eq!(state.snapshot().await.revision, 1);
+        assert_eq!(state.snapshot().await.session_state.revision, 0);
+    }
+
+    #[tokio::test]
+    async fn reduced_motion_setting_publishes_without_session_mutation() {
+        let state = AppState::default();
+        let mut presentations = state.subscribe_pet_presentation();
+        state
+            .replace_settings(UserSettings {
+                always_on_top: true,
+                reduced_motion: true,
+            })
+            .await;
+        presentations.changed().await.unwrap();
+        assert!(presentations.borrow_and_update().reduced_motion);
         assert_eq!(state.snapshot().await.revision, 1);
         assert_eq!(state.snapshot().await.session_state.revision, 0);
     }

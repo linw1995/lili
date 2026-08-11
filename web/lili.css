@@ -114,6 +114,12 @@ body {
   padding: 3px 8px;
 }
 
+.pet-sprite:focus-visible,
+.notification-controls button:focus-visible {
+  outline: 3px solid #78d7ff;
+  outline-offset: 3px;
+}
+
 .pet-sprite {
   position: relative;
   width: 192px;
@@ -167,5 +173,10 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .pet-atlas {
     animation: none;
+  }
+
+  * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

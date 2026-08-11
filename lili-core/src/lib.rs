@@ -100,4 +100,5 @@ pub struct PetPresentationState {
     pub pet_label: String,
     pub unread_notification_count: usize,
     pub notifications: Vec<PetNotificationPresentation>,
+    pub reduced_motion: bool,
 }
