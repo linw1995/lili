@@ -1,0 +1,8 @@
+/.direnv/
+/dist/
+/lili/gen/
+/node_modules/
+/target/
+/result
+/playwright-report/
+/test-results/
