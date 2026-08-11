@@ -1,5 +1,6 @@
 mod desktop_smoke;
 pub mod hook_forwarder;
+mod integration_cli;
 mod ipc_signer;
 mod loopback;
 mod platform_pinning;
@@ -25,6 +26,13 @@ use tauri::{
 use tokio::sync::oneshot;
 
 pub fn run() {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(exit_code) = integration_cli::try_run(&arguments) {
+        if exit_code != 0 {
+            std::process::exit(i32::from(exit_code));
+        }
+        return;
+    }
     let smoke = std::env::args().any(|argument| argument == "--desktop-smoke");
     run_desktop(smoke);
 }

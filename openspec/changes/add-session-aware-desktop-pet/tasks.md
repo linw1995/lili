@@ -58,7 +58,7 @@
 
 ## 6. Reversible Codex Integration Management
 
-- [ ] 6.1 Implement `lili integrate inspect` to resolve the effective Codex home and version, parse relevant configuration without credentials, and report existing Lili and non-Lili integrations.
+- [x] 6.1 Implement `lili integrate inspect` to resolve the effective Codex home and version, parse relevant configuration without credentials, and report existing Lili and non-Lili integrations.
 - [ ] 6.2 Implement a deterministic install plan that shows exact `notify` and hook changes, target files, backups, trust requirements, and verification command before mutation.
 - [ ] 6.3 Implement atomic install with timestamped backups, unique Lili markers, preservation of unrelated configuration, idempotent re-run behavior, and rollback on verification failure.
 - [ ] 6.4 Detect an existing non-Lili `notify` command as a hard conflict and add an explicit coexistence dispatcher mode that isolates failures and preserves original argv semantics.

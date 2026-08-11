@@ -10,6 +10,7 @@ members = [
   "lili-actions",
   "lili-app-state",
   "lili-core",
+  "lili-integration",
   "lili-pet",
   "lili-server",
   "lili-session",
@@ -30,6 +31,7 @@ sha2 = "0.11"
 tauri = "2.11.5"
 tauri-build = "2.6.3"
 thiserror = "2"
+toml_edit = "0.25.13"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = "0.1"
 tower = { version = "0.5", features = ["util"] }

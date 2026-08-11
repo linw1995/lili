@@ -2582,6 +2582,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "lili-app-state",
+ "lili-integration",
  "lili-pet",
  "lili-server",
  "lili-session",
@@ -2630,6 +2631,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "lili-integration"
+version = "0.1.0"
+dependencies = [
+ "lili-session",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml_edit 0.25.13+spec-1.1.0",
 ]
 
 [[package]]
@@ -5161,6 +5173,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 
