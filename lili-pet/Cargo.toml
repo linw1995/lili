@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+image.workspace = true
 lili-core = { path = "../lili-core" }
 serde.workspace = true
 serde_json.workspace = true

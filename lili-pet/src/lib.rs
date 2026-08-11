@@ -1,4 +1,5 @@
 mod discovery;
+mod validation;
 
 use std::time::Duration;
 
@@ -8,6 +9,10 @@ use serde::{Deserialize, Serialize};
 pub use discovery::{
     DEFAULT_PET_ID, DiscoveredPackage, DiscoveryIssue, DiscoveryReport, PackageOrigin,
     default_pet_path, discover_pet_packages, resolve_codex_home,
+};
+pub use validation::{
+    AtlasFormat, AtlasMetadata, AtlasValidationError, ValidatedPetPackage,
+    validate_discovered_package,
 };
 
 pub const SPRITE_VERSION_NUMBER: u8 = 2;
