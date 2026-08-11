@@ -1,0 +1,16 @@
+{
+  "name": "wrong atlas dimension",
+  "packageDir": "wrong-dimension",
+  "manifest": {
+    "id": "wrong-dimension",
+    "displayName": "Wrong Dimension",
+    "description": "Golden wrong-dimension package.",
+    "spriteVersionNumber": 2,
+    "spritesheetPath": "spritesheet.png"
+  },
+  "atlasKind": "wrong-dimension",
+  "expected": {
+    "accepted": false,
+    "diagnosticContains": "atlas must be 1536x2288"
+  }
+}

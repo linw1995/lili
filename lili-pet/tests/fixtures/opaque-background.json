@@ -1,0 +1,16 @@
+{
+  "name": "opaque atlas background",
+  "packageDir": "opaque-background",
+  "manifest": {
+    "id": "opaque-background",
+    "displayName": "Opaque Background",
+    "description": "Golden opaque-background package.",
+    "spriteVersionNumber": 2,
+    "spritesheetPath": "spritesheet.png"
+  },
+  "atlasKind": "opaque",
+  "expected": {
+    "accepted": false,
+    "diagnosticContains": "atlas must contain transparent background pixels"
+  }
+}

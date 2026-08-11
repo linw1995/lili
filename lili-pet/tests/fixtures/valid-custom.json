@@ -1,0 +1,16 @@
+{
+  "name": "valid custom package",
+  "packageDir": "valid-custom",
+  "manifest": {
+    "id": "valid-custom",
+    "displayName": "Valid Custom",
+    "description": "Golden valid package.",
+    "spriteVersionNumber": 2,
+    "spritesheetPath": "spritesheet.webp"
+  },
+  "atlasKind": "embedded-valid",
+  "expected": {
+    "accepted": true,
+    "diagnosticContains": null
+  }
+}

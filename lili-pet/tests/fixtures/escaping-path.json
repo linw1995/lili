@@ -1,0 +1,16 @@
+{
+  "name": "escaping atlas path",
+  "packageDir": "escaping-path",
+  "manifest": {
+    "id": "escaping-path",
+    "displayName": "Escaping Path",
+    "description": "Golden escaping-path package.",
+    "spriteVersionNumber": 2,
+    "spritesheetPath": "../outside.png"
+  },
+  "atlasKind": "none",
+  "expected": {
+    "accepted": false,
+    "diagnosticContains": "spritesheetPath must be a confined relative path"
+  }
+}

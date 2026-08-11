@@ -1,0 +1,16 @@
+{
+  "name": "malformed atlas image",
+  "packageDir": "malformed-image",
+  "manifest": {
+    "id": "malformed-image",
+    "displayName": "Malformed Image",
+    "description": "Golden malformed-image package.",
+    "spriteVersionNumber": 2,
+    "spritesheetPath": "spritesheet.png"
+  },
+  "atlasKind": "malformed",
+  "expected": {
+    "accepted": false,
+    "diagnosticContains": "atlas must be PNG or WebP"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "wrong sprite version",
+  "packageDir": "wrong-version",
+  "manifest": {
+    "id": "wrong-version",
+    "displayName": "Wrong Version",
+    "description": "Golden wrong-version package.",
+    "spriteVersionNumber": 1,
+    "spritesheetPath": "spritesheet.png"
+  },
+  "atlasKind": "none",
+  "expected": {
+    "accepted": false,
+    "diagnosticContains": "spriteVersionNumber must be 2"
+  }
+}
