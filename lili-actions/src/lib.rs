@@ -1,5 +1,6 @@
 mod execution;
 mod loading;
+mod supervisor;
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -22,6 +23,10 @@ pub use loading::{
     ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
     EffectiveActionsView, LoadedAction, LoadedActions, action_config_path, load_actions_file,
     load_actions_str,
+};
+pub use supervisor::{
+    ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor, CapturedOutput,
+    MAX_ACTION_OUTPUT_BYTES,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

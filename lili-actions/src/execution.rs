@@ -4,6 +4,7 @@ use thiserror::Error;
 use tokio::{
     io::AsyncWriteExt,
     process::{Child, Command},
+    task::JoinHandle,
 };
 
 use crate::{InteractionContextV1, LoadedAction, MAX_INTERACTION_CONTEXT_BYTES};
@@ -16,28 +17,66 @@ pub enum ActionSpawnError {
     InputTooLarge,
     #[error("action process could not be spawned")]
     Spawn(#[source] io::Error),
+    #[error("action process tree could not be isolated")]
+    ProcessTree(#[source] io::Error),
     #[error("action process did not expose piped stdin")]
     StdinUnavailable,
-    #[error("interaction context could not be written to the action process")]
-    StdinWrite(#[source] io::Error),
 }
 
 #[derive(Debug)]
 pub struct SpawnedAction {
-    child: Child,
+    child: Option<Child>,
+    process_tree: process_tree::ProcessTree,
+    stdin_task: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl SpawnedAction {
     pub fn process_id(&self) -> Option<u32> {
-        self.child.id()
+        self.child.as_ref().and_then(Child::id)
     }
 
-    pub fn child_mut(&mut self) -> &mut Child {
-        &mut self.child
-    }
-
-    pub fn into_child(self) -> Child {
+    pub(crate) fn child_mut(&mut self) -> &mut Child {
         self.child
+            .as_mut()
+            .expect("spawned action retains its child")
+    }
+
+    #[cfg(all(test, unix))]
+    fn into_child(mut self) -> Child {
+        self.process_tree.disarm();
+        drop(self.stdin_task.take());
+        self.child.take().expect("spawned action retains its child")
+    }
+
+    pub(crate) fn take_stdin_task(&mut self) -> Option<JoinHandle<io::Result<()>>> {
+        self.stdin_task.take()
+    }
+
+    pub(crate) async fn terminate_tree(&mut self) -> io::Result<()> {
+        let tree_error = self.process_tree.terminate().err();
+        if tree_error.is_some() {
+            let _ = self.child_mut().kill().await;
+        }
+        let wait_result = self.child_mut().wait().await.map(|_| ());
+        match tree_error {
+            Some(error) => Err(error),
+            None => wait_result,
+        }
+    }
+
+    pub(crate) fn mark_finished(&mut self) {
+        self.process_tree.disarm();
+    }
+}
+
+impl Drop for SpawnedAction {
+    fn drop(&mut self) {
+        if self.child.is_some() {
+            if let Some(stdin_task) = &self.stdin_task {
+                stdin_task.abort();
+            }
+            let _ = self.process_tree.terminate();
+        }
     }
 }
 
@@ -61,22 +100,31 @@ pub async fn spawn_action(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    process_tree::configure(&mut command);
 
     let mut child = command.spawn().map_err(ActionSpawnError::Spawn)?;
-    let Some(mut stdin) = child.stdin.take() else {
-        terminate_failed_spawn(&mut child).await;
+    let process_tree = match process_tree::ProcessTree::attach(&child) {
+        Ok(process_tree) => process_tree,
+        Err(error) => {
+            terminate_failed_spawn(&mut child).await;
+            return Err(ActionSpawnError::ProcessTree(error));
+        }
+    };
+    let mut spawned = SpawnedAction {
+        child: Some(child),
+        process_tree,
+        stdin_task: None,
+    };
+    let Some(mut stdin) = spawned.child_mut().stdin.take() else {
+        let _ = spawned.terminate_tree().await;
         return Err(ActionSpawnError::StdinUnavailable);
     };
-    if let Err(error) = stdin.write_all(&input).await {
-        terminate_failed_spawn(&mut child).await;
-        return Err(ActionSpawnError::StdinWrite(error));
-    }
-    if let Err(error) = stdin.shutdown().await {
-        terminate_failed_spawn(&mut child).await;
-        return Err(ActionSpawnError::StdinWrite(error));
-    }
+    spawned.stdin_task = Some(tokio::spawn(async move {
+        stdin.write_all(&input).await?;
+        stdin.shutdown().await
+    }));
 
-    Ok(SpawnedAction { child })
+    Ok(spawned)
 }
 
 async fn terminate_failed_spawn(child: &mut Child) {
@@ -90,6 +138,171 @@ fn minimal_environment() -> BTreeMap<OsString, OsString> {
         (OsString::from("LANG"), OsString::from("C.UTF-8")),
         (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
     ])
+}
+
+#[cfg(unix)]
+mod process_tree {
+    use std::{io, os::unix::process::CommandExt};
+
+    use tokio::process::{Child, Command};
+
+    pub fn configure(command: &mut Command) {
+        command.as_std_mut().process_group(0);
+    }
+
+    #[derive(Debug)]
+    pub struct ProcessTree {
+        process_group: i32,
+        active: bool,
+    }
+
+    impl ProcessTree {
+        pub fn attach(child: &Child) -> io::Result<Self> {
+            let process_group = child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .ok_or_else(|| io::Error::other("child process identity is unavailable"))?;
+            Ok(Self {
+                process_group,
+                active: true,
+            })
+        }
+
+        pub fn terminate(&mut self) -> io::Result<()> {
+            if !self.active {
+                return Ok(());
+            }
+            // The child starts a fresh process group whose id is the validated child pid.
+            let result = unsafe { libc::kill(-self.process_group, libc::SIGKILL) };
+            if result == 0 {
+                self.active = false;
+                Ok(())
+            } else {
+                let error = io::Error::last_os_error();
+                if matches!(error.raw_os_error(), Some(libc::ESRCH)) {
+                    self.active = false;
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+
+        pub const fn disarm(&mut self) {
+            self.active = false;
+        }
+    }
+}
+
+#[cfg(windows)]
+mod process_tree {
+    use std::{ffi::c_void, io, mem, ptr};
+
+    use tokio::process::{Child, Command};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, TerminateJobObject,
+        },
+    };
+
+    pub fn configure(_command: &mut Command) {}
+
+    #[derive(Debug)]
+    pub struct ProcessTree {
+        job: HANDLE,
+        active: bool,
+    }
+
+    // SAFETY: the owned job handle is only accessed through exclusive methods and CloseHandle.
+    unsafe impl Send for ProcessTree {}
+
+    impl ProcessTree {
+        pub fn attach(child: &Child) -> io::Result<Self> {
+            let process = child
+                .raw_handle()
+                .map(|handle| handle as HANDLE)
+                .ok_or_else(|| io::Error::other("child process handle is unavailable"))?;
+            let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+            if job.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast::<c_void>(),
+                    u32::try_from(mem::size_of_val(&limits))
+                        .expect("job limit structure fits in u32"),
+                )
+            };
+            if configured == 0 || unsafe { AssignProcessToJobObject(job, process) } == 0 {
+                let error = io::Error::last_os_error();
+                unsafe {
+                    CloseHandle(job);
+                }
+                return Err(error);
+            }
+            Ok(Self { job, active: true })
+        }
+
+        pub fn terminate(&mut self) -> io::Result<()> {
+            if !self.active {
+                return Ok(());
+            }
+            if unsafe { TerminateJobObject(self.job, 1) } == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                self.active = false;
+                Ok(())
+            }
+        }
+
+        pub const fn disarm(&mut self) {
+            self.active = false;
+        }
+    }
+
+    impl Drop for ProcessTree {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.job);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod process_tree {
+    use std::io;
+
+    use tokio::process::{Child, Command};
+
+    pub fn configure(_command: &mut Command) {}
+
+    #[derive(Debug)]
+    pub struct ProcessTree {
+        active: bool,
+    }
+
+    impl ProcessTree {
+        pub fn attach(_child: &Child) -> io::Result<Self> {
+            Ok(Self { active: true })
+        }
+
+        pub fn terminate(&mut self) -> io::Result<()> {
+            self.active = false;
+            Ok(())
+        }
+
+        pub const fn disarm(&mut self) {
+            self.active = false;
+        }
+    }
 }
 
 #[cfg(windows)]
