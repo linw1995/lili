@@ -20,7 +20,7 @@ use lili_app_state::{
 use lili_core::PetId;
 use lili_integration::{IntegrationKind, inspect};
 use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
-use lili_server::{StaticAssets, build_router};
+use lili_server::{StaticAssets, build_native_router};
 use lili_session::{BoundForwardingEndpoint, ForwardingTransportError, SpoolStore};
 use loopback::LoopbackServer;
 use tauri::{
@@ -75,7 +75,7 @@ fn run_desktop(smoke: bool) {
     {
         tracing::warn!(%error, "native event ingestion was not started");
     }
-    let loopback = LoopbackServer::bind(build_router(state.clone(), assets))
+    let loopback = LoopbackServer::bind(build_native_router(state.clone(), assets))
         .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();

@@ -65,7 +65,15 @@ struct NotificationMutationResponse {
     accepted: bool,
 }
 
-pub fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
+pub fn build_native_router(state: AppState, assets: Option<StaticAssets>) -> Router {
+    build_router(state, assets)
+}
+
+pub fn build_fixture_router(assets: Option<StaticAssets>) -> Router {
+    build_router(AppState::default(), assets)
+}
+
+fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
     let api = Router::new()
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))

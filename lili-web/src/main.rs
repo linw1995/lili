@@ -1,7 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
-use lili_app_state::AppState;
-use lili_server::{StaticAssets, build_router};
+use lili_server::{StaticAssets, build_fixture_router};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -15,7 +14,7 @@ async fn main() {
     let listener = TcpListener::bind(address)
         .await
         .expect("failed to bind fixture web server");
-    let router = build_router(AppState::default(), Some(StaticAssets::new("dist")));
+    let router = build_fixture_router(Some(StaticAssets::new("dist")));
 
     tracing::info!(%address, "fixture web server listening");
     axum::serve(listener, router)

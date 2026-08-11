@@ -2722,9 +2722,10 @@ name = "lili-web"
 version = "0.1.0"
 dependencies = [
  "axum",
- "lili-app-state",
  "lili-server",
+ "serde_json",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
