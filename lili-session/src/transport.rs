@@ -788,6 +788,40 @@ mod tests {
         assert!(endpoint.endpoint().unix_path().unwrap().exists());
     }
 
+    #[tokio::test]
+    async fn unix_listener_rejects_unsafe_and_live_nodes_but_reclaims_stale_sockets() {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        let temp = TempDir::new();
+        let socket_path = temp.0.join("forwarding.sock");
+
+        fs::write(&socket_path, b"not a socket").unwrap();
+        assert!(matches!(
+            PlatformListener::bind(&temp.0, "instance"),
+            Err(ForwardingTransportError::UnsafeEndpoint)
+        ));
+        fs::remove_file(&socket_path).unwrap();
+
+        let symlink_target = temp.0.join("target");
+        fs::write(&symlink_target, b"target").unwrap();
+        symlink(&symlink_target, &socket_path).unwrap();
+        assert!(matches!(
+            PlatformListener::bind(&temp.0, "instance"),
+            Err(ForwardingTransportError::UnsafeEndpoint)
+        ));
+        fs::remove_file(&socket_path).unwrap();
+
+        let stale = UnixListener::bind(&socket_path).unwrap();
+        drop(stale);
+        let live = PlatformListener::bind(&temp.0, "instance").unwrap();
+        assert!(matches!(
+            PlatformListener::bind(&temp.0, "instance"),
+            Err(ForwardingTransportError::EndpointInUse)
+        ));
+        drop(live);
+        assert!(!socket_path.exists());
+    }
+
     #[test]
     fn mismatched_peer_owner_is_rejected() {
         assert!(validate_peer_owner(1_000, 1_000).is_ok());
