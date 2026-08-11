@@ -71,23 +71,13 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     let (state, state_store, codex_home, saved_window_placement) = load_app_state();
     app.state::<DesktopAcceptanceState>()
         .configure(codex_home.clone());
-    if (!smoke || acceptance)
-        && let Some(codex_home) = codex_home.as_deref()
-    {
-        configure_native_actions(codex_home, &state);
-    }
+    configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
     app.manage(DesktopPersistence {
         state: state.clone(),
         store: state_store.clone(),
     });
     setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
-    if (!smoke || acceptance)
-        && let Some(codex_home) = codex_home.as_deref()
-        && start_native_ingestion(codex_home, state.clone()).is_err()
-    {
-        diagnostics::warn("ingestion", "start", "transport_unavailable");
-    }
     let loopback = LoopbackServer::bind(build_native_router(state.clone(), assets))
         .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
@@ -98,27 +88,64 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     loopback.spawn(shutdown_rx);
 
     app.manage(signer);
-    app.add_capability({
-        let capability = CapabilityBuilder::new("loopback-request-signer")
-            .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
-            .local(false)
-            .window("pet")
-            .permission("allow-sign-loopback-request")
-            .permission("allow-commit-window-position")
-            .permission("core:window:allow-start-dragging");
-        if acceptance {
-            capability.permission("allow-complete-desktop-acceptance")
-        } else if smoke {
-            capability.permission("allow-complete-desktop-smoke")
-        } else {
-            capability
-        }
-    })
-    .expect("failed to register loopback capability");
+    register_loopback_capability(&app, &origin, smoke, acceptance)
+        .expect("failed to register loopback capability");
+    let window = create_pet_window(&app, &state, &origin, smoke, acceptance)
+        .expect("failed to create pet window");
+    restore_window_placement(&window, saved_window_placement.as_ref());
+    platform_pinning::install_and_navigate(&window, bootstrap_url, certificate_sha256)
+        .expect("failed to install loopback certificate pinning");
+    window.show().expect("failed to show pet window");
+    register_pet_window_events(&window, app.handle().clone());
+    run_desktop_event_loop(app, smoke, state, state_store, shutdown_tx);
+}
 
+fn configure_native_runtime(enabled: bool, codex_home: Option<&Path>, state: &AppState) {
+    if !enabled {
+        return;
+    }
+    let Some(codex_home) = codex_home else {
+        return;
+    };
+    configure_native_actions(codex_home, state);
+    if start_native_ingestion(codex_home, state.clone()).is_err() {
+        diagnostics::warn("ingestion", "start", "transport_unavailable");
+    }
+}
+
+fn register_loopback_capability(
+    app: &tauri::App,
+    origin: &tauri::Url,
+    smoke: bool,
+    acceptance: bool,
+) -> tauri::Result<()> {
+    let capability = CapabilityBuilder::new("loopback-request-signer")
+        .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
+        .local(false)
+        .window("pet")
+        .permission("allow-sign-loopback-request")
+        .permission("allow-commit-window-position")
+        .permission("core:window:allow-start-dragging");
+    let capability = if acceptance {
+        capability.permission("allow-complete-desktop-acceptance")
+    } else if smoke {
+        capability.permission("allow-complete-desktop-smoke")
+    } else {
+        capability
+    };
+    app.add_capability(capability)
+}
+
+fn create_pet_window(
+    app: &tauri::App,
+    state: &AppState,
+    origin: &tauri::Url,
+    smoke: bool,
+    acceptance: bool,
+) -> tauri::Result<tauri::WebviewWindow> {
     let allowed_origin = origin.origin();
     let always_on_top = tauri::async_runtime::block_on(state.settings()).always_on_top;
-    let mut builder = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app.handle(),
         "pet",
         WebviewUrl::External("about:blank".parse().expect("valid bootstrap URL")),
@@ -134,54 +161,81 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     .visible(false)
     .on_navigation(move |url| url.origin() == allowed_origin);
     if acceptance {
-        builder = builder.initialization_script(desktop_acceptance::SCRIPT);
+        builder
+            .initialization_script(desktop_acceptance::SCRIPT)
+            .build()
     } else if smoke {
-        builder = builder.initialization_script(desktop_smoke::SCRIPT);
+        builder.initialization_script(desktop_smoke::SCRIPT).build()
+    } else {
+        builder.build()
     }
-    let window = builder.build().expect("failed to create pet window");
-    if let Some(saved_window_placement) = saved_window_placement.as_ref()
-        && apply_reachable_window_placement(&window, saved_window_placement).is_err()
+}
+
+fn restore_window_placement(window: &tauri::WebviewWindow, saved: Option<&WindowPlacement>) {
+    if let Some(saved) = saved
+        && apply_reachable_window_placement(window, saved).is_err()
     {
         diagnostics::warn("window", "restore_placement", "placement_rejected");
     }
-    platform_pinning::install_and_navigate(&window, bootstrap_url, certificate_sha256)
-        .expect("failed to install loopback certificate pinning");
-    window.show().expect("failed to show pet window");
+}
 
-    let close_app = app.handle().clone();
-    window.on_window_event(move |event| match event {
-        tauri::WindowEvent::CloseRequested { api, .. } => {
-            api.prevent_close();
-            if let Some(window) = close_app.get_webview_window("pet") {
-                let _ = window.hide();
-            }
-        }
+fn register_pet_window_events(window: &tauri::WebviewWindow, app: tauri::AppHandle) {
+    window.on_window_event(move |event| handle_pet_window_event(&app, event));
+}
+
+fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
+    match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => handle_pet_close(app, api),
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
-            if let Some(window) = close_app.get_webview_window("pet") {
-                ensure_window_reachable(&window);
-            }
+            handle_pet_move(app);
         }
         _ => {}
-    });
+    }
+}
 
+fn handle_pet_close(app: &tauri::AppHandle, api: &tauri::CloseRequestApi) {
+    api.prevent_close();
+    hide_pet_window(app);
+}
+
+fn handle_pet_move(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("pet") {
+        ensure_window_reachable(&window);
+    }
+}
+
+fn run_desktop_event_loop(
+    app: tauri::App,
+    smoke: bool,
+    state: AppState,
+    state_store: Option<AppStateStore>,
+    shutdown_tx: oneshot::Sender<()>,
+) {
     let mut shutdown_tx = Some(shutdown_tx);
     app.run(move |app, event| {
         if matches!(event, tauri::RunEvent::Exit) {
-            if !smoke && let Some(store) = &state_store {
-                let placement = app
-                    .get_webview_window("pet")
-                    .as_ref()
-                    .and_then(current_window_placement);
-                let persistent = tauri::async_runtime::block_on(state.persistent_state(placement));
-                if store.save(&persistent).is_err() {
-                    diagnostics::warn("state", "persist", "write_failed");
-                }
+            if !smoke {
+                persist_desktop_state(app, &state, state_store.as_ref());
             }
             if let Some(shutdown_tx) = shutdown_tx.take() {
                 let _ = shutdown_tx.send(());
             }
         }
     });
+}
+
+fn persist_desktop_state(app: &tauri::AppHandle, state: &AppState, store: Option<&AppStateStore>) {
+    let Some(store) = store else {
+        return;
+    };
+    let placement = app
+        .get_webview_window("pet")
+        .as_ref()
+        .and_then(current_window_placement);
+    let persistent = tauri::async_runtime::block_on(state.persistent_state(placement));
+    if store.save(&persistent).is_err() {
+        diagnostics::warn("state", "persist", "write_failed");
+    }
 }
 
 fn configure_native_actions(codex_home: &Path, state: &AppState) {
@@ -517,6 +571,93 @@ async fn commit_window_position(
 }
 
 fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> tauri::Result<()> {
+    let tray_menu = build_tray_menu(app, &state, codex_home)?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".to_owned()))?;
+
+    TrayIconBuilder::with_id("lili-tray")
+        .icon(icon)
+        .tooltip("Lili")
+        .show_menu_on_left_click(false)
+        .menu(&tray_menu.menu)
+        .on_tray_icon_event(handle_tray_icon_event)
+        .on_menu_event({
+            let codex_home = codex_home.map(Path::to_path_buf);
+            move |app, event| {
+                handle_tray_menu_event(
+                    app,
+                    TrayAction::parse(event.id().as_ref()),
+                    &state,
+                    codex_home.as_deref(),
+                    &tray_menu.pet_items,
+                    &tray_menu.always_on_top,
+                );
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+struct TrayMenu {
+    menu: Menu<tauri::Wry>,
+    always_on_top: CheckMenuItem<tauri::Wry>,
+    pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
+}
+
+fn build_tray_menu(
+    app: &tauri::App,
+    state: &AppState,
+    codex_home: Option<&Path>,
+) -> tauri::Result<TrayMenu> {
+    let parts = TrayMenuParts::new(app, state, codex_home)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &parts.window.show,
+            &parts.window.hide,
+            &parts.window.always_on_top,
+            &parts.pet.menu,
+            &parts.integration,
+            &parts.utility.settings,
+            &parts.utility.diagnostics,
+            &parts.utility.separator,
+            &parts.utility.quit,
+        ],
+    )?;
+    Ok(TrayMenu {
+        menu,
+        always_on_top: parts.window.always_on_top,
+        pet_items: parts.pet.items,
+    })
+}
+
+struct TrayMenuParts {
+    window: TrayWindowItems,
+    pet: TrayPetItems,
+    integration: MenuItem<tauri::Wry>,
+    utility: TrayUtilityItems,
+}
+
+impl TrayMenuParts {
+    fn new(app: &tauri::App, state: &AppState, codex_home: Option<&Path>) -> tauri::Result<Self> {
+        Ok(Self {
+            window: build_tray_window_items(app, state)?,
+            pet: build_tray_pet_items(app, state)?,
+            integration: build_tray_integration_item(app, codex_home)?,
+            utility: build_tray_utility_items(app)?,
+        })
+    }
+}
+
+struct TrayWindowItems {
+    show: MenuItem<tauri::Wry>,
+    hide: MenuItem<tauri::Wry>,
+    always_on_top: CheckMenuItem<tauri::Wry>,
+}
+
+fn build_tray_window_items(app: &tauri::App, state: &AppState) -> tauri::Result<TrayWindowItems> {
     let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
     let always_on_top = CheckMenuItem::with_id(
@@ -527,6 +668,19 @@ fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> t
         tauri::async_runtime::block_on(state.settings()).always_on_top,
         None::<&str>,
     )?;
+    Ok(TrayWindowItems {
+        show,
+        hide,
+        always_on_top,
+    })
+}
+
+struct TrayPetItems {
+    menu: Submenu<tauri::Wry>,
+    items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
+}
+
+fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<TrayPetItems> {
     let pet_menu = Submenu::with_id(app, "pets", "Pet", true)?;
     let selected_pet = tauri::async_runtime::block_on(state.snapshot())
         .selected_pet
@@ -543,109 +697,165 @@ fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> t
     for (_, item) in &pet_items {
         pet_menu.append(item)?;
     }
+    Ok(TrayPetItems {
+        menu: pet_menu,
+        items: pet_items,
+    })
+}
+
+fn build_tray_integration_item(
+    app: &tauri::App,
+    codex_home: Option<&Path>,
+) -> tauri::Result<MenuItem<tauri::Wry>> {
     let integration_status = codex_home.map_or(TrayIntegrationStatus::Unavailable, |codex_home| {
         TrayIntegrationStatus::from_inspection(&inspect(codex_home))
     });
-    let integration = MenuItem::with_id(
+    MenuItem::with_id(
         app,
         "integration-status",
         integration_status.label(),
         false,
         None::<&str>,
-    )?;
+    )
+}
+
+struct TrayUtilityItems {
+    settings: MenuItem<tauri::Wry>,
+    diagnostics: MenuItem<tauri::Wry>,
+    separator: PredefinedMenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
+fn build_tray_utility_items(app: &tauri::App) -> tauri::Result<TrayUtilityItems> {
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let diagnostics = MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(
-        app,
-        &[
-            &show,
-            &hide,
-            &always_on_top,
-            &pet_menu,
-            &integration,
-            &settings,
-            &diagnostics,
-            &separator,
-            &quit,
-        ],
-    )?;
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".to_owned()))?;
+    Ok(TrayUtilityItems {
+        settings,
+        diagnostics,
+        separator,
+        quit,
+    })
+}
 
-    TrayIconBuilder::with_id("lili-tray")
-        .icon(icon)
-        .tooltip("Lili")
-        .show_menu_on_left_click(false)
-        .menu(&menu)
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                ..
-            } = event
-                && let Some(window) = tray.app_handle().get_webview_window("pet")
-            {
-                let visible = window.is_visible().unwrap_or(false);
-                let _ = if visible {
-                    window.hide()
-                } else {
-                    window.show()
-                };
-            }
-        })
-        .on_menu_event({
-            let state = state.clone();
-            let codex_home = codex_home.map(Path::to_path_buf);
-            move |app, event| match TrayAction::parse(event.id().as_ref()) {
-                TrayAction::Show => {
-                    if let Some(window) = app.get_webview_window("pet") {
-                        clear_tray_view(&window);
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-                TrayAction::Hide => {
-                    if let Some(window) = app.get_webview_window("pet") {
-                        let _ = window.hide();
-                    }
-                }
-                TrayAction::AlwaysOnTop => {
-                    let enabled = always_on_top.is_checked().unwrap_or(true);
-                    if let Some(window) = app.get_webview_window("pet") {
-                        let _ = window.set_always_on_top(enabled);
-                    }
-                    let state = state.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let mut settings = state.settings().await;
-                        settings.always_on_top = enabled;
-                        state.replace_settings(settings).await;
-                    });
-                }
-                TrayAction::SelectPet(pet_id) => {
-                    let Some(codex_home) = codex_home.as_deref() else {
-                        return;
-                    };
-                    if select_pet(&state, codex_home, &pet_id).is_ok() {
-                        for (candidate, item) in &pet_items {
-                            let _ = item.set_checked(candidate == &pet_id);
-                        }
-                        if let Some(window) = app.get_webview_window("pet") {
-                            clear_tray_view(&window);
-                            let _ = window.show();
-                        }
-                    }
-                }
-                TrayAction::Settings => show_tray_view(app, TrayView::Settings),
-                TrayAction::Diagnostics => show_tray_view(app, TrayView::Diagnostics),
-                TrayAction::Quit => app.exit(0),
-                TrayAction::IntegrationStatus | TrayAction::Unknown => {}
-            }
-        })
-        .build(app)?;
-    Ok(())
+fn handle_tray_icon_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
+    if let TrayIconEvent::Click {
+        button: MouseButton::Left,
+        ..
+    } = event
+        && let Some(window) = tray.app_handle().get_webview_window("pet")
+    {
+        let visible = window.is_visible().unwrap_or(false);
+        let _ = if visible {
+            window.hide()
+        } else {
+            window.show()
+        };
+    }
+}
+
+fn handle_tray_menu_event(
+    app: &tauri::AppHandle,
+    action: TrayAction,
+    state: &AppState,
+    codex_home: Option<&Path>,
+    pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
+    always_on_top: &CheckMenuItem<tauri::Wry>,
+) {
+    match action {
+        TrayAction::Show | TrayAction::Hide | TrayAction::AlwaysOnTop => {
+            handle_window_tray_action(app, action, state, always_on_top);
+        }
+        TrayAction::SelectPet(pet_id) => {
+            handle_pet_selection(app, state, codex_home, pet_items, &pet_id);
+        }
+        TrayAction::Settings | TrayAction::Diagnostics => handle_tray_view_action(app, action),
+        TrayAction::IntegrationStatus | TrayAction::Quit | TrayAction::Unknown => {
+            handle_application_tray_action(app, action);
+        }
+    }
+}
+
+fn handle_window_tray_action(
+    app: &tauri::AppHandle,
+    action: TrayAction,
+    state: &AppState,
+    always_on_top: &CheckMenuItem<tauri::Wry>,
+) {
+    match action {
+        TrayAction::Show => show_pet_window(app),
+        TrayAction::Hide => hide_pet_window(app),
+        TrayAction::AlwaysOnTop => update_always_on_top(app, state, always_on_top),
+        _ => {}
+    }
+}
+
+fn show_pet_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("pet") {
+        clear_tray_view(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn hide_pet_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("pet") {
+        let _ = window.hide();
+    }
+}
+
+fn update_always_on_top(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    always_on_top: &CheckMenuItem<tauri::Wry>,
+) {
+    let enabled = always_on_top.is_checked().unwrap_or(true);
+    if let Some(window) = app.get_webview_window("pet") {
+        let _ = window.set_always_on_top(enabled);
+    }
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut settings = state.settings().await;
+        settings.always_on_top = enabled;
+        state.replace_settings(settings).await;
+    });
+}
+
+fn handle_pet_selection(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    codex_home: Option<&Path>,
+    pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
+    pet_id: &PetId,
+) {
+    let Some(codex_home) = codex_home else {
+        return;
+    };
+    if select_pet(state, codex_home, pet_id).is_err() {
+        return;
+    }
+    for (candidate, item) in pet_items {
+        let _ = item.set_checked(candidate == pet_id);
+    }
+    if let Some(window) = app.get_webview_window("pet") {
+        clear_tray_view(&window);
+        let _ = window.show();
+    }
+}
+
+fn handle_tray_view_action(app: &tauri::AppHandle, action: TrayAction) {
+    match action {
+        TrayAction::Settings => show_tray_view(app, TrayView::Settings),
+        TrayAction::Diagnostics => show_tray_view(app, TrayView::Diagnostics),
+        _ => {}
+    }
+}
+
+fn handle_application_tray_action(app: &tauri::AppHandle, action: TrayAction) {
+    if action == TrayAction::Quit {
+        app.exit(0);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
