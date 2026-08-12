@@ -344,6 +344,8 @@ pub enum SelectionError {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use image::GenericImageView;
+
     use super::*;
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -375,6 +377,73 @@ mod tests {
         assert_eq!(catalog.active().definition().id().as_str(), DEFAULT_PET_ID);
         assert_eq!(catalog.active().source(), &PetAssetSource::Embedded);
         assert!(catalog.active().embedded_atlas().is_some());
+    }
+
+    #[test]
+    fn embedded_fallback_rows_share_one_tabby_palette() {
+        const MAX_CHROMATICITY_DRIFT: f64 = 0.03;
+
+        let atlas = image::load_from_memory(FALLBACK_ATLAS)
+            .unwrap()
+            .into_rgba8();
+        let row_palettes = (0..crate::ATLAS_ROWS)
+            .map(|row| warm_fur_chromaticity(&atlas, u32::from(row)))
+            .collect::<Vec<_>>();
+        let standard = [
+            median(row_palettes[..9].iter().map(|palette| palette[0])),
+            median(row_palettes[..9].iter().map(|palette| palette[1])),
+            median(row_palettes[..9].iter().map(|palette| palette[2])),
+        ];
+
+        for (row, palette) in row_palettes.iter().enumerate() {
+            let drift = palette
+                .iter()
+                .zip(standard)
+                .map(|(value, reference)| (value - reference).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!(
+                drift <= MAX_CHROMATICITY_DRIFT,
+                "fallback row {row} chromaticity drift {drift:.4} exceeds {MAX_CHROMATICITY_DRIFT:.4}"
+            );
+        }
+    }
+
+    fn warm_fur_chromaticity(atlas: &image::RgbaImage, row: u32) -> [f64; 3] {
+        let mut channels = [Vec::new(), Vec::new(), Vec::new()];
+        let start_y = row * crate::CELL_HEIGHT;
+        for (_, _, pixel) in atlas
+            .view(0, start_y, crate::ATLAS_WIDTH, crate::CELL_HEIGHT)
+            .pixels()
+        {
+            let [red, green, blue, alpha] = pixel.0;
+            let brightness = (u16::from(red) + u16::from(green) + u16::from(blue)) / 3;
+            let span = red.max(green).max(blue) - red.min(green).min(blue);
+            if alpha < 128
+                || !(40..=210).contains(&brightness)
+                || span < 20
+                || red < green
+                || green < blue
+            {
+                continue;
+            }
+            let total = f64::from(red) + f64::from(green) + f64::from(blue);
+            channels[0].push(f64::from(red) / total);
+            channels[1].push(f64::from(green) / total);
+            channels[2].push(f64::from(blue) / total);
+        }
+        assert!(channels.iter().all(|channel| channel.len() >= 1_000));
+        [
+            median(channels[0].iter().copied()),
+            median(channels[1].iter().copied()),
+            median(channels[2].iter().copied()),
+        ]
+    }
+
+    fn median(values: impl IntoIterator<Item = f64>) -> f64 {
+        let mut values = values.into_iter().collect::<Vec<_>>();
+        values.sort_by(f64::total_cmp);
+        values[values.len() / 2]
     }
 
     #[test]
