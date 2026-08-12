@@ -171,6 +171,7 @@ fn create_pet_window(
         WebviewUrl::External("about:blank".parse().expect("valid bootstrap URL")),
     )
     .initialization_script(FETCH_SIGNER_SCRIPT)
+    .accept_first_mouse(true)
     .title("Lili")
     .inner_size(320.0, 360.0)
     .transparent(true)

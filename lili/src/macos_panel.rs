@@ -1,4 +1,10 @@
-use std::{ffi::CStr, sync::OnceLock};
+use std::{
+    ffi::CStr,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use objc2::{
     msg_send,
@@ -56,15 +62,31 @@ pub fn satisfies_desktop_companion_contract(window: &tauri::WebviewWindow) -> bo
     let behavior: NSWindowCollectionBehavior =
         unsafe { msg_send![native_window, collectionBehavior] };
     let style: NSWindowStyleMask = unsafe { msg_send![native_window, styleMask] };
-    let actual = u8::from(is_panel)
-        | (u8::from(is_floating) << 1)
-        | (u8::from(!hides_on_deactivate) << 2)
-        | (u8::from(style.contains(NSWindowStyleMask::NonactivatingPanel)) << 3)
-        | (u8::from(behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)) << 4)
-        | (u8::from(behavior.contains(NSWindowCollectionBehavior::Stationary)) << 5)
-        | (u8::from(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle)) << 6)
-        | (u8::from(application_is_accessory()) << 7);
-    actual == u8::MAX
+    let actual = u16::from(is_panel)
+        | (u16::from(is_floating) << 1)
+        | (u16::from(!hides_on_deactivate) << 2)
+        | (u16::from(style.contains(NSWindowStyleMask::NonactivatingPanel)) << 3)
+        | (u16::from(behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)) << 4)
+        | (u16::from(behavior.contains(NSWindowCollectionBehavior::Stationary)) << 5)
+        | (u16::from(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle)) << 6)
+        | (u16::from(application_is_accessory()) << 7)
+        | (u16::from(webview_accepts_first_mouse(window)) << 8);
+    actual == 0x01ff
+}
+
+fn webview_accepts_first_mouse(window: &tauri::WebviewWindow) -> bool {
+    let accepted = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&accepted);
+    let result = window.with_webview(move |webview| {
+        let raw_webview = webview.inner();
+        if !raw_webview.is_null() {
+            let webview = unsafe { &*raw_webview.cast::<AnyObject>() };
+            let no_event = std::ptr::null::<AnyObject>();
+            let accepts: bool = unsafe { msg_send![webview, acceptsFirstMouse: no_event] };
+            observed.store(accepts, Ordering::Release);
+        }
+    });
+    result.is_ok() && accepted.load(Ordering::Acquire)
 }
 
 fn application_is_accessory() -> bool {
