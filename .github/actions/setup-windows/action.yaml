@@ -27,6 +27,7 @@ runs:
         WASM_BINDGEN_VERSION: ${{ steps.versions.outputs.wasmBindgen }}
       run: |
         rustup toolchain install $env:RUST_VERSION --profile minimal --component clippy,rustfmt
+        rustup target add wasm32-unknown-unknown --toolchain $env:RUST_VERSION
         rustup default $env:RUST_VERSION
         cargo install tauri-cli --version $env:TAURI_VERSION --locked
         cargo install trunk --version $env:TRUNK_VERSION --locked

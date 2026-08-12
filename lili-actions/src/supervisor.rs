@@ -440,11 +440,18 @@ async fn join_capture(mut task: JoinHandle<io::Result<CapturedOutput>>) -> Optio
 async fn join_stdin(task: Option<JoinHandle<io::Result<()>>>) -> Option<()> {
     let mut task = task?;
     match tokio::time::timeout(PROCESS_IO_DRAIN_TIMEOUT, &mut task).await {
-        Ok(result) => result.ok()?.ok(),
+        Ok(result) => allow_closed_stdin(result.ok()?).ok(),
         Err(_) => {
             task.abort();
             None
         }
+    }
+}
+
+fn allow_closed_stdin(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
     }
 }
 
@@ -541,6 +548,18 @@ debounce_ms = {debounce_ms}
         let loaded = load_actions_str(&source, &ActionLoadContext::new("/", "/", Vec::new()));
         assert!(loaded.effective().diagnostics.is_empty());
         ActionSupervisor::new(loaded, 1).unwrap()
+    }
+
+    #[test]
+    fn closed_stdin_is_not_an_io_failure() {
+        assert!(allow_closed_stdin(Ok(())).is_ok());
+        assert!(allow_closed_stdin(Err(io::ErrorKind::BrokenPipe.into())).is_ok());
+        assert_eq!(
+            allow_closed_stdin(Err(io::ErrorKind::ConnectionReset.into()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::ConnectionReset
+        );
     }
 
     fn two_action_supervisor() -> ActionSupervisor {

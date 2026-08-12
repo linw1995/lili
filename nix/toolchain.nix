@@ -24,8 +24,31 @@
       ${
         if isLinux
         then ''
-          cargo_binary="$(sed -n 's|^exec "\([^"]*/bin/cargo\)" .*|\1|p' ${toolchain}/bin/cargo)"
-          test -x "$cargo_binary"
+          cargo_entry=${toolchain}/bin/cargo
+          if [[ -L "$cargo_entry" ]]; then
+            cargo_binary="$(readlink -f "$cargo_entry")"
+          else
+            mapfile -t cargo_candidates < <(
+              sed -n \
+                -e 's|^exec "\(/nix/store/[^"]*/bin/cargo\)"[[:space:]].*$|\1|p' \
+                -e 's|^exec \(/nix/store/[^[:space:]]*/bin/cargo\)[[:space:]].*$|\1|p' \
+                "$cargo_entry"
+            )
+            if (( ''${#cargo_candidates[@]} != 1 )); then
+              echo "expected exactly one Cargo binary in $cargo_entry" >&2
+              exit 1
+            fi
+            cargo_binary="''${cargo_candidates[0]}"
+          fi
+          if [[ "$cargo_binary" != /nix/store/*/bin/cargo || ! -x "$cargo_binary" ]]; then
+            echo "invalid Cargo binary: $cargo_binary" >&2
+            exit 1
+          fi
+          cargo_magic="$(od -An -tx1 -N4 "$cargo_binary" | tr -d '[:space:]')"
+          if [[ "$cargo_magic" != 7f454c46 ]]; then
+            echo "Cargo target is not an ELF binary: $cargo_binary" >&2
+            exit 1
+          fi
           cat > "$out/bin/cargo" <<EOF
           #!${pkgs.runtimeShell}
           unset LD_LIBRARY_PATH

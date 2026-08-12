@@ -274,7 +274,7 @@ mod windows {
     use sha2::{Digest, Sha256};
     use tauri::WebviewWindow;
     use webview2_com::{CoTaskMemPWSTR, ServerCertificateErrorDetectedEventHandler};
-    use windows::core::{HSTRING, Interface};
+    use windows::core::{HSTRING, Interface, PWSTR};
 
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
@@ -310,19 +310,17 @@ mod windows {
                         let Some(arguments) = arguments else {
                             return Ok(());
                         };
-                        let mut request_uri = CoTaskMemPWSTR::default();
-                        arguments
-                            .RequestUri(request_uri.as_mut().as_pwstr() as *const _ as *mut _)?;
-                        let request_uri = request_uri.to_string();
+                        let mut request_uri = PWSTR::null();
+                        arguments.RequestUri(&mut request_uri)?;
+                        let request_uri = CoTaskMemPWSTR::from(request_uri).to_string();
                         let origin_matches = tauri::Url::parse(&request_uri)
                             .is_ok_and(|uri| uri.origin().ascii_serialization() == expected_origin);
                         let certificate_matches = arguments
                             .ServerCertificate()
                             .and_then(|certificate| {
-                                let mut pem = CoTaskMemPWSTR::default();
-                                certificate
-                                    .ToPemEncoding(pem.as_mut().as_pwstr() as *const _ as *mut _)?;
-                                Ok(pem.to_string())
+                                let mut pem = PWSTR::null();
+                                certificate.ToPemEncoding(&mut pem)?;
+                                Ok(CoTaskMemPWSTR::from(pem).to_string())
                             })
                             .ok()
                             .and_then(|pem| decode_pem_certificate(&pem))

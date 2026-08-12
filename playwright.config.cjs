@@ -18,6 +18,6 @@ module.exports = defineConfig({
       "trunk build --locked --config Trunk.web.toml && cargo run --locked --package lili-web",
     url: "http://127.0.0.1:3746/health",
     reuseExistingServer: false,
-    timeout: 120_000,
+    timeout: 300_000,
   },
 });
