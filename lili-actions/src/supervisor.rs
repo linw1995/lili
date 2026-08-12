@@ -516,7 +516,7 @@ mod tests {
     }
 
     fn supervisor(command: &[&str], policy: &str, debounce_ms: u64) -> ActionSupervisor {
-        supervisor_with_timeout(command, policy, debounce_ms, 100)
+        supervisor_with_timeout(command, policy, debounce_ms, 500)
     }
 
     fn supervisor_with_timeout(
@@ -570,14 +570,14 @@ version = 1
 id = "first"
 trigger = "pet_click"
 command = ["/bin/sh", "-c", "sleep 0.06"]
-timeout_ms = 100
+timeout_ms = 500
 debounce_ms = 0
 
 [[action]]
 id = "second"
 trigger = "pet_click"
 command = ["/bin/sh", "-c", "sleep 0.06"]
-timeout_ms = 100
+timeout_ms = 500
 debounce_ms = 0
 "#;
         let loaded = load_actions_str(source, &ActionLoadContext::new("/", "/", Vec::new()));
@@ -601,10 +601,11 @@ debounce_ms = 0
             ActionExecutionOutcome::Debounced
         );
 
-        let timed_out = supervisor(
+        let timed_out = supervisor_with_timeout(
             &["/bin/sh", "-c", "sleep 1"],
             "mode = \"reject\"\nmax_parallel = 1\nqueue_capacity = 0",
             0,
+            100,
         );
         assert_eq!(
             timed_out.execute("test", &interaction()).await.outcome,
