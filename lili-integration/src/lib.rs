@@ -178,15 +178,16 @@ pub fn inspect_with_version(
 
 pub fn detect_codex_version() -> Option<String> {
     let output = Command::new("codex").arg("--version").output().ok()?;
-    if !output.status.success() || output.stdout.len() > MAX_VERSION_BYTES {
+    parse_codex_version(output.status.success(), &output.stdout)
+}
+
+fn parse_codex_version(success: bool, stdout: &[u8]) -> Option<String> {
+    if !success || stdout.len() > MAX_VERSION_BYTES {
         return None;
     }
-    let output = std::str::from_utf8(&output.stdout).ok()?.trim();
+    let output = std::str::from_utf8(stdout).ok()?.trim();
     let version = output.split_whitespace().last()?;
-    if version.is_empty()
-        || version.len() > 64
-        || version.chars().any(|character| character.is_control())
-    {
+    if version.len() > 64 || version.chars().any(|character| character.is_control()) {
         return None;
     }
     Some(version.to_owned())
@@ -457,5 +458,22 @@ notify = ["other-notifier", "secret-argument"]
         assert_eq!(inspection.hooks.status, IntegrationFileStatus::Missing);
         assert_eq!(inspection.notify.kind, IntegrationKind::Missing);
         assert!(!inspection.warnings.is_empty());
+    }
+
+    #[test]
+    fn codex_version_output_is_bounded_and_validated() {
+        assert_eq!(
+            parse_codex_version(true, b"codex-cli 0.147.0\n"),
+            Some("0.147.0".to_owned())
+        );
+        assert_eq!(parse_codex_version(false, b"codex-cli 0.147.0"), None);
+        assert_eq!(
+            parse_codex_version(true, &[b'x'; MAX_VERSION_BYTES + 1]),
+            None
+        );
+        assert_eq!(parse_codex_version(true, b"\xff"), None);
+        assert_eq!(parse_codex_version(true, b"  \n"), None);
+        assert_eq!(parse_codex_version(true, &[b'x'; 65]), None);
+        assert_eq!(parse_codex_version(true, b"codex 0.147\0.0"), None);
     }
 }
