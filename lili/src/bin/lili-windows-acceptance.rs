@@ -24,7 +24,8 @@ mod windows {
 
     use windows_sys::Win32::{
         Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT},
-        System::Threading::{OpenProcess, SYNCHRONIZE, WaitForSingleObject},
+        Storage::FileSystem::SYNCHRONIZE,
+        System::Threading::{OpenProcess, WaitForSingleObject},
     };
 
     const PAYLOAD: &str = r#"{"version":1,"provider":"codex","type":"attention_required","eventId":"windows-acceptance-event","sessionId":"windows-acceptance-session","turnId":"windows-acceptance-turn","occurredAtMs":1800000000000,"project":{"label":"Acceptance"},"summary":"Interaction required"}"#;

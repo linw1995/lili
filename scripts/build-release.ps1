@@ -15,7 +15,19 @@ cargo build --locked --release --package lili --features release-tools --bin lil
 
 $bundleRoot = Join-Path $buildTarget "release/bundle"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $bundleRoot
-cargo tauri build --bundles nsis -- --locked
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+        cargo tauri build --bundles nsis -- --locked
+        break
+    }
+    catch {
+        if ($attempt -eq 3) {
+            throw
+        }
+        Write-Warning "Tauri build attempt $attempt failed; retrying pinned tool downloads"
+        Start-Sleep -Seconds (10 * $attempt)
+    }
+}
 
 $releaseParent = Join-Path $workspace "release"
 $releaseName = "lili-$version-$platform"

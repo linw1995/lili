@@ -1,7 +1,20 @@
 $ErrorActionPreference = "Stop"
 
-cargo tauri build --bundles nsis -- --locked
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    cargo tauri build --bundles nsis -- --locked
+    if ($LASTEXITCODE -eq 0) {
+        break
+    }
+    if ($attempt -eq 3) {
+        exit $LASTEXITCODE
+    }
+    Write-Warning "Tauri build attempt $attempt failed; retrying pinned tool downloads"
+    Start-Sleep -Seconds (10 * $attempt)
+}
 cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-action-tree-fixture --bin lili-windows-acceptance
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
 
 $installer = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
 if ($null -eq $installer) {
