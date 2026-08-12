@@ -54,6 +54,10 @@ On macOS, the desktop pet window SHALL be backed by a non-activating `NSPanel` c
 - **WHEN** the primary pointer presses and moves within the pet sprite
 - **THEN** controlled native window movement starts from the pet hit region without making the transparent window margin draggable or blocking animation rendering
 
+#### Scenario: User grabs an inactive pet
+- **WHEN** the non-activating macOS pet panel is not the active window and the primary pointer presses and moves within the pet sprite
+- **THEN** the first mouse press reaches the rendered pet and starts the same controlled drag without a preliminary activation click
+
 #### Scenario: User drags the pet to the right
 - **WHEN** horizontal drag velocity is positive beyond the movement threshold
 - **THEN** the pet displays running-right until the drag slows or ends

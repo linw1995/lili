@@ -79,6 +79,7 @@
 - [x] 7.10 Keep the built-in fallback palette consistent across standard animation and look-direction rows, with deterministic color-drift QA.
 - [x] 7.11 Back the macOS pet window with `NSPanel` and move controlled drags to absolute screen-coordinate targets anchored at pointer down.
 - [x] 7.12 Expose the macOS pet as a non-activating unmanaged companion popup so accessibility-driven virtual workspace switches do not hide it.
+- [ ] 7.13 Accept the first mouse press in the inactive macOS pet WebView so dragging never requires a preliminary click.
 
 ## 8. Declarative Interaction Actions
 
