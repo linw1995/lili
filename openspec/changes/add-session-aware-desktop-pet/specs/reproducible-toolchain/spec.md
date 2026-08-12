@@ -88,3 +88,14 @@ Normal development, build, and CI commands SHALL NOT rewrite lockfiles. Toolchai
 #### Scenario: Toolchain input is upgraded
 - **WHEN** a maintainer intentionally updates a Flake input
 - **THEN** the resulting lockfile diff, tool versions, cross-system evaluation, workspace checks, and build entry points are reviewed as one change
+
+### Requirement: Ship an actionable configuration guide
+The project SHALL maintain a configuration guide linked from the README and included in release bundles. The guide SHALL distinguish source development from packaged operation and SHALL document Codex home selection, default and additional pet packages, reviewed Session integration installation, interaction action configuration, configuration reload boundaries, verification, troubleshooting, and provenance-aware uninstall using only supported public interfaces.
+
+#### Scenario: User configures a release from a clean environment
+- **WHEN** a user opens the release README without prior project knowledge
+- **THEN** the linked guide provides an ordered, copyable path to launch Lili, review and install Session integration, configure pet and notification interactions, verify the result, and safely remove the integration
+
+#### Scenario: User edits a startup-loaded configuration
+- **WHEN** a user changes a pet package or `actions.toml`
+- **THEN** the guide identifies whether Lili must be restarted before the change becomes effective

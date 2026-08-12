@@ -114,3 +114,4 @@
 - [x] 10.10 Specify shared native Flake application environments for clean Linux hosts while keeping non-native commands lightweight.
 - [x] 10.11 Reuse one native dependency definition across development shells and every Flake application that compiles or runs the desktop workspace.
 - [x] 10.12 Add Flake contract checks that reject native application wrappers missing the shared environment and verify the Linux native dependency closure.
+- [x] 10.13 Document the complete configuration path for source and packaged use, including Codex home selection, pet packages, reviewed integration installation, interaction actions, reload boundaries, verification, troubleshooting, and uninstall; ship the same guide in release bundles and link it from the README.
