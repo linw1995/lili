@@ -885,13 +885,13 @@ version = 1
 [[action]]
 id = "wave"
 trigger = "pet_click"
-command = ["/bin/sh", "-c", "exit 0"]
+command = ["/bin/cat"]
 debounce_ms = 0
 
 [[action]]
 id = "jump"
 trigger = "pet_double_click"
-command = ["/bin/sh", "-c", "exit 0"]
+command = ["/bin/cat"]
 debounce_ms = 0
 "#,
         );
