@@ -16,6 +16,7 @@ fn main() {
 mod windows {
     use std::{
         fs,
+        io::Read,
         path::PathBuf,
         process::{Command, Stdio},
         thread,
@@ -33,14 +34,19 @@ mod windows {
                     .next()
                     .map(PathBuf::from)
                     .ok_or_else(|| "missing process id output path".to_owned())?;
+                let input_validated = arguments
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "missing input validation output path".to_owned())?;
                 if arguments.next().is_some() {
                     return Err("unexpected fixture arguments".to_owned());
                 }
-                serde_json::Deserializer::from_reader(std::io::stdin().lock())
-                    .into_iter::<serde_json::Value>()
-                    .next()
-                    .ok_or_else(|| "interaction input is empty".to_owned())?
-                    .map_err(|error| format!("interaction input is invalid: {error}"))?;
+                // The supervisor starts writing only after attaching this parent to its job.
+                let mut input = std::io::stdin().lock();
+                let mut first_byte = [0];
+                input
+                    .read_exact(&mut first_byte)
+                    .map_err(|error| format!("interaction input could not be read: {error}"))?;
                 let child = Command::new(
                     std::env::current_exe()
                         .map_err(|error| format!("fixture path is unavailable: {error}"))?,
@@ -53,6 +59,13 @@ mod windows {
                 .map_err(|error| format!("fixture child could not start: {error}"))?;
                 fs::write(output, format!("{}\n{}\n", std::process::id(), child.id()))
                     .map_err(|error| format!("process ids could not be written: {error}"))?;
+                serde_json::Deserializer::from_reader(first_byte.as_slice().chain(input))
+                    .into_iter::<serde_json::Value>()
+                    .next()
+                    .ok_or_else(|| "interaction input is empty".to_owned())?
+                    .map_err(|error| format!("interaction input is invalid: {error}"))?;
+                fs::write(input_validated, b"")
+                    .map_err(|error| format!("input validation could not be recorded: {error}"))?;
                 loop {
                     thread::sleep(Duration::from_secs(60));
                 }
