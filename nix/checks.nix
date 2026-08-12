@@ -106,6 +106,7 @@ in {
         grep -F '${pkgs.glib}' "$coverage_script"
         grep -F '${pkgs.gtk3}' "$coverage_script"
         grep -F '${pkgs.libselinux}' "$coverage_script"
+        grep -F '${pkgs.libsepol}' "$coverage_script"
         grep -F '${pkgs.libsysprof-capture}' "$coverage_script"
         grep -F '${pkgs.pango}' "$coverage_script"
         grep -F '${pkgs.libsoup_3}' "$coverage_script"

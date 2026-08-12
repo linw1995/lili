@@ -67,21 +67,25 @@
     export CC_wasm32_unknown_unknown="${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang"
     export AR_wasm32_unknown_unknown="${pkgs.llvmPackages_21.llvm}/bin/llvm-ar"
   '';
-  linuxBuildInputs = pkgs.lib.optionals isLinux (dependencyClosure [
+  linuxRuntimeInputs = pkgs.lib.optionals isLinux [
     pkgs.glib
     pkgs.gtk3
-    pkgs.libselinux
-    pkgs.libsysprof-capture
     pkgs.libsoup_3
-    pkgs.util-linuxMinimal
     pkgs.webkitgtk_4_1
-  ]);
+  ];
+  linuxBuildInputs = dependencyClosure (linuxRuntimeInputs
+    ++ pkgs.lib.optionals isLinux [
+      pkgs.libselinux
+      pkgs.libsepol
+      pkgs.libsysprof-capture
+      pkgs.util-linuxMinimal
+    ]);
   darwinBuildInputs = pkgs.lib.optionals isDarwin [pkgs.darwin.libiconv];
   nativeBuildInputs = linuxBuildInputs ++ darwinBuildInputs;
   nativeEnv =
     pkgs.lib.optionalString isLinux ''
       export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "lib" "lib/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "out" "lib/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "dev" "share/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "lib" "share/pkgconfig" linuxBuildInputs}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-      export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxBuildInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
       export GI_TYPELIB_PATH="${pkgs.lib.makeSearchPath "lib/girepository-1.0" linuxBuildInputs}''${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
       export XDG_DATA_DIRS="${pkgs.lib.makeSearchPath "share" linuxBuildInputs}''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
     ''
