@@ -16,7 +16,6 @@ fn main() {
 mod windows {
     use std::{
         fs,
-        io::Read,
         path::PathBuf,
         process::{Command, Stdio},
         thread,
@@ -37,13 +36,11 @@ mod windows {
                 if arguments.next().is_some() {
                     return Err("unexpected fixture arguments".to_owned());
                 }
-                let mut input = Vec::new();
-                std::io::stdin()
-                    .read_to_end(&mut input)
-                    .map_err(|error| format!("interaction input could not be read: {error}"))?;
-                if input.is_empty() {
-                    return Err("interaction input is empty".to_owned());
-                }
+                serde_json::Deserializer::from_reader(std::io::stdin().lock())
+                    .into_iter::<serde_json::Value>()
+                    .next()
+                    .ok_or_else(|| "interaction input is empty".to_owned())?
+                    .map_err(|error| format!("interaction input is invalid: {error}"))?;
                 let child = Command::new(
                     std::env::current_exe()
                         .map_err(|error| format!("fixture path is unavailable: {error}"))?,
