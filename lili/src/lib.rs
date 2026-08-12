@@ -67,6 +67,9 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         .build(tauri::generate_context!())
         .expect("failed to build Lili");
 
+    configure_desktop_companion_application(&app)
+        .expect("failed to configure desktop companion application");
+
     let assets = desktop_assets(
         app.path().resource_dir().ok().as_deref(),
         cfg!(debug_assertions),
@@ -103,6 +106,17 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     window.show().expect("failed to show pet window");
     register_pet_window_events(&window, app.handle().clone());
     run_desktop_event_loop(app, smoke, state, state_store, shutdown_tx);
+}
+
+#[cfg(target_os = "macos")]
+fn configure_desktop_companion_application(app: &tauri::App) -> tauri::Result<()> {
+    app.handle()
+        .set_activation_policy(tauri::ActivationPolicy::Accessory)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_desktop_companion_application(_app: &tauri::App) -> tauri::Result<()> {
+    Ok(())
 }
 
 fn configure_native_runtime(enabled: bool, codex_home: Option<&Path>, state: &AppState) {

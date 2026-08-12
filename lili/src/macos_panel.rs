@@ -4,7 +4,7 @@ use objc2::{
     msg_send,
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
-use objc2_app_kit::NSWindowCollectionBehavior;
+use objc2_app_kit::{NSWindowCollectionBehavior, NSWindowStyleMask};
 
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 
@@ -23,6 +23,11 @@ pub fn configure(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     );
     unsafe {
         objc2::ffi::object_setClass(native_window as *const _ as *mut _, panel_class);
+        let style: NSWindowStyleMask = msg_send![native_window, styleMask];
+        let _: () = msg_send![
+            native_window,
+            setStyleMask: style | NSWindowStyleMask::NonactivatingPanel
+        ];
         let _: () = msg_send![native_window, setFloatingPanel: true];
         let _: () = msg_send![native_window, setHidesOnDeactivate: false];
         let _: () = msg_send![native_window, setBecomesKeyOnlyIfNeeded: true];
@@ -50,13 +55,28 @@ pub fn satisfies_desktop_companion_contract(window: &tauri::WebviewWindow) -> bo
     let hides_on_deactivate: bool = unsafe { msg_send![native_window, hidesOnDeactivate] };
     let behavior: NSWindowCollectionBehavior =
         unsafe { msg_send![native_window, collectionBehavior] };
+    let style: NSWindowStyleMask = unsafe { msg_send![native_window, styleMask] };
     let actual = u8::from(is_panel)
         | (u8::from(is_floating) << 1)
         | (u8::from(!hides_on_deactivate) << 2)
-        | (u8::from(behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)) << 3)
-        | (u8::from(behavior.contains(NSWindowCollectionBehavior::Stationary)) << 4)
-        | (u8::from(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle)) << 5);
-    actual == 0b11_1111
+        | (u8::from(style.contains(NSWindowStyleMask::NonactivatingPanel)) << 3)
+        | (u8::from(behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)) << 4)
+        | (u8::from(behavior.contains(NSWindowCollectionBehavior::Stationary)) << 5)
+        | (u8::from(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle)) << 6)
+        | (u8::from(application_is_accessory()) << 7);
+    actual == u8::MAX
+}
+
+fn application_is_accessory() -> bool {
+    let Some(application_class) = AnyClass::get(c"NSApplication") else {
+        return false;
+    };
+    let application: *mut AnyObject = unsafe { msg_send![application_class, sharedApplication] };
+    if application.is_null() {
+        return false;
+    }
+    let activation_policy: isize = unsafe { msg_send![&*application, activationPolicy] };
+    activation_policy == 1
 }
 
 fn panel_class() -> &'static AnyClass {
