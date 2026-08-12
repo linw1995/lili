@@ -230,8 +230,9 @@ in {
     '';
   };
 
-  macos-acceptance = mkNativeWorkspaceApp {
+  macos-acceptance = mkWorkspaceApp {
     name = "macos-acceptance";
+    nativeWorkspace = toolchain.isDarwin;
     text =
       if toolchain.isDarwin
       then ''
@@ -247,8 +248,9 @@ in {
       '';
   };
 
-  linux-acceptance = mkNativeWorkspaceApp {
+  linux-acceptance = mkWorkspaceApp {
     name = "linux-acceptance";
+    nativeWorkspace = toolchain.isLinux;
     runtimeInputs = toolchain.buildTools ++ pkgs.lib.optionals toolchain.isLinux [pkgs.xvfb-run];
     text =
       if toolchain.isLinux

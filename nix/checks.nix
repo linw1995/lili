@@ -1,5 +1,6 @@
 {
   apps,
+  packages,
   pkgs,
   root,
   supportedSystems,
@@ -37,6 +38,30 @@
     "linux-acceptance"
   ];
   missingApps = builtins.filter (name: !(builtins.hasAttr name apps)) requiredApps;
+  nativeApps =
+    [
+      "dev"
+      "build"
+      "build-app"
+      "lint"
+      "test"
+      "coverage"
+      "codex-matrix"
+      "desktop-smoke"
+    ]
+    ++ pkgs.lib.optionals toolchain.isDarwin ["macos-acceptance"]
+    ++ pkgs.lib.optionals toolchain.isLinux ["linux-acceptance"];
+  lightweightApps = builtins.filter (name: !(builtins.elem name nativeApps)) requiredApps;
+  missingNativeEnvironments =
+    builtins.filter (
+      name: !(packages.${name}.nativeWorkspace or false)
+    )
+    nativeApps;
+  unexpectedNativeEnvironments =
+    builtins.filter (
+      name: packages.${name}.nativeWorkspace or false
+    )
+    lightweightApps;
 in {
   version-contract = assert package.version == version;
   assert tauri.version == version;
@@ -64,6 +89,27 @@ in {
       rustc --version | grep -F "rustc ${toolchain.rustVersion}"
       node --version | grep -E '^v24\.'
       wasm-bindgen --version | grep -F "wasm-bindgen ${toolchain.wasmBindgenVersion}"
+      touch "$out"
+    '';
+
+  native-app-contract = assert missingNativeEnvironments == [];
+  assert unexpectedNativeEnvironments == [];
+    pkgs.runCommand "lili-native-app-contract" {} ''
+      coverage_script="${packages.coverage}/bin/coverage"
+      ${pkgs.lib.optionalString toolchain.isLinux ''
+        grep -F 'export PKG_CONFIG_PATH=' "$coverage_script"
+        grep -F 'export LD_LIBRARY_PATH=' "$coverage_script"
+        grep -F 'export GI_TYPELIB_PATH=' "$coverage_script"
+        grep -F 'export XDG_DATA_DIRS=' "$coverage_script"
+        grep -F '${pkgs.glib}' "$coverage_script"
+        grep -F '${pkgs.gtk3}' "$coverage_script"
+        grep -F '${pkgs.libsoup_3}' "$coverage_script"
+        grep -F '${pkgs.webkitgtk_4_1}' "$coverage_script"
+        if grep -F 'webkitgtk' "${packages.crap}/bin/crap"; then
+          echo "lightweight CRAP app unexpectedly references WebKitGTK" >&2
+          exit 1
+        fi
+      ''}
       touch "$out"
     '';
 

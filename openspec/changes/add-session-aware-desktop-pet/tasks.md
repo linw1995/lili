@@ -108,4 +108,4 @@
 - [x] 10.9 Preserve and upload the generated CRAP Markdown report when the threshold gate fails.
 - [x] 10.10 Specify shared native Flake application environments for clean Linux hosts while keeping non-native commands lightweight.
 - [x] 10.11 Reuse one native dependency definition across development shells and every Flake application that compiles or runs the desktop workspace.
-- [ ] 10.12 Add Flake contract checks that reject native application wrappers missing the shared environment and verify the Linux native dependency closure.
+- [x] 10.12 Add Flake contract checks that reject native application wrappers missing the shared environment and verify the Linux native dependency closure.
