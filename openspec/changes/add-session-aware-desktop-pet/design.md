@@ -139,7 +139,7 @@ Alternatives considered:
 
 The UI receives `PetPresentationState` rather than interpreting raw sessions. Lifecycle mapping uses `idle`, `waiting`, `running`, `review`, and `failed`. Direct click and double-click overlays use `waving` and `jumping`. Drag direction uses `running-left` or `running-right`. Pointer gaze has precedence only while no temporary or higher-priority lifecycle animation needs to communicate status.
 
-The frameless transparent window has a small interactive hit region around the pet and notification cards. Transparent margins use platform click-through when supported. Dragging is initiated only from the pet hit region. Position is stored in logical coordinates with display identity and scale, then clamped on display changes.
+The frameless transparent window has a small interactive hit region around the pet and notification cards. Transparent margins use platform click-through when supported. Dragging is initiated only from the pet hit region and uses bounded pointer-captured movement rather than a modal platform drag loop so animation rendering continues during movement. Position is stored in logical coordinates with display identity and scale, then clamped on display changes.
 
 Reduced motion selects stable representative cells and suppresses looping and gaze animation while retaining state color, labels, cards, and keyboard behavior.
 

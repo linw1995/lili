@@ -26,7 +26,7 @@
 - [x] 2.7 Add golden compatibility tests against valid custom packages plus wrong-version, wrong-dimension, malformed-image, opaque-background, and escaping-path fixtures.
 - [x] 2.8 Wire the approved active atlas into the SSR and hydrated shell with the exact six-frame idle loop so `nix run .#dev` visibly exercises the compatibility layer.
 - [x] 2.9 Move opaque atlas delivery outside the signed API namespace so authenticated native image requests work in the desktop WebView, and make desktop smoke wait for decoded atlas dimensions.
-- [x] 2.10 Mark only the pet sprite as a deep native drag region and grant the pet window the narrow start-dragging capability, leaving drag animation and placement persistence to task 7.4.
+- [x] 2.10 Mark only the pet sprite as the native window-movement hit region and grant the pet window the narrow movement capability, leaving drag animation and placement persistence to task 7.4.
 
 ## 3. Normalized Session Domain and Reducer
 
