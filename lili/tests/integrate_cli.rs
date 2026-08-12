@@ -40,7 +40,12 @@ fn inspect_cli_reports_safe_effective_configuration() {
         .env("CODEX_HOME", &temp.0)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stderr.is_empty());
     let inspection: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(inspection["codexHome"], temp.0.to_string_lossy().as_ref());

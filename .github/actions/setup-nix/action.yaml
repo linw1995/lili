@@ -10,6 +10,22 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install Linux desktop build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends --yes \
+          build-essential \
+          file \
+          libayatana-appindicator3-dev \
+          libgtk-3-dev \
+          librsvg2-dev \
+          libssl-dev \
+          libwebkit2gtk-4.1-dev \
+          libxdo-dev \
+          pkg-config \
+          xvfb
     - uses: DeterminateSystems/determinate-nix-action@v3
     - uses: nix-community/cache-nix-action@v7
       with:
@@ -21,4 +37,4 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'flake.lock', 'nix/**/*.nix', '.github/actions/setup-nix/action.yaml') }}

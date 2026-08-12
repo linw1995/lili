@@ -27,6 +27,24 @@ cargo build --locked --release --package lili --features release-tools \
   "$workspace/lili-session/tests/fixtures/codex"
 rm -rf -- "$build_target/release/bundle"
 cargo tauri build --bundles "$bundles" -- --locked
+if [[ "$(uname -s)" == "Linux" ]]; then
+  check_elf_runtime() {
+    local binary="$1"
+    local elf_metadata
+    elf_metadata="$(readelf --program-headers --dynamic "$binary")"
+    if grep -F '/nix/store/' <<<"$elf_metadata"; then
+      echo "Linux release binary references a Nix runtime: $binary" >&2
+      exit 1
+    fi
+  }
+  check_elf_runtime "$build_target/release/lili"
+  check_elf_runtime "$build_target/release/lili-hook"
+  while IFS= read -r -d '' bundled_file; do
+    if file --brief "$bundled_file" | grep -q '^ELF '; then
+      check_elf_runtime "$bundled_file"
+    fi
+  done < <(find "$build_target/release/bundle" -type f -print0)
+fi
 
 release_parent="$workspace/release"
 release_name="lili-$version-$platform"

@@ -2,7 +2,7 @@
   pkgs,
   toolchain,
 }: let
-  workspaceEnv = toolchain.darwinEnv + toolchain.wasmEnv;
+  workspaceEnv = toolchain.darwinEnv;
   mkWorkspaceApp = {
     name,
     nativeWorkspace ? false,
@@ -13,7 +13,6 @@
       inherit name runtimeInputs;
       text = ''
         ${workspaceEnv}
-        ${pkgs.lib.optionalString nativeWorkspace toolchain.nativeEnv}
         ${text}
       '';
     }).overrideAttrs (old: {
@@ -251,7 +250,7 @@ in {
   linux-acceptance = mkWorkspaceApp {
     name = "linux-acceptance";
     nativeWorkspace = toolchain.isLinux;
-    runtimeInputs = toolchain.buildTools ++ pkgs.lib.optionals toolchain.isLinux [pkgs.xvfb-run];
+    runtimeInputs = toolchain.buildTools;
     text =
       if toolchain.isLinux
       then ''

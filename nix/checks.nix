@@ -97,16 +97,25 @@ in {
   native-app-contract = assert missingNativeEnvironments == [];
   assert unexpectedNativeEnvironments == [];
     pkgs.runCommand "lili-native-app-contract" {} ''
-      coverage_script="${packages.coverage}/bin/coverage"
       ${pkgs.lib.optionalString toolchain.isLinux ''
-        grep -F 'export PKG_CONFIG_PATH=' "$coverage_script"
-        grep -F 'export LD_LIBRARY_PATH=' "$coverage_script"
-        grep -F 'export GI_TYPELIB_PATH=' "$coverage_script"
-        grep -F 'export XDG_DATA_DIRS=' "$coverage_script"
-        if grep -F 'webkitgtk' "${packages.crap}/bin/crap"; then
-          echo "lightweight CRAP app unexpectedly references WebKitGTK" >&2
+        test ! -e ${toolchain.rustToolchain}/nix-support
+        grep -F 'unset LD_LIBRARY_PATH' ${toolchain.rustToolchain}/bin/cargo
+        if grep -F 'export LD_LIBRARY_PATH' ${toolchain.rustToolchain}/bin/cargo; then
+          echo "Cargo unexpectedly exports Nix runtime libraries to child processes" >&2
           exit 1
         fi
+        ${pkgs.lib.concatMapStringsSep "\n" (name: ''
+            script="${packages.${name}}/bin/${name}"
+            if grep -E 'export (CC|CXX|LD|LIBRARY_PATH|CPATH|PKG_CONFIG_PATH|LD_LIBRARY_PATH|GI_TYPELIB_PATH|XDG_DATA_DIRS)=' "$script"; then
+              echo "${name} unexpectedly overrides the native Linux toolchain" >&2
+              exit 1
+            fi
+            if grep -E '/nix/store/[^/]+-(glibc|glib|gtk|webkitgtk|libsoup|libayatana-appindicator)' "$script"; then
+              echo "${name} unexpectedly references Nix Linux runtime libraries" >&2
+              exit 1
+            fi
+          '')
+          nativeApps}
       ''}
       touch "$out"
     '';

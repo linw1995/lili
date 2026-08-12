@@ -14,6 +14,8 @@ nix run .#fuzz
 nix flake check
 ```
 
+On Linux, install the distribution's native Tauri development packages first. Debian and Ubuntu require `build-essential`, `file`, `libayatana-appindicator3-dev`, `libgtk-3-dev`, `librsvg2-dev`, `libssl-dev`, `libwebkit2gtk-4.1-dev`, `libxdo-dev`, `pkg-config`, and `xvfb`. The Flake deliberately does not replace the host compiler, glibc, GTK, or WebKitGTK: Linux release binaries target the runner's native system libraries.
+
 `nix run .#dev` starts the native Tauri application. `nix run .#dev-web` starts a fixture-only browser build; it cannot read local forwarding credentials, load arbitrary pet paths, mutate Codex configuration, execute actions, or access native process APIs.
 
 Build a complete release for the current macOS or Linux host with:
@@ -33,7 +35,7 @@ Linux window managers remain authoritative. A compositor may ignore always-on-to
 ### Toolchain and version ownership
 
 - `Cargo.toml` `workspace.package.version` owns the application release version and the required `v<version>` CD tag.
-- `flake.lock` pins Nix inputs and system/build tools.
+- `flake.lock` pins Nix inputs and platform-neutral build tools. Native compilers, SDKs, and desktop libraries come from the target system.
 - `Cargo.lock` pins Rust dependencies.
 - `package-lock.json` pins npm dependencies.
 

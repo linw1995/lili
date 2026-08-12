@@ -5,24 +5,61 @@
   cargoTauriVersion = pkgs.cargo-tauri.version;
   trunkVersion = pkgs.trunk.version;
   nodeMajor = 24;
-  rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
-    extensions = [
-      "clippy"
-      "llvm-tools-preview"
-      "rust-analyzer"
-      "rust-src"
-      "rustfmt"
-    ];
-    targets =
-      [
-        "wasm32-unknown-unknown"
-        "x86_64-pc-windows-msvc"
-      ]
-      ++ pkgs.lib.optionals isDarwin ["x86_64-apple-darwin"];
-  };
-  fuzzRustToolchain = pkgs.rust-bin.nightly."2026-08-01".minimal.override {
-    extensions = ["rust-src"];
-  };
+  # Oxalica's Linux toolchain propagates Nix GCC and its Cargo wrapper exports
+  # Nix libsecret. Keep those implementation details out of native builds and
+  # the processes that Cargo launches.
+  systemLinkingRustToolchain = name: toolchain:
+    pkgs.runCommand name {} ''
+      mkdir -p "$out/bin"
+      for path in ${toolchain}/*; do
+        if [[ "$(basename "$path")" != bin && "$(basename "$path")" != nix-support ]]; then
+          ln -s "$path" "$out/$(basename "$path")"
+        fi
+      done
+      for binary in ${toolchain}/bin/*; do
+        if [[ "$(basename "$binary")" != cargo ]]; then
+          ln -s "$binary" "$out/bin/$(basename "$binary")"
+        fi
+      done
+      ${
+        if isLinux
+        then ''
+          cargo_binary="$(sed -n 's|^exec "\([^"]*/bin/cargo\)" .*|\1|p' ${toolchain}/bin/cargo)"
+          test -x "$cargo_binary"
+          cat > "$out/bin/cargo" <<EOF
+          #!${pkgs.runtimeShell}
+          unset LD_LIBRARY_PATH
+          exec "$cargo_binary" "\$@"
+          EOF
+          chmod +x "$out/bin/cargo"
+        ''
+        else ''
+          ln -s ${toolchain}/bin/cargo "$out/bin/cargo"
+        ''
+      }
+    '';
+  rustToolchain = systemLinkingRustToolchain "lili-rust-${rustVersion}" (
+    pkgs.rust-bin.stable.${rustVersion}.default.override {
+      extensions = [
+        "clippy"
+        "llvm-tools-preview"
+        "rust-analyzer"
+        "rust-src"
+        "rustfmt"
+      ];
+      targets =
+        [
+          "wasm32-unknown-unknown"
+          "x86_64-pc-windows-msvc"
+        ]
+        ++ pkgs.lib.optionals isDarwin ["x86_64-apple-darwin"];
+    }
+  );
+  fuzzRustToolchain = systemLinkingRustToolchain "lili-fuzz-rust-2026-08-01" (
+    pkgs.rust-bin.nightly."2026-08-01".minimal.override {
+      extensions = ["rust-src"];
+    }
+  );
   cargoCrap = pkgs.rustPlatform.buildRustPackage rec {
     pname = "cargo-crap";
     version = "0.2.2";
@@ -46,19 +83,6 @@
       exec ${pkgs.trunk}/bin/trunk "$@"
     '';
   };
-  dependencyClosure = packages: let
-    expanded = pkgs.lib.unique (packages
-      ++ builtins.concatMap (
-        package:
-          builtins.filter pkgs.lib.isDerivation (
-            (package.buildInputs or []) ++ (package.propagatedBuildInputs or [])
-          )
-      )
-      packages);
-  in
-    if builtins.length expanded == builtins.length packages
-    then packages
-    else dependencyClosure expanded;
   darwinEnv = pkgs.lib.optionalString isDarwin ''
     lili_macos_sdk="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
     export SDKROOT="$lili_macos_sdk"
@@ -70,49 +94,6 @@
     export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-Lnative=$lili_macos_sdk/usr/lib/swift"
     export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-Lnative=$lili_macos_sdk/usr/lib/swift"
   '';
-  wasmEnv = ''
-    export CC_wasm32_unknown_unknown="${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang"
-    export AR_wasm32_unknown_unknown="${pkgs.llvmPackages_21.llvm}/bin/llvm-ar"
-  '';
-  linuxRuntimeInputs = pkgs.lib.optionals isLinux [
-    pkgs.glib
-    pkgs.gtk3
-    pkgs.libsoup_3
-    pkgs.webkitgtk_4_1
-  ];
-  linuxBuildInputs = dependencyClosure (linuxRuntimeInputs
-    ++ pkgs.lib.optionals isLinux [
-      pkgs.libdatrie
-      pkgs.libselinux
-      pkgs.libsepol
-      pkgs.libsysprof-capture
-      pkgs.libthai
-      pkgs.libxdmcp
-      pkgs.util-linuxMinimal
-    ]);
-  linuxPkgConfig = pkgs.buildEnv {
-    name = "lili-pkg-config";
-    paths = pkgs.lib.unique (builtins.concatMap (package: [
-        (pkgs.lib.getDev package)
-        (pkgs.lib.getLib package)
-      ])
-      linuxBuildInputs);
-    pathsToLink = ["/lib/girepository-1.0" "/lib/pkgconfig" "/share"];
-    ignoreCollisions = true;
-  };
-  darwinBuildInputs = pkgs.lib.optionals isDarwin [pkgs.darwin.libiconv];
-  nativeBuildInputs = linuxRuntimeInputs ++ darwinBuildInputs;
-  nativeEnv =
-    pkgs.lib.optionalString isLinux ''
-      export PKG_CONFIG_PATH="${linuxPkgConfig}/lib/pkgconfig:${linuxPkgConfig}/share/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-      export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      export GI_TYPELIB_PATH="${linuxPkgConfig}/lib/girepository-1.0''${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
-      export XDG_DATA_DIRS="${linuxPkgConfig}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
-    ''
-    + pkgs.lib.optionalString isDarwin ''
-      export LIBRARY_PATH="${pkgs.lib.makeLibraryPath darwinBuildInputs}''${LIBRARY_PATH:+:$LIBRARY_PATH}"
-      export CPATH="${pkgs.lib.makeSearchPath "include" darwinBuildInputs}''${CPATH:+:$CPATH}"
-    '';
 in
   assert pkgs.wasm-bindgen-cli_0_2_126.version == wasmBindgenVersion; {
     inherit
@@ -122,27 +103,20 @@ in
       fuzzRustToolchain
       isDarwin
       isLinux
-      nativeBuildInputs
-      nativeEnv
       nodeMajor
       rustToolchain
       rustVersion
       trunk
       trunkVersion
       wasmBindgenVersion
-      wasmEnv
       ;
 
-    mkDevShell =
-      if isDarwin
-      then pkgs.mkShellNoCC
-      else pkgs.mkShell;
+    mkDevShell = pkgs.mkShellNoCC;
 
     buildTools = [
       pkgs.binaryen
       pkgs.cargo-tauri
       pkgs.nodejs_24
-      pkgs.pkg-config
       rustToolchain
       pkgs.wasm-bindgen-cli_0_2_126
       trunk

@@ -4,11 +4,9 @@
 }: let
   shellArgs = {
     packages = toolchain.buildTools ++ toolchain.qualityTools;
-    buildInputs = toolchain.nativeBuildInputs;
     hardeningDisable = pkgs.lib.optionals toolchain.isDarwin ["zerocallusedregs"];
     shellHook = ''
       ${toolchain.darwinEnv}
-      ${toolchain.wasmEnv}
       export LILI_WORKSPACE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
     '';
   };
