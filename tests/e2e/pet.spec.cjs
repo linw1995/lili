@@ -115,6 +115,9 @@ test("every standard animation state is observable", async ({ page }) => {
     pointerId: 1,
     clientX: box.x + 20,
     clientY: box.y + 104,
+    screenX: box.x + 20,
+    screenY: box.y + 104,
+    isPrimary: true,
     button: 0,
     buttons: 1,
   });
@@ -123,15 +126,38 @@ test("every standard animation state is observable", async ({ page }) => {
     pointerId: 1,
     clientX: box.x + 172,
     clientY: box.y + 104,
+    screenX: box.x + 172,
+    screenY: box.y + 104,
+    isPrimary: true,
     buttons: 1,
   });
   await expect(app).toHaveAttribute("data-animation", "running-right");
-  await pet.dispatchEvent("pointerup", { pointerId: 1, button: 0 });
+  await page.waitForTimeout(40);
+  await pet.dispatchEvent("pointermove", {
+    pointerId: 1,
+    clientX: box.x + 172,
+    clientY: box.y + 104,
+    screenX: box.x + 172,
+    screenY: box.y + 104,
+    isPrimary: true,
+    buttons: 1,
+  });
+  await expect(app).toHaveAttribute("data-animation", "running-right");
+  await page.waitForTimeout(140);
+  await expect(app).toHaveAttribute("data-animation", "idle");
+  await pet.dispatchEvent("pointerup", {
+    pointerId: 1,
+    isPrimary: true,
+    button: 0,
+  });
 
   await pet.dispatchEvent("pointerdown", {
     pointerId: 2,
     clientX: box.x + 172,
     clientY: box.y + 104,
+    screenX: box.x + 172,
+    screenY: box.y + 104,
+    isPrimary: true,
     button: 0,
     buttons: 1,
   });
@@ -140,10 +166,17 @@ test("every standard animation state is observable", async ({ page }) => {
     pointerId: 2,
     clientX: box.x + 20,
     clientY: box.y + 104,
+    screenX: box.x + 20,
+    screenY: box.y + 104,
+    isPrimary: true,
     buttons: 1,
   });
   await expect(app).toHaveAttribute("data-animation", "running-left");
-  await pet.dispatchEvent("pointerup", { pointerId: 2, button: 0 });
+  await pet.dispatchEvent("pointerup", {
+    pointerId: 2,
+    isPrimary: true,
+    button: 0,
+  });
 });
 
 test("look direction follows all four quadrants", async ({ page }) => {
@@ -240,6 +273,8 @@ test("reduced motion freezes loops and disables gaze", async ({ page }) => {
   const pet = page.locator(".pet-sprite");
   const atlas = page.locator(".pet-atlas");
   await expect(app).toHaveAttribute("data-reduced-motion", "true");
+  await expect(app).toHaveAttribute("data-lifecycle", "running");
+  await expect(app).toHaveAttribute("data-animation", "running");
   const frame = [
     await atlas.getAttribute("data-frame-row"),
     await atlas.getAttribute("data-frame-column"),

@@ -75,7 +75,7 @@
 - [x] 7.6 Implement pet-anchored notification cards with priority/recency ordering, immutable session context, bounded safe summaries, independent activation, dismissal, and unread state.
 - [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, integration status, settings, diagnostics, and quit while native event ingestion continues when hidden.
 - [x] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
-- [ ] 7.9 Keep directional drag animation responsive when the native window drag loop suppresses or sparsely delivers WebView pointer events.
+- [x] 7.9 Keep directional drag animation responsive by replacing modal native drag loops with controlled window movement and smoothing sparse pointer samples.
 
 ## 8. Declarative Interaction Actions
 

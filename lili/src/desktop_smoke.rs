@@ -12,7 +12,7 @@ window.addEventListener('DOMContentLoaded', () => {
     && pet.complete
     && pet.naturalWidth === 1536
     && pet.naturalHeight === 2288
-    && pet.closest('.pet-sprite')?.getAttribute('data-tauri-drag-region') === 'deep';
+    && pet.closest('.pet-sprite')?.getAttribute('data-hit-region') === 'pet';
 
   if (imageIsValid()) {
     finish(true);

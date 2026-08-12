@@ -36,6 +36,8 @@ use tauri::{
 };
 use tokio::sync::oneshot;
 
+const MAX_WINDOW_DRAG_DELTA: i32 = 2_048;
+
 pub fn run() {
     diagnostics::init();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -56,6 +58,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         .manage(DesktopSmokeState::default())
         .invoke_handler(tauri::generate_handler![
             sign_loopback_request,
+            move_window_by,
             commit_window_position,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -124,8 +127,8 @@ fn register_loopback_capability(
         .local(false)
         .window("pet")
         .permission("allow-sign-loopback-request")
-        .permission("allow-commit-window-position")
-        .permission("core:window:allow-start-dragging");
+        .permission("allow-move-window-by")
+        .permission("allow-commit-window-position");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
     } else if smoke {
@@ -551,6 +554,48 @@ fn ensure_window_reachable(window: &tauri::WebviewWindow) {
 struct DesktopPersistence {
     state: AppState,
     store: Option<AppStateStore>,
+}
+
+#[tauri::command]
+fn move_window_by(
+    window: tauri::WebviewWindow,
+    delta_x: i32,
+    delta_y: i32,
+) -> Result<bool, String> {
+    let Some(delta) = scaled_window_drag_delta(delta_x, delta_y, window.scale_factor().ok())?
+    else {
+        return Ok(false);
+    };
+    let current = window.outer_position().map_err(|error| error.to_string())?;
+    window
+        .set_position(tauri::PhysicalPosition::new(
+            current.x.saturating_add(delta.x),
+            current.y.saturating_add(delta.y),
+        ))
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn scaled_window_drag_delta(
+    delta_x: i32,
+    delta_y: i32,
+    scale: Option<f64>,
+) -> Result<Option<tauri::PhysicalPosition<i32>>, String> {
+    if delta_x == 0 && delta_y == 0 {
+        return Ok(None);
+    }
+    if delta_x.unsigned_abs() > MAX_WINDOW_DRAG_DELTA as u32
+        || delta_y.unsigned_abs() > MAX_WINDOW_DRAG_DELTA as u32
+    {
+        return Err("window movement exceeds the per-event limit".to_owned());
+    }
+    let scale = scale
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .ok_or_else(|| "window scale factor could not be determined".to_owned())?;
+    Ok(Some(tauri::PhysicalPosition::new(
+        (f64::from(delta_x) * scale).round() as i32,
+        (f64::from(delta_y) * scale).round() as i32,
+    )))
 }
 
 #[tauri::command]
@@ -1038,5 +1083,16 @@ mod tests {
         for status in statuses {
             assert!(status.label().starts_with("Integration: "));
         }
+    }
+
+    #[test]
+    fn window_drag_delta_scales_and_rejects_unbounded_input() {
+        assert_eq!(scaled_window_drag_delta(0, 0, Some(2.0)).unwrap(), None);
+        assert_eq!(
+            scaled_window_drag_delta(10, -4, Some(2.0)).unwrap(),
+            Some(tauri::PhysicalPosition::new(20, -8))
+        );
+        assert!(scaled_window_drag_delta(1, 1, Some(0.0)).is_err());
+        assert!(scaled_window_drag_delta(MAX_WINDOW_DRAG_DELTA + 1, 0, Some(1.0)).is_err());
     }
 }

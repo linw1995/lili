@@ -27,6 +27,7 @@ web-sys = { workspace = true, features = [
   "MessageEvent",
   "MediaQueryList",
   "KeyboardEvent",
+  "PointerEvent",
   "Performance",
   "Window",
 ], optional = true }

@@ -17,6 +17,8 @@ const DOUBLE_CLICK_DELAY_MS: u64 = 250;
 const DRAG_DISTANCE_PX: f64 = 5.0;
 #[cfg(any(test, feature = "hydrate"))]
 const DRAG_VELOCITY_PX_PER_MS: f64 = 0.12;
+#[cfg(any(test, feature = "hydrate"))]
+const DRAG_ANIMATION_HOLD_MS: u64 = 120;
 #[cfg(feature = "hydrate")]
 const PET_CENTER_X: f64 = 96.0;
 #[cfg(feature = "hydrate")]
@@ -66,39 +68,57 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                     format!("{}, {}", state.pet_label, state.lifecycle.as_str())
                 }
                 data-hit-region="pet"
-                data-tauri-drag-region="deep"
                 on:pointerdown=move |event| {
+                    if !event.is_primary() || event.button() != 0 {
+                        return;
+                    }
+                    event.prevent_default();
+                    capture_pointer(&event);
                     pointer.update(|pointer| pointer.press(
-                        f64::from(event.client_x()),
-                        f64::from(event.client_y()),
+                        f64::from(event.screen_x()),
+                        f64::from(event.screen_y()),
                         event.time_stamp().max(0.0) as u64,
                     ));
                     gaze.set(None);
                 }
                 on:pointermove=move |event| {
-                    if reduced_motion.get_untracked() {
-                        gaze.set(None);
+                    if !event.is_primary() {
                         return;
                     }
+                    let motion_is_reduced = reduced_motion.get_untracked();
                     let (offset_x, offset_y) = pointer_offset(&event);
                     let update = pointer.write().move_to(
-                        f64::from(event.client_x()),
-                        f64::from(event.client_y()),
+                        f64::from(event.screen_x()),
+                        f64::from(event.screen_y()),
                         event.time_stamp().max(0.0) as u64,
                         offset_x - PET_CENTER_X,
                         offset_y - PET_CENTER_Y,
                     );
                     match update {
-                        PointerUpdate::Gaze(next) => gaze.set(next),
+                        PointerUpdate::Gaze(next) => {
+                            gaze.set((!motion_is_reduced).then_some(next).flatten());
+                        }
                         PointerUpdate::DragVelocity(velocity) => {
                             gaze.set(None);
-                            controller.update(|controller| {
-                                controller.set_drag_velocity(velocity, animation_clock_ms());
-                            });
+                            if let Some(delta) = velocity.window_delta {
+                                move_native_window(delta.x, delta.y);
+                                if !motion_is_reduced {
+                                    controller.update(|controller| {
+                                        controller.set_drag_velocity(
+                                            velocity.x,
+                                            animation_clock_ms(),
+                                        );
+                                    });
+                                }
+                            }
                         }
                     }
                 }
                 on:pointerup=move |event| {
+                    if !event.is_primary() {
+                        return;
+                    }
+                    release_pointer(&event);
                     let dragged = pointer.write().release();
                     controller.update(|controller| controller.end_drag(animation_clock_ms()));
                     gaze.set(None);
@@ -111,7 +131,11 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         activate_native_pet("pet_double_click");
                     }
                 }
-                on:pointercancel=move |_| {
+                on:pointercancel=move |event| {
+                    if !event.is_primary() {
+                        return;
+                    }
+                    release_pointer(&event);
                     let dragged = pointer.write().cancel();
                     controller.update(|controller| controller.end_drag(animation_clock_ms()));
                     gaze.set(None);
@@ -153,7 +177,6 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                 format!("{}, {}", state.pet_label, state.lifecycle.as_str())
             }
             data-hit-region="pet"
-            data-tauri-drag-region="deep"
         >
             <PetImage presentation frame/>
         </section>
@@ -443,6 +466,7 @@ struct AnimationController {
     lifecycle: PetLifecycleState,
     temporary: Option<TemporaryAnimation>,
     drag_animation: Option<AnimationState>,
+    drag_animation_expires_at_ms: Option<u64>,
     selected: AnimationState,
     selected_at_ms: u64,
 }
@@ -453,6 +477,7 @@ impl AnimationController {
             lifecycle,
             temporary: None,
             drag_animation: None,
+            drag_animation_expires_at_ms: None,
             selected: lifecycle_animation(lifecycle),
             selected_at_ms: now_ms,
         }
@@ -505,6 +530,13 @@ impl AnimationController {
         {
             self.temporary = None;
         }
+        if self
+            .drag_animation_expires_at_ms
+            .is_some_and(|expires_at_ms| now_ms >= expires_at_ms)
+        {
+            self.drag_animation = None;
+            self.drag_animation_expires_at_ms = None;
+        }
         self.refresh_selected(now_ms);
         if !reduced_motion
             && self.allows_gaze()
@@ -550,12 +582,13 @@ impl AnimationController {
             PetLifecycleState::Waiting | PetLifecycleState::Failed
         ) {
             self.drag_animation = None;
+            self.drag_animation_expires_at_ms = None;
         } else if velocity_x >= DRAG_VELOCITY_PX_PER_MS {
             self.drag_animation = Some(AnimationState::RunningRight);
+            self.drag_animation_expires_at_ms = Some(now_ms.saturating_add(DRAG_ANIMATION_HOLD_MS));
         } else if velocity_x <= -DRAG_VELOCITY_PX_PER_MS {
             self.drag_animation = Some(AnimationState::RunningLeft);
-        } else {
-            self.drag_animation = None;
+            self.drag_animation_expires_at_ms = Some(now_ms.saturating_add(DRAG_ANIMATION_HOLD_MS));
         }
         self.refresh_selected(now_ms);
     }
@@ -563,6 +596,7 @@ impl AnimationController {
     #[cfg(any(test, feature = "hydrate"))]
     fn end_drag(&mut self, now_ms: u64) {
         self.drag_animation = None;
+        self.drag_animation_expires_at_ms = None;
         self.refresh_selected(now_ms);
     }
 
@@ -651,6 +685,30 @@ fn pointer_offset(event: &web_sys::PointerEvent) -> (f64, f64) {
 }
 
 #[cfg(feature = "hydrate")]
+fn capture_pointer(event: &web_sys::PointerEvent) {
+    use wasm_bindgen::JsCast;
+
+    if let Some(target) = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    {
+        let _ = target.set_pointer_capture(event.pointer_id());
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn release_pointer(event: &web_sys::PointerEvent) {
+    use wasm_bindgen::JsCast;
+
+    if let Some(target) = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    {
+        let _ = target.release_pointer_capture(event.pointer_id());
+    }
+}
+
+#[cfg(feature = "hydrate")]
 fn system_prefers_reduced_motion() -> bool {
     REDUCED_MOTION_QUERY.with(|query| query.as_ref().is_some_and(|query| query.matches()))
 }
@@ -673,9 +731,23 @@ struct PointerSample {
 
 #[cfg(any(test, feature = "hydrate"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct DragVelocity {
+    x: f64,
+    window_delta: Option<DragDelta>,
+}
+
+#[cfg(any(test, feature = "hydrate"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DragDelta {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(any(test, feature = "hydrate"))]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum PointerUpdate {
     Gaze(Option<LookFrame>),
-    DragVelocity(f64),
+    DragVelocity(DragVelocity),
 }
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -694,13 +766,26 @@ impl PointerTracker {
                 .select(gaze_x, gaze_y);
             return PointerUpdate::Gaze(gaze);
         };
+        let was_dragging = self.dragging;
         if (x - pressed.x).hypot(y - pressed.y) >= DRAG_DISTANCE_PX {
             self.dragging = true;
         }
-        let previous = self.last.unwrap_or(pressed);
+        let previous = if self.dragging && !was_dragging {
+            pressed
+        } else {
+            self.last.unwrap_or(pressed)
+        };
         self.last = Some(PointerSample { x, y, at_ms });
         let elapsed_ms = at_ms.saturating_sub(previous.at_ms).max(1) as f64;
-        PointerUpdate::DragVelocity((x - previous.x) / elapsed_ms)
+        let delta_x = x - previous.x;
+        let delta_y = y - previous.y;
+        PointerUpdate::DragVelocity(DragVelocity {
+            x: delta_x / elapsed_ms,
+            window_delta: self.dragging.then(|| DragDelta {
+                x: delta_x.round() as i32,
+                y: delta_y.round() as i32,
+            }),
+        })
     }
 
     fn release(&mut self) -> bool {
@@ -890,12 +975,43 @@ fn start_animation_clock(
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
 export function commitNativeWindowPosition() {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (invoke) invoke('commit_window_position').catch(() => {});
+  if (invoke) windowMovePromise.then(() => invoke('commit_window_position')).catch(() => {});
+}
+
+let queuedWindowDeltaX = 0;
+let queuedWindowDeltaY = 0;
+let windowMoveActive = false;
+let windowMovePromise = Promise.resolve();
+
+export function moveNativeWindow(deltaX, deltaY) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  queuedWindowDeltaX += deltaX;
+  queuedWindowDeltaY += deltaY;
+  if (windowMoveActive) return;
+  windowMoveActive = true;
+  windowMovePromise = (async () => {
+    while (queuedWindowDeltaX !== 0 || queuedWindowDeltaY !== 0) {
+      const nextX = queuedWindowDeltaX;
+      const nextY = queuedWindowDeltaY;
+      queuedWindowDeltaX = 0;
+      queuedWindowDeltaY = 0;
+      await invoke('move_window_by', { deltaX: nextX, deltaY: nextY });
+    }
+  })().catch(() => {
+    queuedWindowDeltaX = 0;
+    queuedWindowDeltaY = 0;
+  }).finally(() => {
+    windowMoveActive = false;
+  });
 }
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = commitNativeWindowPosition)]
     fn commit_native_window_position();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = moveNativeWindow)]
+    fn move_native_window(delta_x: i32, delta_y: i32);
 }
 
 #[cfg(feature = "hydrate")]
@@ -1010,7 +1126,6 @@ mod tests {
         .to_html();
         assert!(html.contains("class=\"pet-sprite\""));
         assert!(html.contains("class=\"pet-atlas\""));
-        assert!(html.contains("data-tauri-drag-region=\"deep\""));
         assert!(html.contains("data-hit-region=\"pet\""));
         assert!(html.contains("data-revision=\"7\""));
         assert!(html.contains("data-lifecycle=\"waiting\""));
@@ -1180,13 +1295,15 @@ mod tests {
         else {
             panic!("pressed pointer should report drag velocity");
         };
-        assert_eq!(velocity, 0.1);
+        assert_eq!(velocity.x, 0.1);
+        assert_eq!(velocity.window_delta, None);
         assert!(!pointer.dragging);
         let PointerUpdate::DragVelocity(velocity) = pointer.move_to(110.0, 100.0, 30, 0.0, 0.0)
         else {
             panic!("drag should continue reporting velocity");
         };
-        assert_eq!(velocity, 0.9);
+        assert_eq!(velocity.x, 0.5);
+        assert_eq!(velocity.window_delta, Some(DragDelta { x: 10, y: 0 }));
         assert!(pointer.release());
         assert!(!pointer.pressed());
     }
@@ -1206,8 +1323,15 @@ mod tests {
         );
         controller.set_drag_velocity(-0.2, 20);
         assert_eq!(controller.render(20).animation, AnimationState::RunningLeft);
-        controller.end_drag(30);
-        assert_eq!(controller.render(30).animation, AnimationState::Idle);
+        controller.set_drag_velocity(0.0, 30);
+        assert_eq!(
+            controller.render(139).animation,
+            AnimationState::RunningLeft
+        );
+        assert_eq!(controller.render(140).animation, AnimationState::Idle);
+        controller.set_drag_velocity(-0.2, 150);
+        controller.end_drag(160);
+        assert_eq!(controller.render(160).animation, AnimationState::Idle);
 
         controller.set_lifecycle(PetLifecycleState::Waiting, 40);
         controller.set_drag_velocity(1.0, 50);
