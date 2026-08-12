@@ -1,0 +1,24 @@
+name: Set up Nix
+description: Install the pinned Nix environment and restore build caches
+
+inputs:
+  cache-key-name:
+    description: Stable cache partition for the calling job
+    required: false
+    default: ${{ github.job }}
+
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/determinate-nix-action@v3
+    - uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'flake.nix', 'flake.lock', 'nix/**/*.nix') }}
+        gc-max-store-size-linux: 15G
+    - uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}

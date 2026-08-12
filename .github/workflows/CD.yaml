@@ -1,0 +1,27 @@
+name: CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish-release:
+        description: Publish the selected ref (which must be a version tag)
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish-release:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/Publish-Release.yaml
+    with:
+      artifact-prefix: lili-release
+      publish-release: ${{ github.ref_type == 'tag' || inputs.publish-release }}

@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
+    branches:
+      - master
 
 permissions:
   contents: read
@@ -19,7 +22,9 @@ jobs:
           - x86_64-linux
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: evaluate
       - name: Evaluate declared system
         run: |
           nix eval ".#apps.${{ matrix.system }}" --apply builtins.attrNames --json
@@ -29,7 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: quality
       - name: Evaluate checks without building
         run: nix flake check --no-build --all-systems
       - run: nix run .#format-check
@@ -48,7 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: coverage
       - name: Generate native coverage reports
         run: nix run .#coverage
       - name: Upload coverage artifact
@@ -69,7 +78,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: crap
       - name: Download coverage artifact
         uses: actions/download-artifact@v8
         with:
@@ -88,7 +99,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: linux-desktop
       - name: Run Linux desktop acceptance
         run: LILI_ACCEPTANCE_HEADLESS=1 nix run .#linux-acceptance
 
@@ -96,7 +109,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: macos-desktop
       - name: Run macOS desktop acceptance
         run: nix run .#macos-acceptance
 
@@ -104,23 +119,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Read pinned tool versions
-        id: versions
-        shell: pwsh
-        run: |
-          $versions = Get-Content nix/windows-toolchain.json | ConvertFrom-Json
-          "node=$($versions.node)" >> $env:GITHUB_OUTPUT
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ steps.versions.outputs.node }}
-          package-manager-cache: false
-      - name: Install pinned Rust and Tauri CLI
-        shell: pwsh
-        run: |
-          $versions = Get-Content nix/windows-toolchain.json | ConvertFrom-Json
-          rustup toolchain install $versions.rust --profile minimal --component clippy,rustfmt
-          rustup default $versions.rust
-          cargo install tauri-cli --version $versions.tauriCli --locked
+      - uses: ./.github/actions/setup-windows
       - name: Run Windows desktop acceptance
         shell: pwsh
         run: ./scripts/windows-acceptance.ps1

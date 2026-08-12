@@ -1,24 +1,10 @@
 # Configuration
 
-This guide covers the supported path from launching Lili to receiving Codex Session notifications and running local programs for pet or notification interactions. Read [Security and operations](security-and-operations.md) before enabling native actions.
+This guide covers the supported path from launching an unpacked Lili release to receiving Codex Session notifications and running local programs for pet or notification interactions. It does not describe building Lili. Read [Security and operations](security-and-operations.md) before enabling native actions.
 
-## 1. Choose how to run Lili
+## 1. Launch an unpacked release
 
-For desktop development from a checkout, use the pinned native toolchain:
-
-```text
-nix run .#dev
-```
-
-`nix run .#dev-web` is a browser fixture and cannot read pet packages, receive Session events, edit Codex configuration, or run actions.
-
-For a stable local installation, build or unpack a complete release:
-
-```text
-nix run .#build
-```
-
-The assembled release is written below `release/lili-<version>-<platform>/`. It contains:
+Obtain and unpack the release archive for the current platform. The release root contains:
 
 - the desktop bundle below `bundles/`;
 - `bin/lili` for integration management;
@@ -26,7 +12,7 @@ The assembled release is written below `release/lili-<version>-<platform>/`. It 
 - the built-in pet files under `pets/lili/`;
 - this guide and an action example.
 
-Launch the platform desktop bundle. On macOS, for example:
+Set `LILI_RELEASE` to that stable absolute location, then launch the platform desktop bundle. On macOS, for example:
 
 ```text
 export LILI_RELEASE="/absolute/path/to/unpacked-lili-release"

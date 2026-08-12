@@ -3,6 +3,7 @@
   rustVersion = "1.97.0";
   wasmBindgenVersion = "0.2.126";
   cargoTauriVersion = pkgs.cargo-tauri.version;
+  trunkVersion = pkgs.trunk.version;
   nodeMajor = 24;
   rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
     extensions = [
@@ -94,6 +95,7 @@ in
       rustToolchain
       rustVersion
       trunk
+      trunkVersion
       wasmBindgenVersion
       wasmEnv
       ;

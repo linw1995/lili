@@ -1,0 +1,33 @@
+name: Set up Windows build tools
+description: Install the Windows toolchain versions pinned by the repository
+
+runs:
+  using: composite
+  steps:
+    - name: Read pinned tool versions
+      id: versions
+      shell: pwsh
+      run: |
+        $versions = Get-Content nix/windows-toolchain.json | ConvertFrom-Json
+        "node=$($versions.node)" >> $env:GITHUB_OUTPUT
+        "rust=$($versions.rust)" >> $env:GITHUB_OUTPUT
+        "tauri=$($versions.tauriCli)" >> $env:GITHUB_OUTPUT
+        "trunk=$($versions.trunk)" >> $env:GITHUB_OUTPUT
+        "wasmBindgen=$($versions.wasmBindgenCli)" >> $env:GITHUB_OUTPUT
+    - uses: actions/setup-node@v6
+      with:
+        node-version: ${{ steps.versions.outputs.node }}
+        package-manager-cache: false
+    - name: Install pinned Rust build tools
+      shell: pwsh
+      env:
+        RUST_VERSION: ${{ steps.versions.outputs.rust }}
+        TAURI_VERSION: ${{ steps.versions.outputs.tauri }}
+        TRUNK_VERSION: ${{ steps.versions.outputs.trunk }}
+        WASM_BINDGEN_VERSION: ${{ steps.versions.outputs.wasmBindgen }}
+      run: |
+        rustup toolchain install $env:RUST_VERSION --profile minimal --component clippy,rustfmt
+        rustup default $env:RUST_VERSION
+        cargo install tauri-cli --version $env:TAURI_VERSION --locked
+        cargo install trunk --version $env:TRUNK_VERSION --locked
+        cargo install wasm-bindgen-cli --version $env:WASM_BINDGEN_VERSION --locked

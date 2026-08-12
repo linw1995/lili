@@ -78,6 +78,8 @@ in {
   windows-toolchain-contract = assert windowsToolchain.rust == toolchain.rustVersion;
   assert windowsToolchain.node == toolchain.nodeMajor;
   assert windowsToolchain.tauriCli == toolchain.cargoTauriVersion;
+  assert windowsToolchain.trunk == toolchain.trunkVersion;
+  assert windowsToolchain.wasmBindgenCli == toolchain.wasmBindgenVersion;
     pkgs.runCommand "lili-windows-toolchain-contract" {} ''
       touch "$out"
     '';

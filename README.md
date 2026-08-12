@@ -2,25 +2,17 @@
 
 Lili is a local desktop pet that renders Codex v2 pet packages, observes supported Codex session notifications, and can run user-configured native actions when the pet or a notification is activated.
 
+Lili is named after my cat.
+
 Pet packages are loaded exclusively from `${CODEX_HOME}/pets/<pet-id>`, with the external Lili package at `${CODEX_HOME}/pets/lili`. Invalid or missing packages fall back to the embedded Lili asset.
 
 ## Configuration
 
-Follow the [Configuration guide](docs/configuration.md) to launch a source or packaged build, install a compatible pet, review and enable Session integration, configure pet and notification actions, verify the result, and uninstall safely.
+Follow the [Configuration guide](docs/configuration.md) to launch an unpacked release, install a compatible pet, review and enable Session integration, configure pet and notification actions, verify the result, and uninstall safely.
 
-## Development
+## Build
 
-The Nix flake is the supported command and toolchain boundary:
-
-```text
-nix run .#dev
-nix run .#dev-web
-nix run .#lint
-nix run .#fuzz
-nix flake check
-```
-
-`dev-web` is a fixture-only build. It cannot read local forwarding credentials, load arbitrary pet paths, mutate Codex configuration, execute actions, or access native process APIs.
+See the [Build guide](docs/build.md) for the separate local development and GitHub CD build paths, toolchain ownership, checks, and release artifacts.
 
 ## Operations and security
 
