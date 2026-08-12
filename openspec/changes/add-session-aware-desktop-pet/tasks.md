@@ -77,6 +77,7 @@
 - [x] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
 - [x] 7.9 Keep directional drag animation responsive by replacing modal native drag loops with controlled window movement and smoothing sparse pointer samples.
 - [x] 7.10 Keep the built-in fallback palette consistent across standard animation and look-direction rows, with deterministic color-drift QA.
+- [ ] 7.11 Back the macOS pet window with `NSPanel` and move controlled drags to absolute screen-coordinate targets anchored at pointer down.
 
 ## 8. Declarative Interaction Actions
 

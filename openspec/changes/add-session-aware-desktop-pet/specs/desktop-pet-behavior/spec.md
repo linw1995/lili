@@ -36,6 +36,16 @@ The system SHALL map idle to row 0, attention required to waiting row 6, an acti
 ### Requirement: Support gaze and drag behavior
 The pet SHALL look toward the pointer while hover tracking is active, SHALL use running-left or running-right during horizontal drag movement, and SHALL persist the final clamped position when dragging ends.
 
+On macOS, the desktop pet window SHALL be backed by an `NSPanel` configured for desktop-companion behavior. Controlled dragging SHALL derive each native window target from the pointer's absolute screen position and the window origin captured at drag start, rather than accumulating relative window deltas.
+
+#### Scenario: macOS uses a desktop-companion panel
+- **WHEN** the pet window is created on macOS
+- **THEN** its native window is an `NSPanel` that remains available across application deactivation and Spaces without activating the application merely to display the pet
+
+#### Scenario: Dragging follows an absolute screen target
+- **WHEN** pointer movement events are sparse, coalesced, or delivered after the native window has moved
+- **THEN** each movement resolves the same absolute window origin from the drag-start anchor and current screen pointer coordinates without accumulating position error
+
 #### Scenario: User grabs the visible pet
 - **WHEN** the primary pointer presses and moves within the pet sprite
 - **THEN** controlled native window movement starts from the pet hit region without making the transparent window margin draggable or blocking animation rendering
