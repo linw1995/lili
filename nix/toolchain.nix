@@ -75,9 +75,12 @@
   ];
   linuxBuildInputs = dependencyClosure (linuxRuntimeInputs
     ++ pkgs.lib.optionals isLinux [
+      pkgs.libdatrie
       pkgs.libselinux
       pkgs.libsepol
       pkgs.libsysprof-capture
+      pkgs.libthai
+      pkgs.libxdmcp
       pkgs.util-linuxMinimal
     ]);
   darwinBuildInputs = pkgs.lib.optionals isDarwin [pkgs.darwin.libiconv];
