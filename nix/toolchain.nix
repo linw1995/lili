@@ -46,6 +46,12 @@
       exec ${pkgs.trunk}/bin/trunk "$@"
     '';
   };
+  dependencyClosure = packages: let
+    expanded = pkgs.lib.unique (packages ++ builtins.concatMap (package: package.propagatedBuildInputs or []) packages);
+  in
+    if builtins.length expanded == builtins.length packages
+    then packages
+    else dependencyClosure expanded;
   darwinEnv = pkgs.lib.optionalString isDarwin ''
     lili_macos_sdk="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
     export SDKROOT="$lili_macos_sdk"
@@ -61,12 +67,13 @@
     export CC_wasm32_unknown_unknown="${pkgs.llvmPackages_21.clang-unwrapped}/bin/clang"
     export AR_wasm32_unknown_unknown="${pkgs.llvmPackages_21.llvm}/bin/llvm-ar"
   '';
-  linuxBuildInputs = pkgs.lib.optionals isLinux [
+  linuxBuildInputs = pkgs.lib.optionals isLinux (dependencyClosure [
     pkgs.glib
     pkgs.gtk3
     pkgs.libsoup_3
+    pkgs.sysprof
     pkgs.webkitgtk_4_1
-  ];
+  ]);
   darwinBuildInputs = pkgs.lib.optionals isDarwin [pkgs.darwin.libiconv];
   nativeBuildInputs = linuxBuildInputs ++ darwinBuildInputs;
   nativeEnv =

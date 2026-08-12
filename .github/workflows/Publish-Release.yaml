@@ -6,7 +6,7 @@ on:
       artifact-prefix:
         required: true
         type: string
-      publish-release:
+      publish:
         required: false
         default: false
         type: boolean
@@ -24,7 +24,7 @@ jobs:
       - name: Read and validate release version
         id: version
         env:
-          PUBLISH_RELEASE: ${{ inputs.publish-release }}
+          PUBLISH_RELEASE: ${{ inputs.publish }}
           RELEASE_TAG: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
         run: |
@@ -79,7 +79,7 @@ jobs:
           retention-days: 1
 
   publish:
-    if: inputs.publish-release
+    if: inputs.publish
     needs:
       - validate
       - build
