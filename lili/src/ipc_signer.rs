@@ -61,7 +61,7 @@ fn signing_body(body: &InvokeBody) -> Result<Cow<'_, [u8]>, String> {
                 .iter()
                 .map(|byte| {
                     byte.as_u64()
-                        .filter(|byte| *byte <= u8::MAX.into())
+                        .filter(|byte| *byte <= u64::from(u8::MAX))
                         .map(|byte| byte as u8)
                         .ok_or_else(|| "the signer body contains a non-byte value".to_owned())
                 })

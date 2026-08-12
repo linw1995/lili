@@ -70,8 +70,8 @@
   linuxBuildInputs = pkgs.lib.optionals isLinux (dependencyClosure [
     pkgs.glib
     pkgs.gtk3
+    pkgs.libsysprof-capture
     pkgs.libsoup_3
-    pkgs.sysprof
     pkgs.webkitgtk_4_1
   ]);
   darwinBuildInputs = pkgs.lib.optionals isDarwin [pkgs.darwin.libiconv];

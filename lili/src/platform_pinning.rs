@@ -369,7 +369,7 @@ mod linux {
     use gio::prelude::TlsCertificateExt;
     use sha2::{Digest, Sha256};
     use tauri::WebviewWindow;
-    use webkit2gtk::prelude::{WebContextExt, WebViewExt};
+    use webkit2gtk::{WebContextExt, WebViewExt};
 
     pub fn install_and_navigate(
         window: &WebviewWindow,
