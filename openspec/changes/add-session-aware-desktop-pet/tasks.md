@@ -104,3 +104,5 @@
 - [x] 10.5 Run `nix flake check --no-build`, explicit evaluation for every declared system, formatting, Clippy with warnings denied, workspace tests, dependency audit, release Web build, Tauri builds, fuzz smoke corpus, browser end-to-end tests, and OpenSpec strict validation through Flake-provided commands in CI.
 - [x] 10.6 Verify installation against the supported Codex version matrix using generated or captured public schemas and fail release when a required adapter fixture no longer normalizes.
 - [x] 10.7 Produce signed or platform-standard release bundles through `nix run .#build` containing the canonical application version, desktop binary, matching hook forwarder, fallback pet, Web assets, license notices, and integration documentation, with no development paths or private test data.
+- [x] 10.8 Specify separate native coverage and CRAP Flake commands, report formats, production-only analysis scope, threshold 30 failure semantics, and the prohibition on baselines, allow lists, or optimistic missing coverage.
+- [ ] 10.9 Preserve and upload the generated CRAP Markdown report when the threshold gate fails.

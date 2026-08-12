@@ -23,7 +23,7 @@ The project SHALL commit `Cargo.lock` and `package-lock.json` alongside `flake.l
 - **THEN** dependency resolution uses the committed lockfiles without selecting newer versions
 
 ### Requirement: Provide stable Flake application entry points
-The Flake SHALL expose stable commands for desktop development, Web development, desktop build, stylesheet/assets build, formatting, linting, repository hooks, and end-to-end tests. Command implementations SHALL use the same toolchain composition as the default development shell.
+The Flake SHALL expose stable commands for desktop development, Web development, desktop build, stylesheet/assets build, formatting, linting, repository hooks, native coverage, CRAP analysis, and end-to-end tests. Command implementations SHALL use the same toolchain composition as the default development shell.
 
 #### Scenario: Developer runs a standard workflow
 - **WHEN** a developer invokes a documented `nix run .#<command>` entry point
@@ -32,6 +32,25 @@ The Flake SHALL expose stable commands for desktop development, Web development,
 #### Scenario: Heavy test dependencies are unused
 - **WHEN** a developer enters the default shell or runs a non-E2E command
 - **THEN** browser binaries and other E2E-only closures are not required
+
+### Requirement: Produce auditable native coverage and CRAP reports
+The project SHALL expose separate Flake-provided coverage and CRAP commands. Native coverage SHALL emit LCOV, Cobertura, HTML, and Markdown reports from the locked workspace test graph. CRAP analysis SHALL consume the same LCOV data, report production functions, and reject any production function above the default threshold of 30 without machine-specific baselines, allow lists, or optimistic missing-coverage assumptions.
+
+#### Scenario: CI generates native coverage
+- **WHEN** the coverage job runs against a clean checkout
+- **THEN** it uploads the complete coverage report directory as an artifact and submits the LCOV report to the configured coverage service
+
+#### Scenario: CRAP analysis passes
+- **WHEN** every analyzed production function has a CRAP score at or below 30
+- **THEN** the CRAP job writes and uploads the Markdown report and completes successfully
+
+#### Scenario: CRAP analysis rejects a function
+- **WHEN** any analyzed production function has a CRAP score above 30
+- **THEN** the CRAP job fails after producing annotations and still uploads the Markdown report for diagnosis
+
+#### Scenario: Verification-only code is analyzed
+- **WHEN** CRAP analysis discovers test fixtures, acceptance binaries, build scripts, or other verification-only code
+- **THEN** those non-production surfaces are excluded without suppressing uncovered production functions
 
 ### Requirement: Support declared host systems explicitly
 The Flake SHALL evaluate for `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`. Darwin development SHALL use the pinned surrounding tools with the host Xcode command-line tools and SDK as an explicit platform dependency, while Linux shells SHALL provide the native WebView build libraries.
