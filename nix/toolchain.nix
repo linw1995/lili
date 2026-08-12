@@ -47,7 +47,14 @@
     '';
   };
   dependencyClosure = packages: let
-    expanded = pkgs.lib.unique (packages ++ builtins.concatMap (package: package.propagatedBuildInputs or []) packages);
+    expanded = pkgs.lib.unique (packages
+      ++ builtins.concatMap (
+        package:
+          builtins.filter pkgs.lib.isDerivation (
+            (package.buildInputs or []) ++ (package.propagatedBuildInputs or [])
+          )
+      )
+      packages);
   in
     if builtins.length expanded == builtins.length packages
     then packages
