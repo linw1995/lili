@@ -78,6 +78,7 @@ jobs:
       - name: Enforce CRAP metric threshold
         run: nix run .#crap
       - name: Upload CRAP artifact
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: crap
