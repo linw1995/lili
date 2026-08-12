@@ -175,7 +175,7 @@ mod windows {
             fs::write(
                 path.join("lili").join("actions.toml"),
                 format!(
-                    "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}]\ntimeout_ms = 500\n"
+                    "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}]\ntimeout_ms = 5000\n"
                 ),
             )
             .map_err(|error| format!("acceptance action config could not be written: {error}"))?;
