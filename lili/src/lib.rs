@@ -5,6 +5,8 @@ pub mod hook_forwarder;
 mod integration_cli;
 mod ipc_signer;
 mod loopback;
+#[cfg(target_os = "macos")]
+mod macos_panel;
 mod platform_pinning;
 
 use std::path::{Path, PathBuf};
@@ -36,8 +38,6 @@ use tauri::{
 };
 use tokio::sync::oneshot;
 
-const MAX_WINDOW_DRAG_DELTA: i32 = 2_048;
-
 pub fn run() {
     diagnostics::init();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -58,7 +58,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         .manage(DesktopSmokeState::default())
         .invoke_handler(tauri::generate_handler![
             sign_loopback_request,
-            move_window_by,
+            begin_window_drag,
+            move_window_to,
             commit_window_position,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -79,6 +80,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         state: state.clone(),
         store: state_store.clone(),
     });
+    app.manage(WindowDragState::default());
     setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
     let loopback = LoopbackServer::bind(build_native_router(state.clone(), assets))
@@ -127,7 +129,8 @@ fn register_loopback_capability(
         .local(false)
         .window("pet")
         .permission("allow-sign-loopback-request")
-        .permission("allow-move-window-by")
+        .permission("allow-begin-window-drag")
+        .permission("allow-move-window-to")
         .permission("allow-commit-window-position");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
@@ -163,7 +166,7 @@ fn create_pet_window(
     .shadow(false)
     .visible(false)
     .on_navigation(move |url| url.origin() == allowed_origin);
-    if acceptance {
+    let window = if acceptance {
         builder
             .initialization_script(desktop_acceptance::SCRIPT)
             .build()
@@ -171,7 +174,19 @@ fn create_pet_window(
         builder.initialization_script(desktop_smoke::SCRIPT).build()
     } else {
         builder.build()
-    }
+    }?;
+    configure_desktop_companion_window(&window)?;
+    Ok(window)
+}
+
+#[cfg(target_os = "macos")]
+fn configure_desktop_companion_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    macos_panel::configure(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_desktop_companion_window(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    Ok(())
 }
 
 fn restore_window_placement(window: &tauri::WebviewWindow, saved: Option<&WindowPlacement>) {
@@ -556,53 +571,135 @@ struct DesktopPersistence {
     store: Option<AppStateStore>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WindowDragAnchor {
+    pointer_x: i32,
+    pointer_y: i32,
+    origin: tauri::PhysicalPosition<i32>,
+    scale: f64,
+}
+
+#[derive(Default)]
+struct WindowDragState(std::sync::Mutex<Option<WindowDragAnchor>>);
+
 #[tauri::command]
-fn move_window_by(
+fn begin_window_drag(
     window: tauri::WebviewWindow,
-    delta_x: i32,
-    delta_y: i32,
+    state: tauri::State<'_, WindowDragState>,
+    screen_x: i32,
+    screen_y: i32,
 ) -> Result<bool, String> {
-    let Some(delta) = scaled_window_drag_delta(delta_x, delta_y, window.scale_factor().ok())?
-    else {
+    begin_window_drag_from(&window, &state, screen_x, screen_y)
+}
+
+fn begin_window_drag_from(
+    window: &tauri::WebviewWindow,
+    state: &WindowDragState,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<bool, String> {
+    let anchor = capture_window_drag_anchor(window, screen_x, screen_y)?;
+    *state
+        .0
+        .lock()
+        .map_err(|_| "window drag state is unavailable")? = Some(anchor);
+    Ok(true)
+}
+
+fn capture_window_drag_anchor(
+    window: &tauri::WebviewWindow,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<WindowDragAnchor, String> {
+    validate_screen_position(screen_x, screen_y)?;
+    let origin = window.outer_position().map_err(|error| error.to_string())?;
+    let scale = valid_window_scale(window.scale_factor().ok())?;
+    Ok(WindowDragAnchor {
+        pointer_x: screen_x,
+        pointer_y: screen_y,
+        origin,
+        scale,
+    })
+}
+
+#[tauri::command]
+fn move_window_to(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WindowDragState>,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<bool, String> {
+    move_window_to_from(&window, &state, screen_x, screen_y)
+}
+
+fn move_window_to_from(
+    window: &tauri::WebviewWindow,
+    state: &WindowDragState,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<bool, String> {
+    let anchor = *state
+        .0
+        .lock()
+        .map_err(|_| "window drag state is unavailable")?;
+    let Some(anchor) = anchor else {
         return Ok(false);
     };
-    let current = window.outer_position().map_err(|error| error.to_string())?;
+    let target = absolute_window_drag_target(anchor, screen_x, screen_y)?;
     window
-        .set_position(tauri::PhysicalPosition::new(
-            current.x.saturating_add(delta.x),
-            current.y.saturating_add(delta.y),
-        ))
+        .set_position(target)
         .map_err(|error| error.to_string())?;
     Ok(true)
 }
 
-fn scaled_window_drag_delta(
-    delta_x: i32,
-    delta_y: i32,
-    scale: Option<f64>,
-) -> Result<Option<tauri::PhysicalPosition<i32>>, String> {
-    if delta_x == 0 && delta_y == 0 {
-        return Ok(None);
-    }
-    if delta_x.unsigned_abs() > MAX_WINDOW_DRAG_DELTA as u32
-        || delta_y.unsigned_abs() > MAX_WINDOW_DRAG_DELTA as u32
-    {
-        return Err("window movement exceeds the per-event limit".to_owned());
-    }
-    let scale = scale
+fn valid_window_scale(scale: Option<f64>) -> Result<f64, String> {
+    scale
         .filter(|scale| scale.is_finite() && *scale > 0.0)
-        .ok_or_else(|| "window scale factor could not be determined".to_owned())?;
-    Ok(Some(tauri::PhysicalPosition::new(
-        (f64::from(delta_x) * scale).round() as i32,
-        (f64::from(delta_y) * scale).round() as i32,
-    )))
+        .ok_or_else(|| "window scale factor could not be determined".to_owned())
+}
+
+fn validate_screen_coordinate(value: i32) -> Result<(), String> {
+    if value.unsigned_abs() > 1_000_000 {
+        return Err("screen coordinate is outside the supported range".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_screen_position(screen_x: i32, screen_y: i32) -> Result<(), String> {
+    validate_screen_coordinate(screen_x)?;
+    validate_screen_coordinate(screen_y)
+}
+
+fn absolute_window_drag_target(
+    anchor: WindowDragAnchor,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<tauri::PhysicalPosition<i32>, String> {
+    validate_screen_position(screen_x, screen_y)?;
+    let logical_x = screen_x.saturating_sub(anchor.pointer_x);
+    let logical_y = screen_y.saturating_sub(anchor.pointer_y);
+    Ok(tauri::PhysicalPosition::new(
+        anchor
+            .origin
+            .x
+            .saturating_add((f64::from(logical_x) * anchor.scale).round() as i32),
+        anchor
+            .origin
+            .y
+            .saturating_add((f64::from(logical_y) * anchor.scale).round() as i32),
+    ))
 }
 
 #[tauri::command]
 async fn commit_window_position(
     window: tauri::WebviewWindow,
     persistence: tauri::State<'_, DesktopPersistence>,
+    drag_state: tauri::State<'_, WindowDragState>,
 ) -> Result<bool, String> {
+    *drag_state
+        .0
+        .lock()
+        .map_err(|_| "window drag state is unavailable")? = None;
     let Some(store) = &persistence.store else {
         return Ok(false);
     };
@@ -1086,13 +1183,24 @@ mod tests {
     }
 
     #[test]
-    fn window_drag_delta_scales_and_rejects_unbounded_input() {
-        assert_eq!(scaled_window_drag_delta(0, 0, Some(2.0)).unwrap(), None);
+    fn absolute_window_drag_target_is_anchored_and_idempotent() {
+        let anchor = WindowDragAnchor {
+            pointer_x: 100,
+            pointer_y: 200,
+            origin: tauri::PhysicalPosition::new(800, 400),
+            scale: 2.0,
+        };
+        let target = absolute_window_drag_target(anchor, 130, 180).unwrap();
+        assert_eq!(target, tauri::PhysicalPosition::new(860, 360));
         assert_eq!(
-            scaled_window_drag_delta(10, -4, Some(2.0)).unwrap(),
-            Some(tauri::PhysicalPosition::new(20, -8))
+            absolute_window_drag_target(anchor, 130, 180).unwrap(),
+            target
         );
-        assert!(scaled_window_drag_delta(1, 1, Some(0.0)).is_err());
-        assert!(scaled_window_drag_delta(MAX_WINDOW_DRAG_DELTA + 1, 0, Some(1.0)).is_err());
+        assert_eq!(
+            absolute_window_drag_target(anchor, -400, 900).unwrap(),
+            tauri::PhysicalPosition::new(-200, 1_800)
+        );
+        assert!(absolute_window_drag_target(anchor, 1_000_001, 0).is_err());
+        assert!(valid_window_scale(Some(0.0)).is_err());
     }
 }

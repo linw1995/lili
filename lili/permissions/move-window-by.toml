@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "allow-move-window-by"
-description = "Enables the move_window_by command without any pre-configured scope."
-commands.allow = ["move_window_by"]

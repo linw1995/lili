@@ -84,6 +84,7 @@ pub fn complete_desktop_acceptance(
     app: AppHandle,
     window: WebviewWindow,
     state: tauri::State<'_, DesktopAcceptanceState>,
+    drag_state: tauri::State<'_, crate::WindowDragState>,
     report: BrowserAcceptanceReport,
 ) {
     if state.completed.swap(true, Ordering::AcqRel) {
@@ -93,7 +94,8 @@ pub fn complete_desktop_acceptance(
     let placement = crate::current_window_placement(&window);
     let window_contract = window.is_always_on_top().is_ok_and(|enabled| enabled)
         && window.is_decorated().is_ok_and(|decorated| !decorated)
-        && placement.is_some();
+        && placement.is_some()
+        && native_window_contract(&window);
     let dpi_contract = placement.is_some_and(|placement| placement.scale_milli() >= 500);
     let tray_contract = app.tray_by_id("lili-tray").is_some();
     let visibility_contract = window.hide().is_ok()
@@ -101,6 +103,7 @@ pub fn complete_desktop_acceptance(
         && window.show().is_ok()
         && window.is_visible().is_ok_and(|visible| visible);
     let transport_contract = codex_home.as_deref().is_some_and(private_transport_is_live);
+    let absolute_position_contract = absolute_position_contract(&window, &drag_state);
     let passed = cfg!(any(
         target_os = "macos",
         target_os = "windows",
@@ -113,8 +116,42 @@ pub fn complete_desktop_acceptance(
         && dpi_contract
         && tray_contract
         && visibility_contract
-        && transport_contract;
+        && transport_contract
+        && absolute_position_contract;
     app.exit(if passed { 0 } else { 1 });
+}
+
+fn absolute_position_contract(window: &WebviewWindow, state: &crate::WindowDragState) -> bool {
+    let Ok(original) = window.outer_position() else {
+        return false;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return false;
+    };
+    let expected = tauri::PhysicalPosition::new(
+        original.x.saturating_add((17.0 * scale).round() as i32),
+        original.y.saturating_sub((11.0 * scale).round() as i32),
+    );
+    let moved = crate::begin_window_drag_from(window, state, 1_000, 1_000).is_ok()
+        && crate::move_window_to_from(window, state, 1_017, 989).is_ok()
+        && window
+            .outer_position()
+            .is_ok_and(|position| position == expected);
+    let restored = window.set_position(original).is_ok()
+        && window
+            .outer_position()
+            .is_ok_and(|position| position == original);
+    moved && restored
+}
+
+#[cfg(target_os = "macos")]
+fn native_window_contract(window: &WebviewWindow) -> bool {
+    crate::macos_panel::satisfies_desktop_companion_contract(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_window_contract(_window: &WebviewWindow) -> bool {
+    true
 }
 
 #[cfg(unix)]

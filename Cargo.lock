@@ -2591,6 +2591,7 @@ dependencies = [
  "lili-server",
  "lili-session",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "objc2-security",
  "objc2-web-kit",

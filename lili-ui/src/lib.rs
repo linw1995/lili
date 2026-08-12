@@ -79,6 +79,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         f64::from(event.screen_y()),
                         event.time_stamp().max(0.0) as u64,
                     ));
+                    begin_native_window_drag(event.screen_x(), event.screen_y());
                     gaze.set(None);
                 }
                 on:pointermove=move |event| {
@@ -100,8 +101,8 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                         }
                         PointerUpdate::DragVelocity(velocity) => {
                             gaze.set(None);
-                            if let Some(delta) = velocity.window_delta {
-                                move_native_window(delta.x, delta.y);
+                            if let Some(target) = velocity.window_target {
+                                move_native_window_to(target.x, target.y);
                                 if !motion_is_reduced {
                                     controller.update(|controller| {
                                         controller.set_drag_velocity(
@@ -733,12 +734,12 @@ struct PointerSample {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DragVelocity {
     x: f64,
-    window_delta: Option<DragDelta>,
+    window_target: Option<DragTarget>,
 }
 
 #[cfg(any(test, feature = "hydrate"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct DragDelta {
+struct DragTarget {
     x: i32,
     y: i32,
 }
@@ -778,12 +779,11 @@ impl PointerTracker {
         self.last = Some(PointerSample { x, y, at_ms });
         let elapsed_ms = at_ms.saturating_sub(previous.at_ms).max(1) as f64;
         let delta_x = x - previous.x;
-        let delta_y = y - previous.y;
         PointerUpdate::DragVelocity(DragVelocity {
             x: delta_x / elapsed_ms,
-            window_delta: self.dragging.then(|| DragDelta {
-                x: delta_x.round() as i32,
-                y: delta_y.round() as i32,
+            window_target: self.dragging.then(|| DragTarget {
+                x: x.round() as i32,
+                y: y.round() as i32,
             }),
         })
     }
@@ -975,43 +975,90 @@ fn start_animation_clock(
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
 export function commitNativeWindowPosition() {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (invoke) windowMovePromise.then(() => invoke('commit_window_position')).catch(() => {});
+  if (!invoke) return;
+  const generation = windowDragGeneration;
+  void (async () => {
+    while (generation === windowDragGeneration) {
+      const pending = windowMovePromise;
+      await pending;
+      if (pending === windowMovePromise
+        && !windowMoveActive
+        && queuedWindowX === null
+        && queuedWindowY === null) {
+        break;
+      }
+    }
+    if (generation === windowDragGeneration) {
+      await invoke('commit_window_position');
+    }
+  })().catch(() => {});
 }
 
-let queuedWindowDeltaX = 0;
-let queuedWindowDeltaY = 0;
+let queuedWindowX = null;
+let queuedWindowY = null;
 let windowMoveActive = false;
 let windowMovePromise = Promise.resolve();
+let windowDragGeneration = 0;
 
-export function moveNativeWindow(deltaX, deltaY) {
+export function beginNativeWindowDrag(screenX, screenY) {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;
-  queuedWindowDeltaX += deltaX;
-  queuedWindowDeltaY += deltaY;
+  windowDragGeneration += 1;
+  const generation = windowDragGeneration;
+  queuedWindowX = null;
+  queuedWindowY = null;
+  windowMovePromise = windowMovePromise
+    .catch(() => {})
+    .then(() => {
+      if (generation !== windowDragGeneration) return false;
+      return invoke('begin_window_drag', { screenX, screenY });
+    });
+}
+
+export function moveNativeWindowTo(screenX, screenY) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  queuedWindowX = screenX;
+  queuedWindowY = screenY;
   if (windowMoveActive) return;
   windowMoveActive = true;
+  const generation = windowDragGeneration;
+  const beginPromise = windowMovePromise;
   windowMovePromise = (async () => {
-    while (queuedWindowDeltaX !== 0 || queuedWindowDeltaY !== 0) {
-      const nextX = queuedWindowDeltaX;
-      const nextY = queuedWindowDeltaY;
-      queuedWindowDeltaX = 0;
-      queuedWindowDeltaY = 0;
-      await invoke('move_window_by', { deltaX: nextX, deltaY: nextY });
+    await beginPromise;
+    while (generation === windowDragGeneration
+      && queuedWindowX !== null
+      && queuedWindowY !== null) {
+      const nextX = queuedWindowX;
+      const nextY = queuedWindowY;
+      queuedWindowX = null;
+      queuedWindowY = null;
+      await invoke('move_window_to', { screenX: nextX, screenY: nextY });
     }
   })().catch(() => {
-    queuedWindowDeltaX = 0;
-    queuedWindowDeltaY = 0;
+    if (generation === windowDragGeneration) {
+      queuedWindowX = null;
+      queuedWindowY = null;
+    }
   }).finally(() => {
     windowMoveActive = false;
+    if (generation !== windowDragGeneration
+      && queuedWindowX !== null
+      && queuedWindowY !== null) {
+      moveNativeWindowTo(queuedWindowX, queuedWindowY);
+    }
   });
 }
 "#)]
 extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = beginNativeWindowDrag)]
+    fn begin_native_window_drag(screen_x: i32, screen_y: i32);
+
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = commitNativeWindowPosition)]
     fn commit_native_window_position();
 
-    #[wasm_bindgen::prelude::wasm_bindgen(js_name = moveNativeWindow)]
-    fn move_native_window(delta_x: i32, delta_y: i32);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = moveNativeWindowTo)]
+    fn move_native_window_to(screen_x: i32, screen_y: i32);
 }
 
 #[cfg(feature = "hydrate")]
@@ -1093,6 +1140,24 @@ mod tests {
     use lili_core::PetLifecycleState;
 
     use super::*;
+
+    #[test]
+    fn every_animation_has_a_stable_css_name() {
+        let cases = [
+            (AnimationState::Idle, "idle"),
+            (AnimationState::RunningRight, "running-right"),
+            (AnimationState::RunningLeft, "running-left"),
+            (AnimationState::Waving, "waving"),
+            (AnimationState::Jumping, "jumping"),
+            (AnimationState::Failed, "failed"),
+            (AnimationState::Waiting, "waiting"),
+            (AnimationState::Running, "running"),
+            (AnimationState::Review, "review"),
+        ];
+        for (animation, expected) in cases {
+            assert_eq!(animation_name(animation), expected);
+        }
+    }
 
     #[cfg(feature = "ssr")]
     #[test]
@@ -1296,14 +1361,14 @@ mod tests {
             panic!("pressed pointer should report drag velocity");
         };
         assert_eq!(velocity.x, 0.1);
-        assert_eq!(velocity.window_delta, None);
+        assert_eq!(velocity.window_target, None);
         assert!(!pointer.dragging);
         let PointerUpdate::DragVelocity(velocity) = pointer.move_to(110.0, 100.0, 30, 0.0, 0.0)
         else {
             panic!("drag should continue reporting velocity");
         };
         assert_eq!(velocity.x, 0.5);
-        assert_eq!(velocity.window_delta, Some(DragDelta { x: 10, y: 0 }));
+        assert_eq!(velocity.window_target, Some(DragTarget { x: 110, y: 100 }));
         assert!(pointer.release());
         assert!(!pointer.pressed());
     }

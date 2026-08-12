@@ -3,6 +3,8 @@ fn main() {
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "sign_loopback_request",
+            "begin_window_drag",
+            "move_window_to",
             "commit_window_position",
             "complete_desktop_smoke",
         ]));
