@@ -90,14 +90,20 @@
       pkgs.libxdmcp
       pkgs.util-linuxMinimal
     ]);
+  linuxPkgConfig = pkgs.buildEnv {
+    name = "lili-pkg-config";
+    paths = linuxBuildInputs;
+    pathsToLink = ["/lib/girepository-1.0" "/lib/pkgconfig" "/share"];
+    ignoreCollisions = true;
+  };
   darwinBuildInputs = pkgs.lib.optionals isDarwin [pkgs.darwin.libiconv];
-  nativeBuildInputs = linuxBuildInputs ++ darwinBuildInputs;
+  nativeBuildInputs = linuxRuntimeInputs ++ darwinBuildInputs;
   nativeEnv =
     pkgs.lib.optionalString isLinux ''
-      export PKG_CONFIG_PATH="${pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "lib" "lib/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "out" "lib/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "dev" "share/pkgconfig" linuxBuildInputs}:${pkgs.lib.makeSearchPathOutput "lib" "share/pkgconfig" linuxBuildInputs}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+      export PKG_CONFIG_PATH="${linuxPkgConfig}/lib/pkgconfig:${linuxPkgConfig}/share/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
       export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      export GI_TYPELIB_PATH="${pkgs.lib.makeSearchPath "lib/girepository-1.0" linuxBuildInputs}''${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
-      export XDG_DATA_DIRS="${pkgs.lib.makeSearchPath "share" linuxBuildInputs}''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+      export GI_TYPELIB_PATH="${linuxPkgConfig}/lib/girepository-1.0''${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+      export XDG_DATA_DIRS="${linuxPkgConfig}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
     ''
     + pkgs.lib.optionalString isDarwin ''
       export LIBRARY_PATH="${pkgs.lib.makeLibraryPath darwinBuildInputs}''${LIBRARY_PATH:+:$LIBRARY_PATH}"

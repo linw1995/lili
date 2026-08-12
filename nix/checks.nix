@@ -103,18 +103,6 @@ in {
         grep -F 'export LD_LIBRARY_PATH=' "$coverage_script"
         grep -F 'export GI_TYPELIB_PATH=' "$coverage_script"
         grep -F 'export XDG_DATA_DIRS=' "$coverage_script"
-        grep -F '${pkgs.glib}' "$coverage_script"
-        grep -F '${pkgs.gtk3}' "$coverage_script"
-        grep -F '${pkgs.libdatrie}' "$coverage_script"
-        grep -F '${pkgs.libselinux}' "$coverage_script"
-        grep -F '${pkgs.libsepol}' "$coverage_script"
-        grep -F '${pkgs.libsysprof-capture}' "$coverage_script"
-        grep -F '${pkgs.libthai}' "$coverage_script"
-        grep -F '${pkgs.libxdmcp}' "$coverage_script"
-        grep -F '${pkgs.pango}' "$coverage_script"
-        grep -F '${pkgs.libsoup_3}' "$coverage_script"
-        grep -F '${pkgs.util-linuxMinimal}' "$coverage_script"
-        grep -F '${pkgs.webkitgtk_4_1}' "$coverage_script"
         if grep -F 'webkitgtk' "${packages.crap}/bin/crap"; then
           echo "lightweight CRAP app unexpectedly references WebKitGTK" >&2
           exit 1
