@@ -33,6 +33,14 @@ The Flake SHALL expose stable commands for desktop development, Web development,
 - **WHEN** a developer enters the default shell or runs a non-E2E command
 - **THEN** browser binaries and other E2E-only closures are not required
 
+#### Scenario: Native workspace command runs on clean Linux
+- **WHEN** a Flake application compiles or runs the native desktop workspace on a clean Linux host
+- **THEN** the application exposes the pinned GLib, GTK, libsoup, and WebKitGTK build and runtime discovery paths without relying on host-installed development packages
+
+#### Scenario: Lightweight command avoids native desktop libraries
+- **WHEN** a Flake application does not compile or run the native desktop workspace
+- **THEN** the application does not require the native WebView library closure solely because other workspace commands need it
+
 ### Requirement: Produce auditable native coverage and CRAP reports
 The project SHALL expose separate Flake-provided coverage and CRAP commands. Native coverage SHALL emit LCOV, Cobertura, HTML, and Markdown reports from the locked workspace test graph. CRAP analysis SHALL consume the same LCOV data, report production functions, and reject any production function above the default threshold of 30 without machine-specific baselines, allow lists, or optimistic missing-coverage assumptions.
 
