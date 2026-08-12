@@ -44,6 +44,10 @@ The pet SHALL look toward the pointer while hover tracking is active, SHALL use 
 - **WHEN** horizontal drag velocity is positive beyond the movement threshold
 - **THEN** the pet displays running-right until the drag slows or ends
 
+#### Scenario: Native window dragging owns pointer movement
+- **WHEN** the platform drag loop moves the window without delivering continuous WebView pointer events
+- **THEN** native window movement keeps the running-left or running-right animation responsive without flickering back to the lifecycle animation between adjacent movement samples
+
 #### Scenario: Drag ends near a work-area boundary
 - **WHEN** the pointer is released with part of the pet outside the visible work area
 - **THEN** the final window position is clamped so the configured visible portion remains reachable
