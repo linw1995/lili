@@ -14,6 +14,7 @@ const required = [
   /^bin\/lili(?:\.exe)?$/,
   /^bin\/lili-hook(?:\.exe)?$/,
   /^bundles\//,
+  /^docs\/configuration\.md$/,
   /^docs\/security-and-operations\.md$/,
   /^examples\/actions\.toml$/,
   /^pet\/lili\/pet\.json$/,

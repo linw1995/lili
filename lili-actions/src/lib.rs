@@ -360,6 +360,21 @@ command = "echo unsafe"
     }
 
     #[test]
+    fn distributed_actions_example_matches_schema() {
+        let file: ActionsFileV1 =
+            toml::from_str(include_str!("../../examples/actions.toml")).unwrap();
+
+        assert_eq!(file.version, ACTIONS_SCHEMA_VERSION);
+        assert_eq!(file.actions.len(), 3);
+        assert_eq!(file.actions[0].trigger, InteractionTrigger::PetClick);
+        assert_eq!(file.actions[1].trigger, InteractionTrigger::PetDoubleClick);
+        assert_eq!(
+            file.actions[2].trigger,
+            InteractionTrigger::NotificationActivate
+        );
+    }
+
+    #[test]
     fn interaction_context_v1_serializes_only_bounded_display_safe_fields() {
         let context = InteractionContextV1::for_notification(
             Uuid::nil(),

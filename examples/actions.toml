@@ -1,9 +1,39 @@
 version = 1
 
 [[action]]
+id = "pet-click"
+trigger = "pet_click"
+command = ["/absolute/path/to/lili-action", "pet-click"]
+timeout_ms = 5000
+debounce_ms = 400
+
+[action.concurrency]
+mode = "reject"
+max_parallel = 1
+queue_capacity = 0
+
+[action.working_directory]
+policy = "codex_home"
+
+[[action]]
+id = "pet-double-click"
+trigger = "pet_double_click"
+command = ["/absolute/path/to/lili-action", "pet-double-click"]
+timeout_ms = 5000
+debounce_ms = 400
+
+[action.concurrency]
+mode = "reject"
+max_parallel = 1
+queue_capacity = 0
+
+[action.working_directory]
+policy = "codex_home"
+
+[[action]]
 id = "open-session-context"
 trigger = "notification_activate"
-command = ["/absolute/path/to/script", "--interaction-stdin"]
+command = ["/absolute/path/to/lili-action", "notification"]
 timeout_ms = 5000
 debounce_ms = 400
 

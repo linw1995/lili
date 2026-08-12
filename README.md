@@ -4,6 +4,10 @@ Lili is a local desktop pet that renders Codex v2 pet packages, observes support
 
 The default pet package is loaded from `${CODEX_HOME}/pet/lili`, which normally resolves to `~/.codex/pet/lili`. Invalid or missing packages fall back to the embedded Lili asset.
 
+## Configuration
+
+Follow the [Configuration guide](docs/configuration.md) to launch a source or packaged build, install a compatible pet, review and enable Session integration, configure pet and notification actions, verify the result, and uninstall safely.
+
 ## Development
 
 The Nix flake is the supported command and toolchain boundary:
@@ -20,7 +24,7 @@ nix flake check
 
 ## Operations and security
 
-Read [Security and operations](docs/security-and-operations.md) before enabling Codex integration or interaction actions. It documents the trust boundary, retained local data, exact integration changes, action authority, backup behavior, and uninstall procedure.
+Read [Security and operations](docs/security-and-operations.md) before enabling Codex integration or interaction actions. It documents the trust boundary, retained local data, exact integration changes, action authority, backup behavior, and uninstall procedure. The step-by-step setup remains in the [Configuration guide](docs/configuration.md).
 
 The implementation intentionally supports documented `notify` and lifecycle-hook surfaces. It does not read Codex credentials, private databases, rollout logs, process memory, or private desktop and marketplace APIs.
 

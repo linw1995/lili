@@ -1,5 +1,7 @@
 # Security and Operations
 
+For ordered setup and verification steps, see the [Configuration guide](configuration.md). This document defines the authority, data retention, and recovery boundaries behind those steps.
+
 ## Trust boundary
 
 Lili separates display code from native authority.

@@ -38,7 +38,7 @@ Normal development and build applications use locked dependency resolution. `scr
 
 ## Release assembly
 
-`nix run .#build` runs the supported Codex matrix gate, creates the platform-standard Tauri bundles, and assembles a versioned archive under `release/`. The archive contains the desktop and hook binaries, fallback pet, release Web assets, integration and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The assembler rejects source test fixtures and files that contain the current development workspace path.
+`nix run .#build` runs the supported Codex matrix gate, creates the platform-standard Tauri bundles, and assembles a versioned archive under `release/`. The archive contains the desktop and hook binaries, fallback pet, release Web assets, configuration and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The assembler rejects source test fixtures and files that contain the current development workspace path.
 
 `nix run .#license-check` enforces the dependency license allowlist and verifies that `THIRD_PARTY_NOTICES.html` matches the locked workspace graph. Run `scripts/generate-third-party-notices.sh` after an accepted dependency update, review the resulting license texts, and commit the updated artifact with the lockfile change.
 
