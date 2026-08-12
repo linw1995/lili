@@ -2,7 +2,7 @@
 
 Lili is a local desktop pet that renders Codex v2 pet packages, observes supported Codex session notifications, and can run user-configured native actions when the pet or a notification is activated.
 
-The default pet package is loaded from `${CODEX_HOME}/pet/lili`, which normally resolves to `~/.codex/pet/lili`. Invalid or missing packages fall back to the embedded Lili asset.
+Pet packages are loaded exclusively from `${CODEX_HOME}/pets/<pet-id>`, with the external Lili package at `${CODEX_HOME}/pets/lili`. Invalid or missing packages fall back to the embedded Lili asset.
 
 ## Configuration
 

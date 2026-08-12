@@ -111,20 +111,21 @@ fn resolve_codex_home_from(
 }
 
 pub fn default_pet_path(codex_home: &Path) -> PathBuf {
-    codex_home.join("pet").join(DEFAULT_PET_ID)
+    codex_home.join("pets").join(DEFAULT_PET_ID)
 }
 
 pub fn discover_pet_packages(codex_home: &Path) -> DiscoveryReport {
     let mut candidates = Vec::new();
     let default = default_pet_path(codex_home);
     if default.exists() {
-        candidates.push((PackageOrigin::Default, default));
+        candidates.push((PackageOrigin::Default, default.clone()));
     }
 
     let installed_root = codex_home.join("pets");
     if let Ok(entries) = fs::read_dir(installed_root) {
         let mut installed = entries
             .filter_map(Result::ok)
+            .filter(|entry| entry.path() != default)
             .map(|entry| (PackageOrigin::Installed, entry.path()))
             .collect::<Vec<_>>();
         installed.sort_by(|left, right| left.1.cmp(&right.1));
@@ -325,11 +326,29 @@ mod tests {
     }
 
     #[test]
-    fn default_pet_uses_singular_pet_directory() {
+    fn default_pet_uses_shared_pets_directory() {
         assert_eq!(
             default_pet_path(Path::new("/tmp/codex")),
-            PathBuf::from("/tmp/codex/pet/lili")
+            PathBuf::from("/tmp/codex/pets/lili")
         );
+    }
+
+    #[test]
+    fn legacy_singular_pet_directory_is_not_discovered() {
+        let temp = TempDir::new();
+        let package = temp.path().join("pet").join(DEFAULT_PET_ID);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("spritesheet.webp"), b"fixture").unwrap();
+        fs::write(
+            package.join("pet.json"),
+            r#"{"id":"lili","displayName":"Lili","description":"Legacy","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+
+        let report = discover_pet_packages(temp.path());
+
+        assert!(report.packages().is_empty());
+        assert!(report.issues().is_empty());
     }
 
     #[test]

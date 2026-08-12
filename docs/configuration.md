@@ -23,7 +23,7 @@ The assembled release is written below `release/lili-<version>-<platform>/`. It 
 - the desktop bundle below `bundles/`;
 - `bin/lili` for integration management;
 - the matching `bin/lili-hook` forwarder;
-- the built-in pet files under `pet/lili/`;
+- the built-in pet files under `pets/lili/`;
 - this guide and an action example.
 
 Launch the platform desktop bundle. On macOS, for example:
@@ -64,22 +64,24 @@ Use the default root unless all launch paths can consistently provide the overri
 
 ## 3. Configure pet packages
 
-Lili always has an embedded Lili fallback. An external default package at `${CODEX_HOME}/pet/lili/` replaces that fallback when valid. Additional packages are discovered one directory below `${CODEX_HOME}/pets/`:
+Lili always has an embedded Lili fallback. Every external package is discovered one directory below `${CODEX_HOME}/pets/`. A valid package at `${CODEX_HOME}/pets/lili/` replaces the embedded fallback:
 
 ```text
-${CODEX_HOME}/pet/lili/pet.json
-${CODEX_HOME}/pet/lili/spritesheet.webp
-${CODEX_HOME}/pets/<pet-id>/pet.json
-${CODEX_HOME}/pets/<pet-id>/spritesheet.webp
+${CODEX_HOME}/pets/lili/pet.json
+${CODEX_HOME}/pets/lili/spritesheet.webp
+${CODEX_HOME}/pets/<other-pet-id>/pet.json
+${CODEX_HOME}/pets/<other-pet-id>/spritesheet.webp
 ```
 
 To install the release copy as the external default package:
 
 ```text
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/pet/lili"
-cp "$LILI_RELEASE/pet/lili/pet.json" "${CODEX_HOME:-$HOME/.codex}/pet/lili/pet.json"
-cp "$LILI_RELEASE/pet/lili/spritesheet.webp" "${CODEX_HOME:-$HOME/.codex}/pet/lili/spritesheet.webp"
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/pets/lili"
+cp "$LILI_RELEASE/pets/lili/pet.json" "${CODEX_HOME:-$HOME/.codex}/pets/lili/pet.json"
+cp "$LILI_RELEASE/pets/lili/spritesheet.webp" "${CODEX_HOME:-$HOME/.codex}/pets/lili/spritesheet.webp"
 ```
+
+The legacy singular `${CODEX_HOME}/pet/` directory is not scanned or migrated. Move any package that still uses it into `${CODEX_HOME}/pets/<pet-id>/`, then restart Lili.
 
 A v2 manifest uses camel-case field names:
 

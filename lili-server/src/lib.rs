@@ -957,7 +957,7 @@ debounce_ms = 0
     #[tokio::test]
     async fn package_reload_invalidates_the_previous_asset_identity() {
         let temp = TempDir::new();
-        let package_dir = temp.0.join("pet").join("lili");
+        let package_dir = temp.0.join("pets").join("lili");
         fs::create_dir_all(&package_dir).unwrap();
         fs::write(
             package_dir.join("pet.json"),

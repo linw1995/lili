@@ -20,8 +20,7 @@ This boundary protects Lili from page content and malformed inputs. It is not an
 
 | Path | Lifetime | Contents |
 | --- | --- | --- |
-| `${CODEX_HOME}/pet/lili/` | User managed | Default Codex v2 pet manifest and atlas. |
-| `${CODEX_HOME}/pets/<id>/` | User managed | Additional compatible pet packages. |
+| `${CODEX_HOME}/pets/<id>/` | User managed | Compatible Codex v2 pet packages, including Lili at `${CODEX_HOME}/pets/lili/`. |
 | `${CODEX_HOME}/lili/actions.toml` | User managed | Action identifiers, filters, executable argv, limits, working-directory policy, and explicit environment additions. |
 | `${CODEX_HOME}/lili/state.json` | Persistent | Selected pet identifier, logical window placement, bounded reducer metadata, bounded session records, and unread notifications required for restart recovery. |
 | `${CODEX_HOME}/lili/selected-pet.json` | Persistent compatibility state | Selected pet identifier only. |
@@ -93,7 +92,7 @@ Use this order for a complete removal:
 3. Quit Lili and remove the application bundle or installed binaries.
 4. After `complete: true`, remove `${CODEX_HOME}/lili/` if local Lili state is no longer needed. This deletes actions, state, spool data, and runtime remnants. Do not remove this directory to bypass an incomplete integration uninstall.
 5. Review timestamped `*.lili-backup-*` files under `${CODEX_HOME}` and remove them only after confirming the active Codex configuration.
-6. Pet packages are deliberately not removed by integration uninstall. Remove `${CODEX_HOME}/pet/lili/` or a package under `${CODEX_HOME}/pets/` only if it is not used elsewhere.
+6. Pet packages are deliberately not removed by integration uninstall. Remove a package under `${CODEX_HOME}/pets/` only if it is not used elsewhere.
 
 For a state-only reset, quit Lili and remove `${CODEX_HOME}/lili/state.json` and `${CODEX_HOME}/lili/selected-pet.json`. Leave `integration.json` intact unless the integration has been uninstalled or its conflicts have been resolved.
 

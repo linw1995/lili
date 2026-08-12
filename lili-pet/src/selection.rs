@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn fixed_default_package_takes_precedence_over_embedded_fallback() {
         let temp = TempDir::new();
-        let package_dir = temp.0.join("pet").join(DEFAULT_PET_ID);
+        let package_dir = temp.0.join("pets").join(DEFAULT_PET_ID);
         fs::create_dir_all(&package_dir).unwrap();
         fs::write(package_dir.join("pet.json"), FALLBACK_MANIFEST).unwrap();
         fs::write(package_dir.join("spritesheet.webp"), FALLBACK_ATLAS).unwrap();

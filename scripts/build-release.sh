@@ -37,7 +37,7 @@ mkdir -p \
   "$release_root/bundles" \
   "$release_root/docs" \
   "$release_root/examples" \
-  "$release_root/pet/lili"
+  "$release_root/pets/lili"
 
 cp "$build_target/release/lili" "$release_root/bin/"
 cp "$build_target/release/lili-hook" "$release_root/bin/"
@@ -54,7 +54,7 @@ else
     -exec cp {} "$release_root/bundles/appimage/" \;
 fi
 cp -R dist "$release_root/web"
-cp lili-pet/assets/fallback/pet.json lili-pet/assets/fallback/spritesheet.webp "$release_root/pet/lili/"
+cp lili-pet/assets/fallback/pet.json lili-pet/assets/fallback/spritesheet.webp "$release_root/pets/lili/"
 cp README.md "$release_root/"
 cp docs/configuration.md docs/security-and-operations.md docs/toolchain.md "$release_root/docs/"
 cp examples/actions.toml "$release_root/examples/"

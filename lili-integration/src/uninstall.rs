@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn exclusive_uninstall_removes_created_files_but_keeps_pet_packages() {
         let temp = TempDir::new();
-        let pet = temp.0.join("pet/lili/pet.json");
+        let pet = temp.0.join("pets/lili/pet.json");
         fs::create_dir_all(pet.parent().unwrap()).unwrap();
         fs::write(&pet, "{}\n").unwrap();
         install_exclusive(&temp, 42);
