@@ -4,7 +4,7 @@
 }: let
   shellArgs = {
     packages = toolchain.buildTools ++ toolchain.qualityTools;
-    buildInputs = toolchain.linuxBuildInputs ++ toolchain.darwinBuildInputs;
+    buildInputs = toolchain.nativeBuildInputs;
     hardeningDisable = pkgs.lib.optionals toolchain.isDarwin ["zerocallusedregs"];
     shellHook = ''
       ${toolchain.darwinEnv}

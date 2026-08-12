@@ -5,18 +5,25 @@
   workspaceEnv = toolchain.darwinEnv + toolchain.wasmEnv;
   mkWorkspaceApp = {
     name,
+    nativeWorkspace ? false,
     runtimeInputs ? toolchain.buildTools,
     text,
   }:
-    pkgs.writeShellApplication {
+    (pkgs.writeShellApplication {
       inherit name runtimeInputs;
       text = ''
         ${workspaceEnv}
+        ${pkgs.lib.optionalString nativeWorkspace toolchain.nativeEnv}
         ${text}
       '';
-    };
+    }).overrideAttrs (old: {
+      passthru =
+        (old.passthru or {})
+        // {inherit nativeWorkspace;};
+    });
+  mkNativeWorkspaceApp = args: mkWorkspaceApp (args // {nativeWorkspace = true;});
 in {
-  dev = mkWorkspaceApp {
+  dev = mkNativeWorkspaceApp {
     name = "dev";
     text = ''
       exec cargo tauri dev "$@" -- --locked
@@ -31,7 +38,7 @@ in {
     '';
   };
 
-  build = mkWorkspaceApp {
+  build = mkNativeWorkspaceApp {
     name = "build";
     runtimeInputs =
       toolchain.buildTools
@@ -48,7 +55,7 @@ in {
     '';
   };
 
-  build-app = mkWorkspaceApp {
+  build-app = mkNativeWorkspaceApp {
     name = "build-app";
     text = ''
       exec cargo tauri build --bundles app "$@" -- --locked
@@ -81,7 +88,7 @@ in {
     '';
   };
 
-  lint = mkWorkspaceApp {
+  lint = mkNativeWorkspaceApp {
     name = "lint";
     runtimeInputs = [toolchain.rustToolchain];
     text = ''
@@ -89,7 +96,7 @@ in {
     '';
   };
 
-  test = mkWorkspaceApp {
+  test = mkNativeWorkspaceApp {
     name = "test";
     runtimeInputs = [toolchain.rustToolchain];
     text = ''
@@ -100,7 +107,7 @@ in {
     '';
   };
 
-  coverage = mkWorkspaceApp {
+  coverage = mkNativeWorkspaceApp {
     name = "coverage";
     runtimeInputs = toolchain.buildTools ++ toolchain.coverageTools;
     text = ''
@@ -157,7 +164,7 @@ in {
     '';
   };
 
-  codex-matrix = mkWorkspaceApp {
+  codex-matrix = mkNativeWorkspaceApp {
     name = "codex-matrix";
     text = ''
       cargo build --locked --release --package lili --features release-tools --bin lili-hook --bin lili-codex-matrix
@@ -215,7 +222,7 @@ in {
     '';
   };
 
-  desktop-smoke = mkWorkspaceApp {
+  desktop-smoke = mkNativeWorkspaceApp {
     name = "desktop-smoke";
     text = ''
       trunk build --locked
@@ -223,7 +230,7 @@ in {
     '';
   };
 
-  macos-acceptance = mkWorkspaceApp {
+  macos-acceptance = mkNativeWorkspaceApp {
     name = "macos-acceptance";
     text =
       if toolchain.isDarwin
@@ -240,7 +247,7 @@ in {
       '';
   };
 
-  linux-acceptance = mkWorkspaceApp {
+  linux-acceptance = mkNativeWorkspaceApp {
     name = "linux-acceptance";
     runtimeInputs = toolchain.buildTools ++ pkgs.lib.optionals toolchain.isLinux [pkgs.xvfb-run];
     text =
