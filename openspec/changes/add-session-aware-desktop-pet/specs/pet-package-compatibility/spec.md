@@ -5,15 +5,19 @@ Defines how Lili discovers, validates, selects, and renders Codex v2 pet package
 ## ADDED Requirements
 
 ### Requirement: Discover Codex v2 pet packages
-The system SHALL use `${CODEX_HOME}/pet/lili/` as Lili's fixed default user package location, discover additional user pet packages from `${CODEX_HOME}/pets/<pet-id>/`, default `CODEX_HOME` to the platform Codex home, and require `pet.json` and the manifest-referenced spritesheet to remain inside the package directory.
+The system SHALL discover every user pet package exclusively from `${CODEX_HOME}/pets/<pet-id>/`, including Lili at `${CODEX_HOME}/pets/lili/`, default `CODEX_HOME` to the platform Codex home, and require `pet.json` and the manifest-referenced spritesheet to remain inside the package directory.
 
 #### Scenario: Valid package is discovered
 - **WHEN** a package directory contains a valid `pet.json` and referenced spritesheet
 - **THEN** the pet is listed by its identifier, display name, and description
 
-#### Scenario: Default Lili package is discovered
-- **WHEN** `${CODEX_HOME}/pet/lili/` contains a valid v2 package
-- **THEN** the package is considered before additional packages with the same identifier
+#### Scenario: External Lili package is discovered
+- **WHEN** `${CODEX_HOME}/pets/lili/` contains a valid v2 package
+- **THEN** the package replaces the embedded fallback for the `lili` identifier
+
+#### Scenario: Legacy singular directory exists
+- **WHEN** a package exists only below `${CODEX_HOME}/pet/`
+- **THEN** the package is not discovered because `${CODEX_HOME}/pets/` is the only user package root
 
 #### Scenario: Escaping asset path is rejected
 - **WHEN** `spritesheetPath` is absolute, traverses a parent directory, or resolves through a link outside the package
