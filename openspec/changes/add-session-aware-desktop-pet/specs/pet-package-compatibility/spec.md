@@ -49,6 +49,10 @@ The system SHALL render standard rows with the v2 frame counts and timing sequen
 - **WHEN** the authenticated desktop WebView resolves the active opaque asset identity through a native image request that cannot carry API signature headers
 - **THEN** the atlas is served from the cookie-protected non-API asset route while signed API enforcement remains unchanged
 
+#### Scenario: Fallback animation state changes
+- **WHEN** the built-in fallback transitions between standard animation rows or look-direction rows
+- **THEN** the pet retains a visually consistent tabby palette without a perceptible red, yellow, saturation, or brightness jump between states
+
 ### Requirement: Render all look directions in clockwise order
 The system SHALL map rows 9 and 10 to the 16 clockwise look directions from `000` through `337.5` degrees, where `000` means up and the no-vector deadzone falls back to idle.
 
