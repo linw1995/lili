@@ -93,9 +93,10 @@
   linuxPkgConfig = pkgs.buildEnv {
     name = "lili-pkg-config";
     paths = pkgs.lib.unique (builtins.concatMap (package: [
-      (pkgs.lib.getDev package)
-      (pkgs.lib.getLib package)
-    ]) linuxBuildInputs);
+        (pkgs.lib.getDev package)
+        (pkgs.lib.getLib package)
+      ])
+      linuxBuildInputs);
     pathsToLink = ["/lib/girepository-1.0" "/lib/pkgconfig" "/share"];
     ignoreCollisions = true;
   };
