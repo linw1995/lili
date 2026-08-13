@@ -529,13 +529,14 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
     use std::{ffi::c_void, mem, os::windows::io::AsRawHandle, ptr};
 
     use windows_sys::Win32::{
-        Foundation::{GENERIC_ALL, LocalFree},
+        Foundation::LocalFree,
         Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
             Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
             DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, IsWellKnownSid,
             OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinCreatorOwnerRightsSid,
         },
+        Storage::FileSystem::FILE_ALL_ACCESS,
         System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
     };
 
@@ -610,7 +611,8 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
                 ace.Mask
             );
             u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
-            && ace.Mask == GENERIC_ALL
+            // CreateNamedPipe maps SDDL `GA` to the file object's concrete full-access mask.
+            && ace.Mask == FILE_ALL_ACCESS
             // SDDL `OW` is the Owner Rights well-known SID, which represents the
             // object's owner but is distinct from the owner's account SID.
             && owner_rights
