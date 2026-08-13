@@ -2,7 +2,7 @@
 
 - [x] 1.1 Capture the supported Codex, ChatGPT, plugin manifest, hook schema, target platform, and public submission requirements in versioned fixtures dated from the official review.
 - [ ] 1.2 Validate a minimal skills-only package containing Codex hooks through local Marketplace tooling and the submission portal preflight, and record any scanner or package restrictions before expanding the artifact.
-- [ ] 1.3 Define the final plugin identity, publisher fields, category, capabilities, country availability, desktop prerequisite, surface-specific copy, and prohibited endorsement language.
+- [x] 1.3 Define the final plugin identity, publisher fields, category, capabilities, country availability, desktop prerequisite, surface-specific copy, and prohibited endorsement language.
 - [ ] 1.4 Define the supported plugin/application/IPC compatibility matrix and the exact migration and rollback states.
 
 ## 2. Plugin Package and Skill
