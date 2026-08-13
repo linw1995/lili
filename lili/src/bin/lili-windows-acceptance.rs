@@ -35,6 +35,8 @@ mod windows {
         let app_binary = required_file(arguments.next(), "packaged app")?;
         let hook_binary = required_file(arguments.next(), "hook")?;
         let action_fixture = required_file(arguments.next(), "action fixture")?;
+        let action_fixture = fs::canonicalize(action_fixture)
+            .map_err(|error| format!("action fixture path could not be resolved: {error}"))?;
         let installer = required_file(arguments.next(), "NSIS installer")?;
         if arguments.next().is_some()
             || installer.extension().and_then(|value| value.to_str()) != Some("exe")
@@ -42,7 +44,8 @@ mod windows {
             return Err("acceptance binary paths are invalid".to_owned());
         }
 
-        let workspace = AcceptanceWorkspace::new(action_fixture)?;
+        let workspace = AcceptanceWorkspace::new(action_fixture.clone())?;
+        probe_action_fixture(&action_fixture, workspace.fixture_probe())?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
         let credential_path = workspace
             .path()
@@ -97,6 +100,34 @@ mod windows {
             .map_err(|error| format!("packaged app could not start: {error}"))
     }
 
+    fn probe_action_fixture(binary: &Path, output: &Path) -> Result<(), String> {
+        let started = Instant::now();
+        let mut fixture = Command::new(binary)
+            .arg("--probe")
+            .arg(output)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| format!("action fixture startup probe could not start: {error}"))?;
+        wait_for_exit(
+            &mut fixture,
+            Duration::from_secs(30),
+            "action fixture startup probe",
+        )?;
+        let probe = fs::read_to_string(output).map_err(|error| {
+            format!("action fixture startup probe did not report ready: {error}")
+        })?;
+        if probe != "ready\n" {
+            return Err("action fixture startup probe output is invalid".to_owned());
+        }
+        println!(
+            "{{\"actionFixtureProbeMs\":{}}}",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
     fn wait_for_file(path: &Path, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -109,17 +140,21 @@ mod windows {
     }
 
     fn wait_for_clean_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
+        wait_for_exit(child, timeout, "packaged app")
+    }
+
+    fn wait_for_exit(child: &mut Child, timeout: Duration, label: &str) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(status)) if status.success() => return Ok(()),
-                Ok(Some(status)) => return Err(format!("packaged app exited with {status}")),
+                Ok(Some(status)) => return Err(format!("{label} exited with {status}")),
                 Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
                 Ok(None) => {
                     terminate(child);
-                    return Err("packaged app did not quit cleanly".to_owned());
+                    return Err(format!("{label} did not quit cleanly"));
                 }
-                Err(error) => return Err(format!("packaged app could not be observed: {error}")),
+                Err(error) => return Err(format!("{label} could not be observed: {error}")),
             }
         }
     }
@@ -163,6 +198,7 @@ mod windows {
         path: PathBuf,
         process_ids: PathBuf,
         fixture_status: PathBuf,
+        fixture_probe: PathBuf,
     }
 
     impl AcceptanceWorkspace {
@@ -179,6 +215,7 @@ mod windows {
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
             let process_ids = path.join("action-processes.txt");
             let fixture_status = path.join("action-fixture-status.txt");
+            let fixture_probe = path.join("action-fixture-probe.txt");
             let command = toml_string(&action_fixture);
             let output = toml_string(&process_ids);
             let status = toml_string(&fixture_status);
@@ -193,6 +230,7 @@ mod windows {
                 path,
                 process_ids,
                 fixture_status,
+                fixture_probe,
             })
         }
 
@@ -202,6 +240,10 @@ mod windows {
 
         fn process_ids(&self) -> &Path {
             &self.process_ids
+        }
+
+        fn fixture_probe(&self) -> &Path {
+            &self.fixture_probe
         }
 
         fn with_fixture_status(&self, error: &str) -> String {

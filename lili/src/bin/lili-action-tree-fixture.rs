@@ -35,6 +35,17 @@ mod windows {
     pub fn run() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
         match arguments.next().as_deref() {
+            Some(mode) if mode == "--probe" => {
+                let output = arguments
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "missing probe output path".to_owned())?;
+                if arguments.next().is_some() {
+                    return Err("unexpected fixture arguments".to_owned());
+                }
+                fs::write(output, b"ready\n")
+                    .map_err(|error| format!("probe output could not be written: {error}"))
+            }
             Some(mode) if mode == "--child" => loop {
                 thread::sleep(Duration::from_secs(60));
             },
