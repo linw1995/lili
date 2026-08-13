@@ -15,8 +15,9 @@ fn main() {
 #[cfg(target_os = "windows")]
 mod windows {
     use std::{
+        collections::BTreeSet,
         ffi::OsString,
-        fs,
+        fs, mem,
         os::windows::io::AsRawHandle,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
@@ -25,10 +26,18 @@ mod windows {
     };
 
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Storage::FileSystem::SYNCHRONIZE,
         System::{
-            JobObjects::{AssignProcessToJobObject, CreateJobObjectW},
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
+            },
             Threading::{OpenProcess, WaitForSingleObject},
         },
     };
@@ -54,6 +63,7 @@ mod windows {
         probe_action_fixture_with_minimal_environment(&action_fixture, workspace.fixture_probe())?;
         probe_action_fixture_with_pipes(&action_fixture, workspace.fixture_probe())?;
         probe_action_fixture_in_job(&action_fixture, workspace.fixture_job_probe())?;
+        probe_action_fixture_in_tokio_job(&action_fixture, workspace.fixture_job_probe())?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
         let credential_path = workspace
             .path()
@@ -73,10 +83,16 @@ mod windows {
             terminate(&mut app);
             return Err("hook delivery did not complete silently".to_owned());
         }
-        wait_for_clean_exit(&mut app, Duration::from_secs(35))
-            .map_err(|error| workspace.with_fixture_status(&error))?;
+        let fixture_processes =
+            wait_for_clean_exit(&mut app, Duration::from_secs(35), &action_fixture)
+                .map_err(|error| workspace.with_fixture_status(&error))?;
         let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))
-            .map_err(|error| workspace.with_fixture_status(&error))?;
+            .map_err(|error| {
+                workspace.with_fixture_status(&format!(
+                    "{error}; observed fixture processes: {}",
+                    format_process_observations(&fixture_processes)
+                ))
+            })?;
         if process_ids.len() != 2 {
             return Err(workspace.with_fixture_status(
                 "action fixture did not record exactly one parent and one child",
@@ -214,14 +230,7 @@ mod windows {
         let mut fixture = command
             .spawn()
             .map_err(|error| format!("job fixture probe could not start: {error}"))?;
-        let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
-        if job.is_null() {
-            terminate(&mut fixture);
-            return Err(format!(
-                "job fixture probe could not create a job: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
+        let job = create_action_job().inspect_err(|_| terminate(&mut fixture))?;
         let result = run_job_probe(&mut fixture, job, status);
         unsafe {
             CloseHandle(job);
@@ -232,6 +241,105 @@ mod windows {
             started.elapsed().as_millis()
         );
         Ok(())
+    }
+
+    fn probe_action_fixture_in_tokio_job(binary: &Path, status: &Path) -> Result<(), String> {
+        clear_probe_output(status)?;
+        let started = Instant::now();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Tokio fixture probe runtime could not start: {error}"))?;
+        runtime.block_on(async {
+            let mut command = tokio::process::Command::new(binary);
+            command
+                .arg("--probe-job")
+                .arg(status)
+                .current_dir(
+                    binary
+                        .parent()
+                        .ok_or_else(|| "action fixture directory is unavailable".to_owned())?,
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            configure_minimal_environment(command.as_std_mut())?;
+            let mut fixture = command
+                .spawn()
+                .map_err(|error| format!("Tokio fixture probe could not start: {error}"))?;
+            let job = create_action_job().inspect_err(|_| {
+                let _ = fixture.start_kill();
+            })?;
+            let process = fixture
+                .raw_handle()
+                .map(|handle| handle as HANDLE)
+                .ok_or_else(|| "Tokio fixture probe process handle is unavailable".to_owned())?;
+            if unsafe { AssignProcessToJobObject(job, process) } == 0 {
+                let error = std::io::Error::last_os_error();
+                let _ = fixture.start_kill();
+                unsafe {
+                    CloseHandle(job);
+                }
+                return Err(format!(
+                    "Tokio fixture probe could not assign its process: {error}"
+                ));
+            }
+            let wait = tokio::time::timeout(Duration::from_secs(10), fixture.wait()).await;
+            unsafe {
+                CloseHandle(job);
+            }
+            let exit = wait
+                .map_err(|_| "Tokio fixture probe did not quit cleanly".to_owned())?
+                .map_err(|error| format!("Tokio fixture probe could not be observed: {error}"))?;
+            if !exit.success() {
+                return Err(format!("Tokio fixture probe exited with {exit}"));
+            }
+            let observations = fs::read_to_string(status)
+                .map_err(|error| format!("Tokio fixture probe status is unavailable: {error}"))?;
+            if !observations.lines().any(|line| line == "probe-ready") {
+                return Err(format!(
+                    "Tokio fixture probe did not report ready: {}",
+                    observations.lines().collect::<Vec<_>>().join(" | ")
+                ));
+            }
+            Ok::<(), String>(())
+        })?;
+        println!(
+            "{{\"actionFixtureProbe\":\"tokio-job\",\"elapsedMs\":{}}}",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
+    fn create_action_job() -> Result<HANDLE, String> {
+        let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if job.is_null() {
+            return Err(format!(
+                "fixture probe could not create a job: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                u32::try_from(mem::size_of_val(&limits)).expect("job limit structure fits in u32"),
+            )
+        };
+        if configured == 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                CloseHandle(job);
+            }
+            return Err(format!(
+                "fixture probe could not configure its job: {error}"
+            ));
+        }
+        Ok(job)
     }
 
     fn run_job_probe(fixture: &mut Child, job: HANDLE, status: &Path) -> Result<(), String> {
@@ -297,8 +405,32 @@ mod windows {
         false
     }
 
-    fn wait_for_clean_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
-        wait_for_exit(child, timeout, "packaged app")
+    fn wait_for_clean_exit(
+        child: &mut Child,
+        timeout: Duration,
+        action_fixture: &Path,
+    ) -> Result<BTreeSet<(u32, u32)>, String> {
+        let fixture_name = action_fixture
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "action fixture file name is invalid".to_owned())?;
+        let mut observations = BTreeSet::new();
+        let deadline = Instant::now() + timeout;
+        loop {
+            observations.extend(observe_processes(fixture_name)?);
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(observations),
+                Ok(Some(status)) => return Err(format!("packaged app exited with {status}")),
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+                Ok(None) => {
+                    terminate(child);
+                    return Err("packaged app did not quit cleanly".to_owned());
+                }
+                Err(error) => {
+                    return Err(format!("packaged app could not be observed: {error}"));
+                }
+            }
+        }
     }
 
     fn wait_for_exit(child: &mut Child, timeout: Duration, label: &str) -> Result<(), String> {
@@ -345,6 +477,64 @@ mod windows {
             WAIT_TIMEOUT => true,
             _ => true,
         }
+    }
+
+    fn observe_processes(executable_name: &str) -> Result<BTreeSet<(u32, u32)>, String> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "process snapshot could not be created: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let result = read_process_snapshot(snapshot, executable_name);
+        unsafe {
+            CloseHandle(snapshot);
+        }
+        result
+    }
+
+    fn read_process_snapshot(
+        snapshot: HANDLE,
+        executable_name: &str,
+    ) -> Result<BTreeSet<(u32, u32)>, String> {
+        let mut processes = BTreeSet::new();
+        let mut process = PROCESSENTRY32W {
+            dwSize: u32::try_from(mem::size_of::<PROCESSENTRY32W>())
+                .expect("process entry size fits in u32"),
+            ..Default::default()
+        };
+        let mut has_process = unsafe { Process32FirstW(snapshot, &mut process) } != 0;
+        while has_process {
+            let name_length = process
+                .szExeFile
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(process.szExeFile.len());
+            if String::from_utf16_lossy(&process.szExeFile[..name_length])
+                .eq_ignore_ascii_case(executable_name)
+            {
+                processes.insert((process.th32ProcessID, process.th32ParentProcessID));
+            }
+            has_process = unsafe { Process32NextW(snapshot, &mut process) } != 0;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(18) {
+            Ok(processes)
+        } else {
+            Err(format!("process snapshot could not be read: {error}"))
+        }
+    }
+
+    fn format_process_observations(processes: &BTreeSet<(u32, u32)>) -> String {
+        if processes.is_empty() {
+            return "none".to_owned();
+        }
+        processes
+            .iter()
+            .map(|(process, parent)| format!("pid={process} parent={parent}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn terminate(child: &mut Child) {
