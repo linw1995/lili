@@ -15,17 +15,22 @@ fn main() {
 #[cfg(target_os = "windows")]
 mod windows {
     use std::{
+        ffi::OsString,
         fs,
+        os::windows::io::AsRawHandle,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
-        thread,
+        ptr, thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Storage::FileSystem::SYNCHRONIZE,
-        System::Threading::{OpenProcess, WaitForSingleObject},
+        System::{
+            JobObjects::{AssignProcessToJobObject, CreateJobObjectW},
+            Threading::{OpenProcess, WaitForSingleObject},
+        },
     };
 
     const PAYLOAD: &str = r#"{"version":1,"provider":"codex","type":"attention_required","eventId":"windows-acceptance-event","sessionId":"windows-acceptance-session","turnId":"windows-acceptance-turn","occurredAtMs":1800000000000,"project":{"label":"Acceptance"},"summary":"Interaction required"}"#;
@@ -46,6 +51,9 @@ mod windows {
 
         let workspace = AcceptanceWorkspace::new(action_fixture.clone())?;
         probe_action_fixture(&action_fixture, workspace.fixture_probe())?;
+        probe_action_fixture_with_minimal_environment(&action_fixture, workspace.fixture_probe())?;
+        probe_action_fixture_with_pipes(&action_fixture, workspace.fixture_probe())?;
+        probe_action_fixture_in_job(&action_fixture, workspace.fixture_job_probe())?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
         let credential_path = workspace
             .path()
@@ -101,6 +109,7 @@ mod windows {
     }
 
     fn probe_action_fixture(binary: &Path, output: &Path) -> Result<(), String> {
+        clear_probe_output(output)?;
         let started = Instant::now();
         let mut fixture = Command::new(binary)
             .arg("--probe")
@@ -122,10 +131,159 @@ mod windows {
             return Err("action fixture startup probe output is invalid".to_owned());
         }
         println!(
-            "{{\"actionFixtureProbeMs\":{}}}",
+            "{{\"actionFixtureProbe\":\"inherited\",\"elapsedMs\":{}}}",
             started.elapsed().as_millis()
         );
         Ok(())
+    }
+
+    fn probe_action_fixture_with_minimal_environment(
+        binary: &Path,
+        output: &Path,
+    ) -> Result<(), String> {
+        clear_probe_output(output)?;
+        let started = Instant::now();
+        let mut command = Command::new(binary);
+        command
+            .arg("--probe")
+            .arg(output)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        configure_minimal_environment(&mut command)?;
+        let mut fixture = command.spawn().map_err(|error| {
+            format!("minimal-environment fixture probe could not start: {error}")
+        })?;
+        wait_for_exit(
+            &mut fixture,
+            Duration::from_secs(10),
+            "minimal-environment fixture probe",
+        )?;
+        validate_probe_output(output, "minimal-environment fixture probe")?;
+        println!(
+            "{{\"actionFixtureProbe\":\"minimal-environment\",\"elapsedMs\":{}}}",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
+    fn probe_action_fixture_with_pipes(binary: &Path, output: &Path) -> Result<(), String> {
+        clear_probe_output(output)?;
+        let started = Instant::now();
+        let mut command = Command::new(binary);
+        command
+            .arg("--probe")
+            .arg(output)
+            .current_dir(
+                binary
+                    .parent()
+                    .ok_or_else(|| "action fixture directory is unavailable".to_owned())?,
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_minimal_environment(&mut command)?;
+        let mut fixture = command
+            .spawn()
+            .map_err(|error| format!("piped fixture probe could not start: {error}"))?;
+        wait_for_exit(&mut fixture, Duration::from_secs(10), "piped fixture probe")?;
+        validate_probe_output(output, "piped fixture probe")?;
+        println!(
+            "{{\"actionFixtureProbe\":\"piped\",\"elapsedMs\":{}}}",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
+    fn probe_action_fixture_in_job(binary: &Path, status: &Path) -> Result<(), String> {
+        clear_probe_output(status)?;
+        let started = Instant::now();
+        let mut command = Command::new(binary);
+        command
+            .arg("--probe-job")
+            .arg(status)
+            .current_dir(
+                binary
+                    .parent()
+                    .ok_or_else(|| "action fixture directory is unavailable".to_owned())?,
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_minimal_environment(&mut command)?;
+        let mut fixture = command
+            .spawn()
+            .map_err(|error| format!("job fixture probe could not start: {error}"))?;
+        let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if job.is_null() {
+            terminate(&mut fixture);
+            return Err(format!(
+                "job fixture probe could not create a job: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let result = run_job_probe(&mut fixture, job, status);
+        unsafe {
+            CloseHandle(job);
+        }
+        result?;
+        println!(
+            "{{\"actionFixtureProbe\":\"job\",\"elapsedMs\":{}}}",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
+    fn run_job_probe(fixture: &mut Child, job: HANDLE, status: &Path) -> Result<(), String> {
+        if unsafe { AssignProcessToJobObject(job, fixture.as_raw_handle() as HANDLE) } == 0 {
+            let error = std::io::Error::last_os_error();
+            terminate(fixture);
+            return Err(format!(
+                "job fixture probe could not assign its process: {error}"
+            ));
+        }
+        wait_for_exit(fixture, Duration::from_secs(10), "job fixture probe")?;
+        let observations = fs::read_to_string(status)
+            .map_err(|error| format!("job fixture probe status is unavailable: {error}"))?;
+        if !observations.lines().any(|line| line == "probe-ready") {
+            return Err(format!(
+                "job fixture probe did not report ready: {}",
+                observations.lines().collect::<Vec<_>>().join(" | ")
+            ));
+        }
+        Ok(())
+    }
+
+    fn configure_minimal_environment(command: &mut Command) -> Result<(), String> {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| "SystemRoot is unavailable for fixture probe".to_owned())?;
+        let mut path = system_root.clone();
+        path.push("\\System32");
+        command.env_clear().envs([
+            (OsString::from("PATH"), path),
+            (OsString::from("SystemRoot"), system_root),
+        ]);
+        Ok(())
+    }
+
+    fn clear_probe_output(path: &Path) -> Result<(), String> {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "fixture probe output could not be cleared: {error}"
+            )),
+        }
+    }
+
+    fn validate_probe_output(path: &Path, label: &str) -> Result<(), String> {
+        let probe = fs::read_to_string(path)
+            .map_err(|error| format!("{label} did not report ready: {error}"))?;
+        if probe == "ready\n" {
+            Ok(())
+        } else {
+            Err(format!("{label} output is invalid"))
+        }
     }
 
     fn wait_for_file(path: &Path, timeout: Duration) -> bool {
@@ -199,6 +357,7 @@ mod windows {
         process_ids: PathBuf,
         fixture_status: PathBuf,
         fixture_probe: PathBuf,
+        fixture_job_probe: PathBuf,
     }
 
     impl AcceptanceWorkspace {
@@ -216,6 +375,7 @@ mod windows {
             let process_ids = path.join("action-processes.txt");
             let fixture_status = path.join("action-fixture-status.txt");
             let fixture_probe = path.join("action-fixture-probe.txt");
+            let fixture_job_probe = path.join("action-fixture-job-probe.txt");
             let command = toml_string(&action_fixture);
             let output = toml_string(&process_ids);
             let status = toml_string(&fixture_status);
@@ -231,6 +391,7 @@ mod windows {
                 process_ids,
                 fixture_status,
                 fixture_probe,
+                fixture_job_probe,
             })
         }
 
@@ -244,6 +405,10 @@ mod windows {
 
         fn fixture_probe(&self) -> &Path {
             &self.fixture_probe
+        }
+
+        fn fixture_job_probe(&self) -> &Path {
+            &self.fixture_job_probe
         }
 
         fn with_fixture_status(&self, error: &str) -> String {

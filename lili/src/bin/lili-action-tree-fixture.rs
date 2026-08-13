@@ -46,6 +46,18 @@ mod windows {
                 fs::write(output, b"ready\n")
                     .map_err(|error| format!("probe output could not be written: {error}"))
             }
+            Some(mode) if mode == "--probe-job" => {
+                let status = arguments
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "missing probe status output path".to_owned())?;
+                if arguments.next().is_some() {
+                    return Err("unexpected fixture arguments".to_owned());
+                }
+                record_status(&status, &format!("started pid={}", std::process::id()))?;
+                wait_for_supervisor_job(&status, Duration::from_secs(4))?;
+                record_status(&status, "probe-ready")
+            }
             Some(mode) if mode == "--child" => loop {
                 thread::sleep(Duration::from_secs(60));
             },
