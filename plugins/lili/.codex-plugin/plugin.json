@@ -39,7 +39,7 @@
       "Help me migrate from Lili's legacy direct configuration safely."
     ],
     "brandColor": "#315C7B",
-    "composerIcon": "./assets/icon.svg",
-    "logo": "./assets/icon.svg"
+    "composerIcon": "./assets/composer-icon.png",
+    "logo": "./assets/logo.png"
   }
 }

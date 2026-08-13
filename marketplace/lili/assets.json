@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "license": {
+    "spdx": "Apache-2.0",
+    "copyright": "Copyright 2026 Jade Lin",
+    "licenseFile": "LICENSE",
+    "noticeFile": "NOTICE",
+    "scope": "First-party Lili artwork distributed with the repository"
+  },
+  "assets": [
+    {
+      "manifestField": "interface.composerIcon",
+      "path": "./assets/composer-icon.png",
+      "sourcePath": "lili/icons/128x128.png",
+      "introducedByCommit": "602df8b",
+      "mediaType": "image/png",
+      "width": 128,
+      "height": 128,
+      "colorType": "rgba",
+      "sha256": "d58cd6e3eb17bc0c44f570852512ddefb347526dd928cdff24b70fc842209d06"
+    },
+    {
+      "manifestField": "interface.logo",
+      "path": "./assets/logo.png",
+      "sourcePath": "lili/icons/icon.png",
+      "introducedByCommit": "602df8b",
+      "mediaType": "image/png",
+      "width": 512,
+      "height": 512,
+      "colorType": "rgba",
+      "sha256": "ec8cd6c7c570e47cbdb96726404ae9220fafc9e0e28f4479b7560f255f8ce7b5"
+    }
+  ],
+  "screenshots": {
+    "included": false,
+    "reason": "Lili exposes no plugin-owned user interface"
+  }
+}
