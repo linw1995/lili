@@ -532,7 +532,7 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
         Foundation::{GENERIC_ALL, LocalFree},
         Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-            Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT},
+            Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
             DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, IsWellKnownSid,
             OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinCreatorOwnerRightsSid,
         },
@@ -542,8 +542,13 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
     let Some(name) = endpoint.named_pipe() else {
         return false;
     };
-    let Ok(pipe) = fs::OpenOptions::new().read(true).write(true).open(name) else {
-        return false;
+    let pipe = match fs::OpenOptions::new().read(true).write(true).open(name) {
+        Ok(pipe) => pipe,
+        Err(_error) => {
+            #[cfg(test)]
+            eprintln!("named pipe security check could not open endpoint: {_error}");
+            return false;
+        }
     };
     let mut owner: PSID = ptr::null_mut();
     let mut dacl: *mut ACL = ptr::null_mut();
@@ -551,7 +556,7 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
     let status = unsafe {
         GetSecurityInfo(
             pipe.as_raw_handle(),
-            SE_KERNEL_OBJECT,
+            SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
             ptr::null_mut(),
@@ -560,6 +565,13 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
             &mut descriptor,
         )
     };
+    #[cfg(test)]
+    eprintln!(
+        "named pipe security query status={status} owner={} dacl={} descriptor={}",
+        !owner.is_null(),
+        !dacl.is_null(),
+        !descriptor.is_null()
+    );
     if status != 0 || owner.is_null() || dacl.is_null() || descriptor.is_null() {
         return false;
     }
@@ -577,17 +589,32 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
         && information.AceCount == 1
         && unsafe { GetAce(dacl, 0, &mut raw_ace) } != 0
         && !raw_ace.is_null();
-    let private = if ace_read {
-        let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
-        let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
-        u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
+    #[cfg(test)]
+    eprintln!(
+        "named pipe security ACL read={} aceCount={} aceAvailable={}",
+        acl_read != 0,
+        information.AceCount,
+        !raw_ace.is_null()
+    );
+    let private = ace_read
+        && {
+            let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+            let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
+            let owner_rights = unsafe { IsWellKnownSid(sid, WinCreatorOwnerRightsSid) } != 0;
+            #[cfg(test)]
+            eprintln!(
+                "named pipe security ACL read={} aceCount={} aceType={} mask={:#x} ownerRights={owner_rights}",
+                acl_read != 0,
+                information.AceCount,
+                ace.Header.AceType,
+                ace.Mask
+            );
+            u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
             && ace.Mask == GENERIC_ALL
             // SDDL `OW` is the Owner Rights well-known SID, which represents the
             // object's owner but is distinct from the owner's account SID.
-            && unsafe { IsWellKnownSid(sid, WinCreatorOwnerRightsSid) } != 0
-    } else {
-        false
-    };
+            && owner_rights
+        };
     unsafe {
         LocalFree(descriptor);
     }
