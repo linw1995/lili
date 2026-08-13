@@ -21,7 +21,12 @@ mod windows {
         os::windows::io::AsRawHandle,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
-        ptr, thread,
+        ptr,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
@@ -65,6 +70,7 @@ mod windows {
         probe_action_fixture_in_job(&action_fixture, workspace.fixture_job_probe())?;
         probe_action_fixture_in_tokio_job(&action_fixture, workspace.fixture_job_probe())?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
+        let process_observer = ProcessObserver::new(&action_fixture, app.id())?;
         let credential_path = workspace
             .path()
             .join("lili")
@@ -83,9 +89,9 @@ mod windows {
             terminate(&mut app);
             return Err("hook delivery did not complete silently".to_owned());
         }
-        let fixture_processes =
-            wait_for_clean_exit(&mut app, Duration::from_secs(35), &action_fixture)
-                .map_err(|error| workspace.with_fixture_status(&error))?;
+        wait_for_clean_exit(&mut app, Duration::from_secs(35))
+            .map_err(|error| workspace.with_fixture_status(&error))?;
+        let fixture_processes = process_observer.finish()?;
         let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))
             .map_err(|error| {
                 workspace.with_fixture_status(&format!(
@@ -405,21 +411,11 @@ mod windows {
         false
     }
 
-    fn wait_for_clean_exit(
-        child: &mut Child,
-        timeout: Duration,
-        action_fixture: &Path,
-    ) -> Result<BTreeSet<(u32, u32)>, String> {
-        let fixture_name = action_fixture
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "action fixture file name is invalid".to_owned())?;
-        let mut observations = BTreeSet::new();
+    fn wait_for_clean_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         loop {
-            observations.extend(observe_processes(fixture_name)?);
             match child.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(observations),
+                Ok(Some(status)) if status.success() => return Ok(()),
                 Ok(Some(status)) => return Err(format!("packaged app exited with {status}")),
                 Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
                 Ok(None) => {
@@ -479,7 +475,12 @@ mod windows {
         }
     }
 
-    fn observe_processes(executable_name: &str) -> Result<BTreeSet<(u32, u32)>, String> {
+    type ProcessObservation = (String, u32, u32);
+
+    fn observe_processes(
+        executable_name: &str,
+        parent_process_id: u32,
+    ) -> Result<BTreeSet<ProcessObservation>, String> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(format!(
@@ -487,7 +488,7 @@ mod windows {
                 std::io::Error::last_os_error()
             ));
         }
-        let result = read_process_snapshot(snapshot, executable_name);
+        let result = read_process_snapshot(snapshot, executable_name, parent_process_id);
         unsafe {
             CloseHandle(snapshot);
         }
@@ -497,7 +498,8 @@ mod windows {
     fn read_process_snapshot(
         snapshot: HANDLE,
         executable_name: &str,
-    ) -> Result<BTreeSet<(u32, u32)>, String> {
+        parent_process_id: u32,
+    ) -> Result<BTreeSet<ProcessObservation>, String> {
         let mut processes = BTreeSet::new();
         let mut process = PROCESSENTRY32W {
             dwSize: u32::try_from(mem::size_of::<PROCESSENTRY32W>())
@@ -511,10 +513,11 @@ mod windows {
                 .iter()
                 .position(|character| *character == 0)
                 .unwrap_or(process.szExeFile.len());
-            if String::from_utf16_lossy(&process.szExeFile[..name_length])
-                .eq_ignore_ascii_case(executable_name)
+            let name = String::from_utf16_lossy(&process.szExeFile[..name_length]);
+            if name.eq_ignore_ascii_case(executable_name)
+                || process.th32ParentProcessID == parent_process_id
             {
-                processes.insert((process.th32ProcessID, process.th32ParentProcessID));
+                processes.insert((name, process.th32ProcessID, process.th32ParentProcessID));
             }
             has_process = unsafe { Process32NextW(snapshot, &mut process) } != 0;
         }
@@ -526,15 +529,62 @@ mod windows {
         }
     }
 
-    fn format_process_observations(processes: &BTreeSet<(u32, u32)>) -> String {
+    fn format_process_observations(processes: &BTreeSet<ProcessObservation>) -> String {
         if processes.is_empty() {
             return "none".to_owned();
         }
         processes
             .iter()
-            .map(|(process, parent)| format!("pid={process} parent={parent}"))
+            .map(|(name, process, parent)| format!("name={name} pid={process} parent={parent}"))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    struct ProcessObserver {
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<Result<BTreeSet<ProcessObservation>, String>>>,
+    }
+
+    impl ProcessObserver {
+        fn new(action_fixture: &Path, parent_process_id: u32) -> Result<Self, String> {
+            let executable_name = action_fixture
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "action fixture file name is invalid".to_owned())?
+                .to_owned();
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = stop.clone();
+            let thread = thread::spawn(move || {
+                let mut observations = BTreeSet::new();
+                while !thread_stop.load(Ordering::Acquire) {
+                    observations.extend(observe_processes(&executable_name, parent_process_id)?);
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Ok(observations)
+            });
+            Ok(Self {
+                stop,
+                thread: Some(thread),
+            })
+        }
+
+        fn finish(mut self) -> Result<BTreeSet<ProcessObservation>, String> {
+            self.stop.store(true, Ordering::Release);
+            self.thread
+                .take()
+                .expect("process observer retains its thread")
+                .join()
+                .map_err(|_| "process observer panicked".to_owned())?
+        }
+    }
+
+    impl Drop for ProcessObserver {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
     }
 
     fn terminate(child: &mut Child) {
