@@ -533,8 +533,8 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
         Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
             Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
-            DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+            DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, IsWellKnownSid,
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinCreatorOwnerRightsSid,
         },
         System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
     };
@@ -583,7 +583,9 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
         let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
         u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
             && ace.Mask == GENERIC_ALL
-            && unsafe { EqualSid(owner, sid) } != 0
+            // SDDL `OW` is the Owner Rights well-known SID, which represents the
+            // object's owner but is distinct from the owner's account SID.
+            && unsafe { IsWellKnownSid(sid, WinCreatorOwnerRightsSid) } != 0
     } else {
         false
     };
@@ -591,6 +593,22 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
         LocalFree(descriptor);
     }
     private
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn owner_rights_named_pipe_is_private() {
+    let runtime_dir = std::env::temp_dir().join(format!(
+        "lili-forwarding-windows-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&runtime_dir);
+    let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
+
+    assert!(private_forwarding_endpoint_is_live(endpoint.endpoint()));
+
+    drop(endpoint);
+    fs::remove_dir_all(runtime_dir).unwrap();
 }
 
 #[cfg(not(windows))]
