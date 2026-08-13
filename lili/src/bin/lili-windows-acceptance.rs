@@ -62,10 +62,17 @@ mod windows {
             terminate(&mut app);
             return Err("hook delivery did not complete silently".to_owned());
         }
-        wait_for_clean_exit(&mut app, Duration::from_secs(35))?;
-        let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))?;
+        wait_for_clean_exit(&mut app, Duration::from_secs(35))
+            .map_err(|error| workspace.with_fixture_status(&error))?;
+        let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))
+            .map_err(|error| workspace.with_fixture_status(&error))?;
+        if process_ids.len() != 2 {
+            return Err(workspace.with_fixture_status(
+                "action fixture did not record exactly one parent and one child",
+            ));
+        }
         if process_ids.into_iter().any(process_is_alive) {
-            return Err("timed-out action left a process tree alive".to_owned());
+            return Err(workspace.with_fixture_status("timed-out action left a process tree alive"));
         }
         println!("{{\"windowsAcceptance\":\"passed\"}}");
         Ok(())
@@ -155,6 +162,7 @@ mod windows {
     struct AcceptanceWorkspace {
         path: PathBuf,
         process_ids: PathBuf,
+        fixture_status: PathBuf,
     }
 
     impl AcceptanceWorkspace {
@@ -170,16 +178,22 @@ mod windows {
             fs::create_dir_all(path.join("lili"))
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
             let process_ids = path.join("action-processes.txt");
+            let fixture_status = path.join("action-fixture-status.txt");
             let command = toml_string(&action_fixture);
             let output = toml_string(&process_ids);
+            let status = toml_string(&fixture_status);
             fs::write(
                 path.join("lili").join("actions.toml"),
                 format!(
-                    "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}]\ntimeout_ms = 5000\n"
+                    "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}, {status}]\ntimeout_ms = 5000\n"
                 ),
             )
             .map_err(|error| format!("acceptance action config could not be written: {error}"))?;
-            Ok(Self { path, process_ids })
+            Ok(Self {
+                path,
+                process_ids,
+                fixture_status,
+            })
         }
 
         fn path(&self) -> &Path {
@@ -188,6 +202,13 @@ mod windows {
 
         fn process_ids(&self) -> &Path {
             &self.process_ids
+        }
+
+        fn with_fixture_status(&self, error: &str) -> String {
+            let status = fs::read_to_string(&self.fixture_status)
+                .map(|status| status.lines().collect::<Vec<_>>().join(" | "))
+                .unwrap_or_else(|status_error| format!("unavailable ({status_error})"));
+            format!("{error}; fixture status: {status}")
         }
     }
 
