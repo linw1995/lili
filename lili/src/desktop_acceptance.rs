@@ -97,9 +97,9 @@ pub async fn complete_desktop_acceptance(
     state: tauri::State<'_, DesktopAcceptanceState>,
     drag_state: tauri::State<'_, crate::WindowDragState>,
     report: BrowserAcceptanceReport,
-) {
+) -> Result<(), String> {
     if state.completed.swap(true, Ordering::AcqRel) {
-        return;
+        return Ok(());
     }
     let codex_home = state.codex_home.lock().ok().and_then(|path| path.clone());
     let app_state = state.app_state.lock().ok().and_then(|state| state.clone());
@@ -148,6 +148,7 @@ pub async fn complete_desktop_acceptance(
         && transport_contract
         && absolute_position_contract;
     app.exit(if passed { 0 } else { 1 });
+    Ok(())
 }
 
 fn expected_action_id() -> &'static str {
