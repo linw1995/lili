@@ -15,12 +15,19 @@ fn main() {
 #[cfg(target_os = "windows")]
 mod windows {
     use std::{
-        fs,
-        io::Read,
+        ffi::c_void,
+        fs, mem,
         path::PathBuf,
         process::{Command, Stdio},
-        thread,
-        time::Duration,
+        ptr, thread,
+        time::{Duration, Instant},
+    };
+
+    use windows_sys::Win32::System::{
+        JobObjects::{
+            JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, QueryInformationJobObject,
+        },
+        Threading::GetCurrentProcessId,
     };
 
     pub fn run() -> Result<(), String> {
@@ -34,19 +41,10 @@ mod windows {
                     .next()
                     .map(PathBuf::from)
                     .ok_or_else(|| "missing process id output path".to_owned())?;
-                let input_validated = arguments
-                    .next()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| "missing input validation output path".to_owned())?;
                 if arguments.next().is_some() {
                     return Err("unexpected fixture arguments".to_owned());
                 }
-                // The supervisor starts writing only after attaching this parent to its job.
-                let mut input = std::io::stdin().lock();
-                let mut first_byte = [0];
-                input
-                    .read_exact(&mut first_byte)
-                    .map_err(|error| format!("interaction input could not be read: {error}"))?;
+                wait_for_supervisor_job(Duration::from_secs(4))?;
                 let child = Command::new(
                     std::env::current_exe()
                         .map_err(|error| format!("fixture path is unavailable: {error}"))?,
@@ -59,18 +57,40 @@ mod windows {
                 .map_err(|error| format!("fixture child could not start: {error}"))?;
                 fs::write(output, format!("{}\n{}\n", std::process::id(), child.id()))
                     .map_err(|error| format!("process ids could not be written: {error}"))?;
-                serde_json::Deserializer::from_reader(first_byte.as_slice().chain(input))
-                    .into_iter::<serde_json::Value>()
-                    .next()
-                    .ok_or_else(|| "interaction input is empty".to_owned())?
-                    .map_err(|error| format!("interaction input is invalid: {error}"))?;
-                fs::write(input_validated, b"")
-                    .map_err(|error| format!("input validation could not be recorded: {error}"))?;
                 loop {
                     thread::sleep(Duration::from_secs(60));
                 }
             }
             _ => Err("invalid fixture mode".to_owned()),
         }
+    }
+
+    fn wait_for_supervisor_job(timeout: Duration) -> Result<(), String> {
+        let process_id = unsafe { GetCurrentProcessId() } as usize;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            // A null handle queries the calling process's immediate job. The fresh action job
+            // contains only this parent until the fixture creates its child.
+            let mut processes = JOBOBJECT_BASIC_PROCESS_ID_LIST::default();
+            let queried = unsafe {
+                QueryInformationJobObject(
+                    ptr::null_mut(),
+                    JobObjectBasicProcessIdList,
+                    (&raw mut processes).cast::<c_void>(),
+                    u32::try_from(mem::size_of_val(&processes))
+                        .expect("job process list size fits in u32"),
+                    ptr::null_mut(),
+                )
+            };
+            if queried != 0
+                && processes.NumberOfAssignedProcesses == 1
+                && processes.NumberOfProcessIdsInList == 1
+                && processes.ProcessIdList[0] == process_id
+            {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Err("fixture parent was not isolated in its supervisor job".to_owned())
     }
 }

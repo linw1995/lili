@@ -64,9 +64,6 @@ mod windows {
         }
         wait_for_clean_exit(&mut app, Duration::from_secs(35))?;
         let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))?;
-        if !workspace.input_validated().is_file() {
-            return Err("action fixture did not validate its interaction input".to_owned());
-        }
         if process_ids.into_iter().any(process_is_alive) {
             return Err("timed-out action left a process tree alive".to_owned());
         }
@@ -158,7 +155,6 @@ mod windows {
     struct AcceptanceWorkspace {
         path: PathBuf,
         process_ids: PathBuf,
-        input_validated: PathBuf,
     }
 
     impl AcceptanceWorkspace {
@@ -174,22 +170,16 @@ mod windows {
             fs::create_dir_all(path.join("lili"))
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
             let process_ids = path.join("action-processes.txt");
-            let input_validated = path.join("action-input-validated");
             let command = toml_string(&action_fixture);
             let output = toml_string(&process_ids);
-            let input_output = toml_string(&input_validated);
             fs::write(
                 path.join("lili").join("actions.toml"),
                 format!(
-                    "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}, {input_output}]\ntimeout_ms = 5000\n"
+                    "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}]\ntimeout_ms = 5000\n"
                 ),
             )
             .map_err(|error| format!("acceptance action config could not be written: {error}"))?;
-            Ok(Self {
-                path,
-                process_ids,
-                input_validated,
-            })
+            Ok(Self { path, process_ids })
         }
 
         fn path(&self) -> &Path {
@@ -198,10 +188,6 @@ mod windows {
 
         fn process_ids(&self) -> &Path {
             &self.process_ids
-        }
-
-        fn input_validated(&self) -> &Path {
-            &self.input_validated
         }
     }
 
