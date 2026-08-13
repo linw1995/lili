@@ -134,7 +134,7 @@ def validate_manifest_schema(manifest: dict, policy: dict, plugin_root: Path) ->
         require(asset.is_file(), f"manifest asset path must be a file: {field}")
 
 
-def validate_hook_schema(path: Path) -> None:
+def validate_hook_schema(path: Path) -> dict:
     document = load_json(path)
     require(set(document).issubset({"description", "hooks"}) and "hooks" in document, "invalid hooks root")
     if "description" in document:
@@ -168,6 +168,24 @@ def validate_hook_schema(path: Path) -> None:
                     require(isinstance(handler["statusMessage"], str) and handler["statusMessage"], f"invalid status message: {event}")
                 if "async" in handler:
                     require(isinstance(handler["async"], bool), f"invalid async flag: {event}")
+    return document
+
+
+def validate_hook_references(document: dict, plugin_root: Path) -> None:
+    for event, groups in document["hooks"].items():
+        for group in groups:
+            for handler in group["hooks"]:
+                for field in ("command", "commandWindows"):
+                    if field not in handler:
+                        continue
+                    references = re.findall(
+                        r"\$\{PLUGIN_ROOT\}([/\\][^\"'\s]+)",
+                        handler[field],
+                    )
+                    require(len(references) == 1, f"{event} {field} must reference one packaged path")
+                    relative = "./" + references[0].lstrip("/\\").replace("\\", "/")
+                    target = resolve_manifest_path(plugin_root, relative, f"{event}.{field}")
+                    require(target.is_file(), f"hook command path must be a file: {event}.{field}")
 
 
 def validate_metadata(manifest: dict, submission: dict, workspace_root: Path) -> None:
@@ -290,7 +308,8 @@ def validate_workspace(workspace_root: Path) -> None:
 
     validate_structural_policy(manifest, policy)
     validate_manifest_schema(manifest, policy, plugin_root)
-    validate_hook_schema(plugin_root / manifest["hooks"][2:])
+    hooks = validate_hook_schema(plugin_root / manifest["hooks"][2:])
+    validate_hook_references(hooks, plugin_root)
     validate_metadata(manifest, submission, workspace_root)
     validate_skill(plugin_root)
     validate_package_files(plugin_root, policy, submission)

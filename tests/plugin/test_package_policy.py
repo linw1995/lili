@@ -15,8 +15,8 @@ from check_plugin_package import PolicyViolation, validate_workspace
 def valid_hooks() -> dict:
     handler = {
         "type": "command",
-        "command": "true",
-        "commandWindows": "cmd.exe /c exit 0",
+        "command": '"${PLUGIN_ROOT}/hooks/forward"',
+        "commandWindows": 'powershell.exe -File "${PLUGIN_ROOT}\\hooks\\forward.ps1"',
         "timeout": 1,
         "async": True,
     }
@@ -52,8 +52,12 @@ class PluginPackagePolicyTests(unittest.TestCase):
             )
         shutil.copytree(WORKSPACE_ROOT / "plugins", self.root / "plugins")
         hooks_path = self.root / "plugins" / "lili" / "hooks" / "hooks.json"
-        hooks_path.parent.mkdir()
+        hooks_path.parent.mkdir(exist_ok=True)
         hooks_path.write_text(json.dumps(valid_hooks()), encoding="utf-8")
+        forward = hooks_path.parent / "forward"
+        forward.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        forward.chmod(0o755)
+        (hooks_path.parent / "forward.ps1").write_text("exit 0\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
