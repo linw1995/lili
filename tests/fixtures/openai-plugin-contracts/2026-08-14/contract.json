@@ -1,0 +1,276 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "codex": {
+    "version": "0.147.0",
+    "sourceTag": "rust-v0.147.0",
+    "marketplaceCommands": [
+      "add",
+      "list",
+      "remove",
+      "upgrade"
+    ]
+  },
+  "officialSources": [
+    {
+      "id": "plugin-concepts",
+      "url": "https://developers.openai.com/plugins/concepts/plugins",
+      "covers": [
+        "universal-directory",
+        "surface-specific-capabilities",
+        "plugin-components"
+      ]
+    },
+    {
+      "id": "plugin-packaging",
+      "url": "https://developers.openai.com/plugins/build/plugins",
+      "covers": [
+        "package-layout",
+        "manifest",
+        "component-paths"
+      ]
+    },
+    {
+      "id": "codex-hooks",
+      "url": "https://learn.chatgpt.com/docs/hooks",
+      "covers": [
+        "hook-events",
+        "hook-handlers",
+        "plugin-environment",
+        "hook-trust"
+      ]
+    },
+    {
+      "id": "plugin-submission",
+      "url": "https://developers.openai.com/plugins/deploy/submission",
+      "covers": [
+        "submission-shapes",
+        "publisher-verification",
+        "review-materials",
+        "reviewer-tests"
+      ]
+    },
+    {
+      "id": "plugin-guidelines",
+      "url": "https://developers.openai.com/plugins/app-guidelines",
+      "covers": [
+        "listing-integrity",
+        "production-readiness",
+        "privacy-policy"
+      ]
+    },
+    {
+      "id": "plugin-security-privacy",
+      "url": "https://developers.openai.com/plugins/guides/security-privacy",
+      "covers": [
+        "least-privilege",
+        "consent",
+        "data-minimization",
+        "retention"
+      ]
+    }
+  ],
+  "surfaces": {
+    "sharedDirectory": true,
+    "chatgpt": {
+      "supportedLiliCapabilities": [
+        "skill"
+      ],
+      "unsupportedLiliCapabilities": [
+        "lifecycle-hooks"
+      ]
+    },
+    "codex": {
+      "supportedLiliCapabilities": [
+        "skill",
+        "lifecycle-hooks"
+      ]
+    }
+  },
+  "package": {
+    "requiredManifest": ".codex-plugin/plugin.json",
+    "manifestDirectoryPolicy": "manifest-only",
+    "documentedOptionalComponents": [
+      "skills",
+      "hooks",
+      "assets",
+      ".app.json",
+      ".mcp.json"
+    ],
+    "liliIncludedComponents": [
+      "skills",
+      "hooks",
+      "assets"
+    ],
+    "liliExcludedComponents": [
+      ".app.json",
+      ".mcp.json"
+    ],
+    "componentPathRules": {
+      "relativeToPluginRoot": true,
+      "mustStartWithDotSlash": true,
+      "mustRemainInsidePluginRoot": true,
+      "defaultHooksPath": "./hooks/hooks.json"
+    }
+  },
+  "manifest": {
+    "identityFields": [
+      "name",
+      "version",
+      "description"
+    ],
+    "publisherFields": [
+      "author",
+      "homepage",
+      "repository",
+      "license",
+      "keywords"
+    ],
+    "componentFields": [
+      "skills",
+      "mcpServers",
+      "hooks",
+      "apps"
+    ],
+    "interfaceFields": [
+      "displayName",
+      "shortDescription",
+      "longDescription",
+      "developerName",
+      "category",
+      "capabilities",
+      "websiteURL",
+      "privacyPolicyURL",
+      "termsOfServiceURL",
+      "defaultPrompt",
+      "brandColor",
+      "composerIcon",
+      "logo",
+      "screenshots"
+    ]
+  },
+  "hooks": {
+    "liliEvents": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PermissionRequest",
+      "Stop",
+      "SessionEnd"
+    ],
+    "handlerType": "command",
+    "handlerFields": [
+      "type",
+      "command",
+      "commandWindows",
+      "timeout",
+      "statusMessage",
+      "async"
+    ],
+    "execution": {
+      "matchingCommandsRunConcurrently": true,
+      "nonManagedCommandsRequireExactHashTrust": true,
+      "changedCommandsRequireNewReview": true,
+      "sessionEndMaximumTimeoutSeconds": 3
+    },
+    "pluginEnvironment": [
+      "PLUGIN_ROOT",
+      "PLUGIN_DATA"
+    ],
+    "schemaFixture": "hooks.schema.json"
+  },
+  "releaseTargets": {
+    "published": [
+      {
+        "target": "arm64-apple-darwin",
+        "operatingSystem": "macos",
+        "architecture": "arm64"
+      },
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "operatingSystem": "linux",
+        "architecture": "x86_64"
+      },
+      {
+        "target": "x86_64-pc-windows-msvc",
+        "operatingSystem": "windows",
+        "architecture": "x86_64"
+      }
+    ],
+    "evaluationOnly": [
+      {
+        "target": "aarch64-linux",
+        "reason": "No matching published desktop bundle"
+      }
+    ],
+    "source": ".github/workflows/Publish-Release.yaml"
+  },
+  "submission": {
+    "selectedShape": "skills-only",
+    "documentedShapes": [
+      "skills-only",
+      "mcp-only",
+      "mcp-and-skills"
+    ],
+    "requiredOrganizationPermission": "Apps Management: Write",
+    "publisherIdentity": {
+      "verificationRequired": true,
+      "listingMustMatchVerifiedIdentity": true
+    },
+    "requiredMaterials": [
+      "name",
+      "short-description",
+      "long-description",
+      "logo",
+      "category",
+      "website-url",
+      "support-url",
+      "privacy-policy-url",
+      "terms-of-service-url",
+      "final-skill-bundle",
+      "starter-prompts",
+      "availability",
+      "release-notes"
+    ],
+    "reviewerTests": {
+      "minimumPositive": 5,
+      "minimumNegative": 3,
+      "positiveFields": [
+        "prompt",
+        "expected-tool-skill-or-workflow",
+        "expected-result-shape",
+        "fixture-data"
+      ],
+      "negativeFields": [
+        "prompt-or-scenario",
+        "expected-refusal-clarification-or-safe-fallback",
+        "reason-action-must-not-complete"
+      ]
+    }
+  },
+  "reviewPolicies": {
+    "mustBeProductionComplete": true,
+    "mustNotImplyOpenAIEndorsement": true,
+    "mustUseLeastPrivilege": true,
+    "mustObtainExplicitConsentForSensitiveActions": true,
+    "mustMinimizeCollectedAndReturnedData": true,
+    "privacyPolicyMustCover": [
+      "data-categories",
+      "purposes",
+      "recipients",
+      "retention-timelines",
+      "user-controls"
+    ]
+  },
+  "preflightUnknowns": [
+    {
+      "id": "skills-only-with-codex-hooks",
+      "question": "Does the submission scanner accept a skills-only listing whose package also contains Codex-only hooks?",
+      "resolveInTask": "1.2"
+    },
+    {
+      "id": "packaged-native-forwarders",
+      "question": "Does the submission scanner accept platform-specific native forwarders inside the plugin archive?",
+      "resolveInTask": "1.2"
+    }
+  ]
+}

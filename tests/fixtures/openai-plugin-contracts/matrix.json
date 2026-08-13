@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "currentReview": "2026-08-14",
+  "reviews": [
+    {
+      "reviewedAt": "2026-08-14",
+      "codexVersion": "0.147.0",
+      "codexSourceTag": "rust-v0.147.0",
+      "directory": "2026-08-14",
+      "fixtures": {
+        "contract": "contract.json",
+        "hooksSchema": "hooks.schema.json"
+      }
+    }
+  ]
+}
