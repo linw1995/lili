@@ -10,7 +10,7 @@
 - [x] 2.1 Add `plugins/lili/.codex-plugin/plugin.json` with release-derived versioning, confined component paths, final interface metadata, legal links, and production asset references.
 - [x] 2.2 Add a minimal `lili-setup` skill that handles setup, compatibility, trust, status, migration, and troubleshooting without rewriting configuration or accessing credentials and private session data.
 - [x] 2.3 Add production icons and logos, deterministic asset validation, reviewed license provenance, and no screenshots for the UI-less plugin.
-- [ ] 2.4 Add schema and policy checks that reject path escapes, missing files, placeholders, metadata drift, endorsement claims, undeclared binaries, and accidental MCP, UI, authentication, or network configuration.
+- [x] 2.4 Add schema and policy checks that reject path escapes, missing files, placeholders, metadata drift, endorsement claims, undeclared binaries, and accidental MCP, UI, authentication, or network configuration.
 
 ## 3. Marketplace Lifecycle Hooks
 

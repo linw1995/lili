@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "allowedManifestFields": [
+    "name",
+    "version",
+    "description",
+    "author",
+    "homepage",
+    "repository",
+    "license",
+    "keywords",
+    "skills",
+    "hooks",
+    "interface"
+  ],
+  "allowedInterfaceFields": [
+    "displayName",
+    "shortDescription",
+    "longDescription",
+    "developerName",
+    "category",
+    "capabilities",
+    "websiteURL",
+    "supportURL",
+    "privacyPolicyURL",
+    "termsOfServiceURL",
+    "defaultPrompt",
+    "brandColor",
+    "composerIcon",
+    "logo"
+  ],
+  "allowedPackageFiles": [
+    ".codex-plugin/plugin.json",
+    "assets/composer-icon.png",
+    "assets/logo.png",
+    "skills/lili-setup/SKILL.md",
+    "skills/lili-setup/agents/openai.yaml",
+    "hooks/hooks.json",
+    "hooks/forward",
+    "hooks/forward.ps1",
+    "bin/arm64-apple-darwin/lili-hook",
+    "bin/x86_64-unknown-linux-gnu/lili-hook",
+    "bin/x86_64-pc-windows-msvc/lili-hook.exe"
+  ],
+  "declaredExecutables": [
+    "hooks/forward",
+    "hooks/forward.ps1",
+    "bin/arm64-apple-darwin/lili-hook",
+    "bin/x86_64-unknown-linux-gnu/lili-hook",
+    "bin/x86_64-pc-windows-msvc/lili-hook.exe"
+  ],
+  "forbiddenManifestKeys": [
+    "mcpServers",
+    "apps",
+    "screenshots",
+    "authentication",
+    "auth",
+    "oauth",
+    "network",
+    "networkAccess",
+    "remoteEndpoints"
+  ],
+  "forbiddenPathNames": [
+    ".mcp.json",
+    ".app.json",
+    "auth.json",
+    "oauth.json"
+  ],
+  "forbiddenDirectoryNames": [
+    "apps",
+    "mcp",
+    "mcp-servers",
+    "ui",
+    "web",
+    "auth",
+    "network"
+  ],
+  "allowedNetworkMetadataFields": [
+    "author.url",
+    "homepage",
+    "repository",
+    "interface.websiteURL",
+    "interface.supportURL",
+    "interface.privacyPolicyURL",
+    "interface.termsOfServiceURL"
+  ],
+  "placeholderTokens": [
+    "TODO",
+    "TBD",
+    "CHANGEME",
+    "REPLACE_ME",
+    "placeholder",
+    "example.com",
+    "lorem ipsum"
+  ]
+}
