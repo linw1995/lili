@@ -595,8 +595,8 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
 }
 
 #[cfg(all(test, windows))]
-#[test]
-fn owner_rights_named_pipe_is_private() {
+#[tokio::test]
+async fn owner_rights_named_pipe_is_private() {
     let runtime_dir = std::env::temp_dir().join(format!(
         "lili-forwarding-windows-test-{}",
         std::process::id()
