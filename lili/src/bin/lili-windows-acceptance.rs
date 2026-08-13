@@ -124,6 +124,7 @@ mod windows {
         Command::new(binary)
             .arg("--desktop-acceptance")
             .env("CODEX_HOME", codex_home)
+            .env("RUST_LOG", "lili=info")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()

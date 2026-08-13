@@ -6,6 +6,8 @@ use std::{
     },
 };
 
+use lili_actions::ActionExecutionOutcome;
+use lili_app_state::AppState;
 use serde::Deserialize;
 use tauri::{AppHandle, WebviewWindow};
 
@@ -32,6 +34,7 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     const feedback = document.querySelector('.action-feedback[data-action-result="failure"]');
     const actionTimedOut = feedback?.textContent?.includes('Action timed out') === true;
+    const feedbackActionId = feedback?.getAttribute('data-action-id') ?? null;
     if (imageReady && transparent && activated && actionTimedOut) {
       window.clearInterval(poll);
       finish({
@@ -39,6 +42,7 @@ window.addEventListener('DOMContentLoaded', () => {
         pinnedContent: imageReady,
         hookDelivered: activated,
         actionTimedOut,
+        feedbackActionId,
       });
       return;
     }
@@ -49,6 +53,7 @@ window.addEventListener('DOMContentLoaded', () => {
         pinnedContent: imageReady,
         hookDelivered: activated,
         actionTimedOut,
+        feedbackActionId,
       });
     }
   }, 50);
@@ -62,25 +67,31 @@ pub struct BrowserAcceptanceReport {
     pinned_content: bool,
     hook_delivered: bool,
     action_timed_out: bool,
+    feedback_action_id: Option<String>,
 }
 
 #[derive(Default)]
 pub struct DesktopAcceptanceState {
     codex_home: Mutex<Option<PathBuf>>,
+    app_state: Mutex<Option<AppState>>,
     completed: AtomicBool,
 }
 
 impl DesktopAcceptanceState {
-    pub fn configure(&self, codex_home: Option<PathBuf>) {
+    pub fn configure(&self, codex_home: Option<PathBuf>, app_state: AppState) {
         *self
             .codex_home
             .lock()
             .expect("desktop acceptance state must not be poisoned") = codex_home;
+        *self
+            .app_state
+            .lock()
+            .expect("desktop acceptance state must not be poisoned") = Some(app_state);
     }
 }
 
 #[tauri::command]
-pub fn complete_desktop_acceptance(
+pub async fn complete_desktop_acceptance(
     app: AppHandle,
     window: WebviewWindow,
     state: tauri::State<'_, DesktopAcceptanceState>,
@@ -91,6 +102,22 @@ pub fn complete_desktop_acceptance(
         return;
     }
     let codex_home = state.codex_home.lock().ok().and_then(|path| path.clone());
+    let app_state = state.app_state.lock().ok().and_then(|state| state.clone());
+    let action_audit = match app_state {
+        Some(state) => state.action_audit().await,
+        None => Vec::new(),
+    };
+    let expected_action_id = expected_action_id();
+    let action_contract = action_audit.as_slice().first().is_some_and(|entry| {
+        action_audit.len() == 1
+            && entry.action_id == expected_action_id
+            && entry.outcome == ActionExecutionOutcome::TimedOut
+    });
+    eprintln!(
+        "desktop acceptance action feedback={:?} audit={}",
+        report.feedback_action_id,
+        serde_json::to_string(&action_audit).unwrap_or_else(|_| "unavailable".to_owned())
+    );
     let placement = crate::current_window_placement(&window);
     let window_contract = window.is_always_on_top().is_ok_and(|enabled| enabled)
         && window.is_decorated().is_ok_and(|decorated| !decorated)
@@ -112,6 +139,8 @@ pub fn complete_desktop_acceptance(
         && report.pinned_content
         && report.hook_delivered
         && report.action_timed_out
+        && report.feedback_action_id.as_deref() == Some(expected_action_id)
+        && action_contract
         && window_contract
         && dpi_contract
         && tray_contract
@@ -119,6 +148,16 @@ pub fn complete_desktop_acceptance(
         && transport_contract
         && absolute_position_contract;
     app.exit(if passed { 0 } else { 1 });
+}
+
+fn expected_action_id() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows-tree-timeout"
+    } else if cfg!(target_os = "macos") {
+        "macos-timeout"
+    } else {
+        "linux-timeout"
+    }
 }
 
 fn absolute_position_contract(window: &WebviewWindow, state: &crate::WindowDragState) -> bool {
