@@ -526,13 +526,13 @@ async fn platform_connect(
 
 #[cfg(windows)]
 pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool {
-    use std::{ffi::c_void, mem, ptr};
+    use std::{ffi::c_void, mem, os::windows::io::AsRawHandle, ptr};
 
     use windows_sys::Win32::{
         Foundation::{GENERIC_ALL, LocalFree},
         Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-            Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
+            Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT},
             DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, IsWellKnownSid,
             OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinCreatorOwnerRightsSid,
         },
@@ -542,17 +542,16 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
     let Some(name) = endpoint.named_pipe() else {
         return false;
     };
-    let name = name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let Ok(pipe) = fs::OpenOptions::new().read(true).write(true).open(name) else {
+        return false;
+    };
     let mut owner: PSID = ptr::null_mut();
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let status = unsafe {
-        GetNamedSecurityInfoW(
-            name.as_ptr(),
-            SE_FILE_OBJECT,
+        GetSecurityInfo(
+            pipe.as_raw_handle(),
+            SE_KERNEL_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
             ptr::null_mut(),
