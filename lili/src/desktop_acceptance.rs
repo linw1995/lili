@@ -27,8 +27,9 @@ window.addEventListener('DOMContentLoaded', () => {
       && pet.closest('.pet-sprite')?.getAttribute('data-hit-region') === 'pet';
     const transparent = getComputedStyle(document.body).backgroundColor
       .replaceAll(' ', '') === 'rgba(0,0,0,0)';
+    const hydrated = document.querySelector('#lili-app[data-hydrated="true"]') !== null;
     const notification = document.querySelector('.notification-activate');
-    if (!activated && notification instanceof HTMLButtonElement) {
+    if (!activated && hydrated && notification instanceof HTMLButtonElement) {
       activated = true;
       notification.click();
     }
@@ -40,6 +41,7 @@ window.addEventListener('DOMContentLoaded', () => {
       finish({
         transparent,
         pinnedContent: imageReady,
+        hydrated,
         hookDelivered: activated,
         actionTimedOut,
         feedbackActionId,
@@ -51,6 +53,7 @@ window.addEventListener('DOMContentLoaded', () => {
       finish({
         transparent,
         pinnedContent: imageReady,
+        hydrated,
         hookDelivered: activated,
         actionTimedOut,
         feedbackActionId,
@@ -65,6 +68,7 @@ window.addEventListener('DOMContentLoaded', () => {
 pub struct BrowserAcceptanceReport {
     transparent: bool,
     pinned_content: bool,
+    hydrated: bool,
     hook_delivered: bool,
     action_timed_out: bool,
     feedback_action_id: Option<String>,
@@ -114,8 +118,7 @@ pub async fn complete_desktop_acceptance(
             && entry.outcome == ActionExecutionOutcome::TimedOut
     });
     eprintln!(
-        "desktop acceptance action feedback={:?} audit={}",
-        report.feedback_action_id,
+        "desktop acceptance browser={report:?} audit={}",
         serde_json::to_string(&action_audit).unwrap_or_else(|_| "unavailable".to_owned())
     );
     let placement = crate::current_window_placement(&window);
@@ -137,6 +140,7 @@ pub async fn complete_desktop_acceptance(
         target_os = "linux"
     )) && report.transparent
         && report.pinned_content
+        && report.hydrated
         && report.hook_delivered
         && report.action_timed_out
         && report.feedback_action_id.as_deref() == Some(expected_action_id)
@@ -147,7 +151,19 @@ pub async fn complete_desktop_acceptance(
         && visibility_contract
         && transport_contract
         && absolute_position_contract;
-    app.exit(if passed { 0 } else { 1 });
+    let result_recorded = match codex_home {
+        Some(codex_home) => std::fs::write(
+            codex_home.join("lili").join("desktop-acceptance-result"),
+            if passed { "passed\n" } else { "failed\n" },
+        )
+        .inspect_err(|error| eprintln!("desktop acceptance result could not be recorded: {error}"))
+        .is_ok(),
+        None => {
+            eprintln!("desktop acceptance result could not be recorded: CODEX_HOME is unavailable");
+            false
+        }
+    };
+    app.exit(if passed && result_recorded { 0 } else { 1 });
     Ok(())
 }
 
