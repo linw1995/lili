@@ -122,18 +122,26 @@ pub async fn complete_desktop_acceptance(
         serde_json::to_string(&action_audit).unwrap_or_else(|_| "unavailable".to_owned())
     );
     let placement = crate::current_window_placement(&window);
-    let window_contract = window.is_always_on_top().is_ok_and(|enabled| enabled)
-        && window.is_decorated().is_ok_and(|decorated| !decorated)
-        && placement.is_some()
-        && native_window_contract(&window);
+    let always_on_top_contract = window.is_always_on_top().is_ok_and(|enabled| enabled);
+    let undecorated_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
+    let placement_contract = placement.is_some();
+    let native_window_contract = native_window_contract(&window);
+    let window_contract = always_on_top_contract
+        && undecorated_contract
+        && placement_contract
+        && native_window_contract;
     let dpi_contract = placement.is_some_and(|placement| placement.scale_milli() >= 500);
     let tray_contract = app.tray_by_id("lili-tray").is_some();
-    let visibility_contract = window.hide().is_ok()
-        && window.is_visible().is_ok_and(|visible| !visible)
-        && window.show().is_ok()
-        && window.is_visible().is_ok_and(|visible| visible);
+    let hide_contract = window.hide().is_ok();
+    let hidden_contract = hide_contract && window.is_visible().is_ok_and(|visible| !visible);
+    let show_contract = hidden_contract && window.show().is_ok();
+    let shown_contract = show_contract && window.is_visible().is_ok_and(|visible| visible);
+    let visibility_contract = hide_contract && hidden_contract && show_contract && shown_contract;
     let transport_contract = codex_home.as_deref().is_some_and(private_transport_is_live);
     let absolute_position_contract = absolute_position_contract(&window, &drag_state);
+    eprintln!(
+        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={native_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract}"
+    );
     let passed = cfg!(any(
         target_os = "macos",
         target_os = "windows",

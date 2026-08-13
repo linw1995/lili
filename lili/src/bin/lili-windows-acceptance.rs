@@ -65,11 +65,6 @@ mod windows {
             return Err("hook delivery did not complete silently".to_owned());
         }
         wait_for_clean_exit(&mut app, Duration::from_secs(35))?;
-        let acceptance_result = fs::read_to_string(workspace.acceptance_result())
-            .map_err(|error| format!("desktop acceptance result is unavailable: {error}"))?;
-        if acceptance_result != "passed\n" {
-            return Err("desktop acceptance contracts did not pass".to_owned());
-        }
         let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))?;
         if process_ids.len() != 2 {
             return Err(
@@ -78,6 +73,11 @@ mod windows {
         }
         if process_ids.into_iter().any(process_is_alive) {
             return Err("timed-out action left a process tree alive".to_owned());
+        }
+        let acceptance_result = fs::read_to_string(workspace.acceptance_result())
+            .map_err(|error| format!("desktop acceptance result is unavailable: {error}"))?;
+        if acceptance_result != "passed\n" {
+            return Err("desktop acceptance contracts did not pass".to_owned());
         }
         println!("{{\"windowsAcceptance\":\"passed\"}}");
         Ok(())
