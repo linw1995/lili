@@ -102,7 +102,7 @@ mod windows {
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), ToString::to_string)
             );
-            if last_observation.as_deref() != Some(&observation) {
+            if last_observation.as_ref() != Some(&observation) {
                 record_status(status, &observation)?;
                 last_observation = Some(observation);
             }
