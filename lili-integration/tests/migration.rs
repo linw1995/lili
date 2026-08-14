@@ -84,6 +84,7 @@ fn plugin_diagnostics(legacy_active: bool, version: &str) -> CodexAdapterDiagnos
         event_type: SessionEventKind::TurnCompleted,
         occurred_at_ms: 42,
         surface: CodexIntegrationSurface::Stop,
+        plugin_id: Some("lili@test-marketplace".to_owned()),
         plugin_version: Some(version.to_owned()),
     });
     diagnostics
@@ -309,7 +310,7 @@ fn concurrent_legacy_and_plugin_events_deduplicate_per_session() {
         );
         let legacy = normalize_lifecycle_json(payload.as_bytes(), index as u64 + 1).unwrap();
         let mut plugin = legacy.clone();
-        assert!(mark_plugin_hook_event(&mut plugin));
+        assert!(mark_plugin_hook_event(&mut plugin, "lili@test-marketplace"));
         for event in [legacy, plugin] {
             let reducer = reducer.clone();
             let applied = applied.clone();
@@ -349,7 +350,7 @@ fn repeated_permission_invocations_remain_distinct_during_overlap() {
         );
         let legacy = normalize_lifecycle_json(payload.as_bytes(), index as u64 + 1).unwrap();
         let mut plugin = legacy.clone();
-        assert!(mark_plugin_hook_event(&mut plugin));
+        assert!(mark_plugin_hook_event(&mut plugin, "lili@test-marketplace"));
         for event in [legacy, plugin] {
             match reducer.reduce(event) {
                 ReductionOutcome::Applied { .. } => applied += 1,

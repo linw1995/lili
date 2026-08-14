@@ -212,6 +212,10 @@ fn plan_hooks_uninstall(
         }
         return Ok((FileMutation::Unchanged, 0, complete));
     };
+    if !marker_layout_is_removable(hooks) {
+        conflicts.push("Lili hook markers could not be structurally removed".to_owned());
+        return Ok((FileMutation::Unchanged, 0, false));
+    }
     let managed_hook_changed = hooks
         .values()
         .filter_map(serde_json::Value::as_array)
@@ -271,6 +275,50 @@ fn is_lili_handler(handler: &serde_json::Value) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|command| command.contains(LILI_INTEGRATION_ID))
     })
+}
+
+fn marker_layout_is_removable(hooks: &serde_json::Map<String, serde_json::Value>) -> bool {
+    hooks.iter().all(|(event, groups)| {
+        if event.contains(LILI_INTEGRATION_ID) {
+            return false;
+        }
+        if !value_contains_marker(groups) {
+            return true;
+        }
+        let Some(groups) = groups.as_array() else {
+            return false;
+        };
+        groups.iter().all(|group| {
+            if !value_contains_marker(group) {
+                return true;
+            }
+            let Some(group) = group.as_object() else {
+                return false;
+            };
+            group.iter().all(|(field, value)| {
+                if field == "hooks" {
+                    value.as_array().is_some_and(|handlers| {
+                        handlers.iter().all(|handler| {
+                            !value_contains_marker(handler) || is_lili_handler(handler)
+                        })
+                    })
+                } else {
+                    !field.contains(LILI_INTEGRATION_ID) && !value_contains_marker(value)
+                }
+            })
+        })
+    })
+}
+
+fn value_contains_marker(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.contains(LILI_INTEGRATION_ID),
+        serde_json::Value::Array(values) => values.iter().any(value_contains_marker),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.contains(LILI_INTEGRATION_ID) || value_contains_marker(value)),
+        _ => false,
+    }
 }
 
 fn matches_hook_provenance(
@@ -542,6 +590,33 @@ mod tests {
             preview.conflicts,
             vec!["Lili hooks changed after installation and were left unchanged"]
         );
+    }
+
+    #[test]
+    fn malformed_marker_bearing_hook_group_blocks_uninstall_without_mutation() {
+        let temp = TempDir::new();
+        install_exclusive(&temp, 42);
+        let hooks_path = temp.0.join(HOOKS_FILE_NAME);
+        let mut hooks: serde_json::Value =
+            serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        hooks["hooks"]["SessionStart"] = serde_json::json!([{
+            "hooks": format!("orphan {LILI_INTEGRATION_ID}")
+        }]);
+        let malformed = serde_json::to_vec_pretty(&hooks).unwrap();
+        fs::write(&hooks_path, &malformed).unwrap();
+
+        let preview = preview_uninstall(&temp.0).unwrap();
+        assert!(!preview.complete);
+        assert_eq!(preview.removed_hook_handlers, 0);
+        assert_eq!(
+            preview.conflicts,
+            vec!["Lili hook markers could not be structurally removed"]
+        );
+
+        let outcome = uninstall(&temp.0).unwrap();
+        assert!(!outcome.complete);
+        assert_eq!(fs::read(&hooks_path).unwrap(), malformed);
+        assert!(provenance_path(&temp.0).exists());
     }
 
     #[test]

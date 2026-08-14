@@ -3,14 +3,17 @@ use std::ffi::OsString;
 use lili_integration::{
     PluginMigrationAssessment, PluginMigrationEvidence, assess_plugin_migration,
     build_coexistence_install_plan, build_install_plan, cleanup_legacy_after_verification, inspect,
-    inspect_plugin, install, load_plan, load_plugin_migration_assessment, plugin_hooks_are_trusted,
-    save_plugin_migration_verification, uninstall,
+    inspect_plugin, install, install_plugin, load_plan, load_plugin_migration_assessment,
+    plugin_hooks_are_trusted, save_plugin_migration_verification, uninstall,
 };
 use lili_pet::resolve_codex_home;
 use lili_session::{
-    ForwardingAckDisposition, ForwardingCredentialStore, ProviderCapabilitiesInputV1,
-    ProviderInputV1, deliver_forwarding_message, normalize_provider_input,
+    DESKTOP_VERSION, ForwardingAckDisposition, ForwardingCredentialStore,
+    ProviderCapabilitiesInputV1, ProviderInputV1, deliver_forwarding_message,
+    normalize_provider_input,
 };
+
+const SYNTHETIC_DELIVERY_DEADLINE: std::time::Duration = std::time::Duration::from_millis(750);
 
 pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     let command = arguments.first()?;
@@ -38,7 +41,7 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     let coexist = arguments.len() == 4 && legacy_plan_arguments(arguments, "--coexist");
     if !(arguments.len() == 2 && subcommand == Some("inspect")) && !legacy_plan && !coexist {
         eprintln!(
-            "usage: lili integrate <inspect|assess --plugin <plugin@marketplace>|plan --legacy-fallback [--coexist]|install --legacy-fallback --plan <path>|cleanup --assessment <path>|uninstall>"
+            "usage: lili integrate <inspect|assess --plugin <plugin@marketplace>|plan --legacy-fallback [--coexist]|install <--assessment <path>|--legacy-fallback --plan <path>>|cleanup --assessment <path>|uninstall>"
         );
         return Some(2);
     }
@@ -155,7 +158,7 @@ fn collect_runtime_verification(
             .last_accepted_plugin_event
             .is_some()
     {
-        verify_synthetic_overlap(codex_home)
+        verify_synthetic_overlap(codex_home, selector)
     } else {
         (false, false, String::new(), None)
     };
@@ -197,6 +200,7 @@ fn write_assessment(assessment: &PluginMigrationAssessment) -> u8 {
 
 fn verify_synthetic_overlap(
     codex_home: &std::path::Path,
+    plugin_selector: &str,
 ) -> (
     bool,
     bool,
@@ -232,7 +236,8 @@ fn verify_synthetic_overlap(
     let Ok(legacy_event) = normalize_provider_input(input("hook:Stop")) else {
         return (false, false, String::new(), None);
     };
-    let Ok(plugin_event) = normalize_provider_input(input("plugin:verification:hook:Stop")) else {
+    let plugin_source = format!("plugin:{plugin_selector}:{DESKTOP_VERSION}:hook:Stop");
+    let Ok(plugin_event) = normalize_provider_input(input(&plugin_source)) else {
         return (false, false, String::new(), None);
     };
     let Ok(legacy_message) = credentials.sign(legacy_event, now_ms) else {
@@ -242,16 +247,24 @@ fn verify_synthetic_overlap(
         return (false, false, String::new(), None);
     };
     let delivered = tauri::async_runtime::block_on(async {
-        let first = deliver_forwarding_message(&record, &legacy_message).await;
-        let second = deliver_forwarding_message(&record, &plugin_message).await;
+        let first = tokio::time::timeout(
+            SYNTHETIC_DELIVERY_DEADLINE,
+            deliver_forwarding_message(&record, &legacy_message),
+        )
+        .await;
+        let second = tokio::time::timeout(
+            SYNTHETIC_DELIVERY_DEADLINE,
+            deliver_forwarding_message(&record, &plugin_message),
+        )
+        .await;
         (first, second)
     });
-    let synthetic_delivery_verified = delivered
-        .0
-        .is_ok_and(|ack| ack.disposition() == ForwardingAckDisposition::Accepted);
-    let overlap_deduplication_verified = delivered
-        .1
-        .is_ok_and(|ack| ack.disposition() == ForwardingAckDisposition::Duplicate);
+    let synthetic_delivery_verified = delivered.0.is_ok_and(|result| {
+        result.is_ok_and(|ack| ack.disposition() == ForwardingAckDisposition::Accepted)
+    });
+    let overlap_deduplication_verified = delivered.1.is_ok_and(|result| {
+        result.is_ok_and(|ack| ack.disposition() == ForwardingAckDisposition::Duplicate)
+    });
     (
         synthetic_delivery_verified,
         synthetic_delivery_verified && overlap_deduplication_verified,
@@ -335,12 +348,21 @@ fn run_uninstall(arguments: &[OsString]) -> u8 {
 }
 
 fn run_install(arguments: &[OsString]) -> u8 {
+    if let [_, _, flag, path] = arguments
+        && flag == "--assessment"
+    {
+        return run_plugin_install(std::path::Path::new(path));
+    }
     let [_, _, legacy, flag, path] = arguments else {
-        eprintln!("usage: lili integrate install --legacy-fallback --plan <path>");
+        eprintln!(
+            "usage: lili integrate install <--assessment <path>|--legacy-fallback --plan <path>>"
+        );
         return 2;
     };
     if legacy != "--legacy-fallback" || flag != "--plan" {
-        eprintln!("usage: lili integrate install --legacy-fallback --plan <path>");
+        eprintln!(
+            "usage: lili integrate install <--assessment <path>|--legacy-fallback --plan <path>>"
+        );
         return 2;
     }
     let plan = match load_plan(std::path::Path::new(path)) {
@@ -360,6 +382,38 @@ fn run_install(arguments: &[OsString]) -> u8 {
         },
         Err(error) => {
             eprintln!("integration install failed: {error}");
+            5
+        }
+    }
+}
+
+fn run_plugin_install(path: &std::path::Path) -> u8 {
+    let assessment = match load_plugin_migration_assessment(path) {
+        Ok(assessment) => assessment,
+        Err(error) => {
+            eprintln!("plugin migration assessment could not be loaded: {error}");
+            return 3;
+        }
+    };
+    let codex_home = match resolve_codex_home() {
+        Ok(codex_home) => codex_home,
+        Err(error) => {
+            eprintln!("Codex home could not be resolved: {error}");
+            return 3;
+        }
+    };
+    match install_plugin(&codex_home, &assessment) {
+        Ok(inspection) => {
+            match serde_json::to_writer_pretty(std::io::stdout().lock(), &inspection) {
+                Ok(()) => {
+                    println!();
+                    0
+                }
+                Err(_) => 4,
+            }
+        }
+        Err(error) => {
+            eprintln!("plugin migration install failed: {error}");
             5
         }
     }
@@ -426,6 +480,17 @@ mod tests {
                 "plan.json".into(),
             ]),
             2
+        );
+        assert_eq!(
+            run_install(&[
+                "integrate".into(),
+                "install".into(),
+                "--assessment".into(),
+                std::env::temp_dir()
+                    .join("lili-missing-plugin-assessment.json")
+                    .into_os_string(),
+            ]),
+            3
         );
         assert_eq!(
             run_install(&[
@@ -521,7 +586,7 @@ mod tests {
         });
 
         let (synthetic, overlap, event_id, returned_credentials) =
-            verify_synthetic_overlap(&temp.0);
+            verify_synthetic_overlap(&temp.0, "lili@test-marketplace");
         tauri::async_runtime::block_on(server).unwrap();
         assert!(synthetic);
         assert!(overlap);
@@ -530,5 +595,21 @@ mod tests {
             returned_credentials.unwrap().instance_id(),
             expected_instance_id
         );
+    }
+
+    #[test]
+    fn synthetic_overlap_times_out_against_an_unresponsive_runtime() {
+        let temp = TempDir::new();
+        let runtime_dir = temp.0.join("lili/runtime");
+        let _endpoint = tauri::async_runtime::block_on(async {
+            BoundForwardingEndpoint::bind(&runtime_dir).unwrap()
+        });
+        let started = std::time::Instant::now();
+
+        let (synthetic, overlap, _, _) = verify_synthetic_overlap(&temp.0, "lili@test-marketplace");
+
+        assert!(!synthetic);
+        assert!(!overlap);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 }

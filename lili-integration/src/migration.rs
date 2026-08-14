@@ -165,7 +165,7 @@ pub fn assess_plugin_migration(
             "Preserve the current integration and resolve every reported blocker.".to_owned(),
         ],
         PluginMigrationState::InstallReady => vec![
-            "Install the plugin with the exact reviewed command, keeping legacy hooks active."
+            "Save this assessment, then install through the displayed validated helper while keeping legacy hooks active."
                 .to_owned(),
         ],
         PluginMigrationState::AwaitingHookReview => vec![
@@ -194,11 +194,11 @@ pub fn assess_plugin_migration(
         verified_plugin_version,
         verified_plugin_event_id,
         install_command: vec![
-            "codex".to_owned(),
-            "plugin".to_owned(),
-            "add".to_owned(),
-            plugin_selector.to_owned(),
-            "--json".to_owned(),
+            "lili".to_owned(),
+            "integrate".to_owned(),
+            "install".to_owned(),
+            "--assessment".to_owned(),
+            PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME.to_owned(),
         ],
         rollback_command: vec![
             "codex".to_owned(),
@@ -260,7 +260,8 @@ fn verified_plugin_event(
         .last_accepted_plugin_event
         .as_ref()
         .filter(|event| {
-            event.plugin_version.is_some()
+            event.plugin_id.as_ref() == diagnostics.plugin.plugin_id.as_ref()
+                && event.plugin_version.is_some()
                 && event.plugin_version.as_ref() == diagnostics.plugin.plugin_version.as_ref()
         })
 }
@@ -829,6 +830,7 @@ mod tests {
             event_type: SessionEventKind::TurnCompleted,
             occurred_at_ms: 42,
             surface: lili_session::CodexIntegrationSurface::Stop,
+            plugin_id: Some("lili@test-marketplace".to_owned()),
             plugin_version: Some(DESKTOP_VERSION.to_owned()),
         });
         diagnostics
@@ -852,6 +854,16 @@ mod tests {
             &evidence,
         );
         assert_eq!(install.state, PluginMigrationState::InstallReady);
+        assert_eq!(
+            install.install_command,
+            vec![
+                "lili".to_owned(),
+                "integrate".to_owned(),
+                "install".to_owned(),
+                "--assessment".to_owned(),
+                PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME.to_owned(),
+            ]
+        );
 
         let diagnostics = accepted_plugin_diagnostics();
         let awaiting = assess_plugin_migration(

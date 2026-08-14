@@ -122,7 +122,7 @@ impl ForwardingCredentialStore {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(ForwardingTransportError::UnsafeCredentialFile);
         }
-        validate_private_file(&metadata)?;
+        validate_private_file(&self.path, &metadata)?;
         if metadata.len() > MAX_CREDENTIAL_FILE_BYTES {
             return Err(ForwardingTransportError::CredentialFileTooLarge);
         }
@@ -195,7 +195,7 @@ fn read_private_codex_evidence(path: &Path) -> Result<Vec<u8>, ForwardingTranspo
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(ForwardingTransportError::UnsafeEvidenceFile);
     }
-    validate_private_file(&metadata)?;
+    validate_private_file(path, &metadata)?;
     if metadata.len() > MAX_CODEX_EVIDENCE_FILE_BYTES {
         return Err(ForwardingTransportError::EvidenceFileTooLarge);
     }
@@ -379,16 +379,20 @@ fn configure_private_directory(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn configure_private_directory(
-    _directory: &Path,
+    directory: &Path,
     _metadata: &fs::Metadata,
 ) -> Result<(), ForwardingTransportError> {
+    crate::windows_acl::enforce_owner_only(directory, true)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn validate_private_file(metadata: &fs::Metadata) -> Result<(), ForwardingTransportError> {
+fn validate_private_file(
+    _path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), ForwardingTransportError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     if metadata.uid() != rustix::process::geteuid().as_raw()
@@ -399,8 +403,12 @@ fn validate_private_file(metadata: &fs::Metadata) -> Result<(), ForwardingTransp
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_private_file(_metadata: &fs::Metadata) -> Result<(), ForwardingTransportError> {
+#[cfg(windows)]
+fn validate_private_file(
+    path: &Path,
+    _metadata: &fs::Metadata,
+) -> Result<(), ForwardingTransportError> {
+    crate::windows_acl::enforce_owner_only(path, false)?;
     Ok(())
 }
 

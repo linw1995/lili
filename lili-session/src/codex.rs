@@ -96,6 +96,8 @@ pub struct LastAcceptedCodexEvent {
     pub event_type: crate::SessionEventKind,
     pub occurred_at_ms: u64,
     pub surface: CodexIntegrationSurface,
+    #[serde(default)]
+    pub plugin_id: Option<String>,
     pub plugin_version: Option<String>,
 }
 
@@ -213,6 +215,9 @@ impl CodexPluginDiagnostics {
     }
 
     fn record_plugin_event(&mut self, event: LastAcceptedCodexEvent) {
+        if self.plugin_id.as_ref() != event.plugin_id.as_ref() {
+            return;
+        }
         let observed_version = event.plugin_version.as_deref();
         if let (Some(installed), Some(observed)) =
             (self.plugin_version.as_deref(), observed_version)
@@ -305,6 +310,7 @@ impl CodexAdapterDiagnostics {
                 .plugin_id
                 .as_ref()
                 .is_some_and(|plugin_id| discovered.plugin.plugin_id.as_ref() == Some(plugin_id))
+            && accepted.plugin_id.as_ref() == discovered.plugin.plugin_id.as_ref()
             && accepted.plugin_version.as_ref() == discovered.plugin.plugin_version.as_ref()
         {
             discovered.plugin.record_plugin_event(accepted);
@@ -332,6 +338,8 @@ impl CodexAdapterDiagnostics {
             event_type: event.event_type,
             occurred_at_ms: event.occurred_at_ms,
             surface,
+            plugin_id: plugin_identity_from_source(&event.source_discriminator)
+                .map(|(plugin_id, _)| plugin_id.to_owned()),
             plugin_version: plugin_version_from_source(&event.source_discriminator)
                 .map(str::to_owned),
         };
@@ -393,18 +401,21 @@ pub fn normalize_hook_json(
     normalize_json(payload)
 }
 
-pub fn mark_plugin_hook_event(event: &mut NormalizedSessionEvent) -> bool {
+pub fn mark_plugin_hook_event(event: &mut NormalizedSessionEvent, plugin_id: &str) -> bool {
     if event.provider.as_str() != "codex" || !event.source_discriminator.starts_with("hook:") {
         return false;
     }
-    let prefix = format!("{PLUGIN_SOURCE_PREFIX}{DESKTOP_VERSION}:");
-    let remaining = MAX_SOURCE_DISCRIMINATOR_CHARS.saturating_sub(prefix.chars().count());
-    let source = event
-        .source_discriminator
-        .chars()
-        .take(remaining)
-        .collect::<String>();
-    event.source_discriminator = format!("{prefix}{source}");
+    if bounded_plugin_id(plugin_id).is_none() {
+        return false;
+    }
+    let source = format!(
+        "{PLUGIN_SOURCE_PREFIX}{plugin_id}:{DESKTOP_VERSION}:{}",
+        event.source_discriminator
+    );
+    if source.chars().count() > MAX_SOURCE_DISCRIMINATOR_CHARS {
+        return false;
+    }
+    event.source_discriminator = source;
     true
 }
 
@@ -613,8 +624,8 @@ fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
     if source == "notify" || source.starts_with("notify:") {
         return Some(CodexIntegrationSurface::Notify);
     }
-    let source = plugin_version_from_source(source)
-        .and_then(|_| source.splitn(3, ':').nth(2))
+    let source = plugin_source_parts(source)
+        .map(|(_, _, nested_source)| nested_source)
         .unwrap_or(source);
     match source.split(':').nth(1) {
         Some(SESSION_START_HOOK) => Some(CodexIntegrationSurface::SessionStart),
@@ -627,12 +638,24 @@ fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
 }
 
 fn plugin_version_from_source(source: &str) -> Option<&str> {
+    plugin_identity_from_source(source).map(|(_, version)| version)
+}
+
+fn plugin_identity_from_source(source: &str) -> Option<(&str, &str)> {
+    plugin_source_parts(source).map(|(plugin_id, version, _)| (plugin_id, version))
+}
+
+fn plugin_source_parts(source: &str) -> Option<(&str, &str, &str)> {
     let remainder = source.strip_prefix(PLUGIN_SOURCE_PREFIX)?;
+    let (plugin_id, remainder) = remainder.split_once(':')?;
     let (version, nested_source) = remainder.split_once(':')?;
-    if !release_version(version) || !nested_source.starts_with("hook:") {
+    if bounded_plugin_id(plugin_id).is_none()
+        || !release_version(version)
+        || !nested_source.starts_with("hook:")
+    {
         return None;
     }
-    Some(version)
+    Some((plugin_id, version, nested_source))
 }
 
 fn supported_release_version(version: &str) -> bool {
@@ -949,11 +972,11 @@ mod tests {
     fn plugin_attribution_preserves_legacy_event_identity() {
         let legacy = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
         let mut plugin = legacy.clone();
-        assert!(mark_plugin_hook_event(&mut plugin));
+        assert!(mark_plugin_hook_event(&mut plugin, "lili@lili-local"));
         assert_eq!(plugin.event_id, legacy.event_id);
         assert_eq!(
             plugin.source_discriminator,
-            format!("plugin:{DESKTOP_VERSION}:hook:Stop")
+            format!("plugin:lili@lili-local:{DESKTOP_VERSION}:hook:Stop")
         );
         assert!(plugin.validate().is_ok());
     }
@@ -967,7 +990,8 @@ mod tests {
             true,
             Some(DESKTOP_VERSION),
             true,
-        );
+        )
+        .with_plugin_id(Some("lili@lili-local"));
         let mut diagnostics = CodexAdapterDiagnostics::with_discovery(
             Some(TESTED_CODEX_VERSION),
             [CodexIntegrationSurface::Stop],
@@ -980,7 +1004,7 @@ mod tests {
         assert_eq!(diagnostics.plugin.hook_source, CodexHookSource::Overlap);
 
         let mut event = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
-        assert!(mark_plugin_hook_event(&mut event));
+        assert!(mark_plugin_hook_event(&mut event, "lili@lili-local"));
         diagnostics.record_accepted_event(&event);
 
         assert_eq!(
@@ -1014,7 +1038,7 @@ mod tests {
         )
         .with_plugin(plugin.clone());
         let mut event = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
-        assert!(mark_plugin_hook_event(&mut event));
+        assert!(mark_plugin_hook_event(&mut event, "lili@lili-local"));
         diagnostics.record_accepted_event(&event);
 
         diagnostics.refresh_discovery(
@@ -1067,6 +1091,34 @@ mod tests {
             CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
                 .with_plugin(upgraded),
         );
+        assert_eq!(
+            diagnostics.plugin.trust_state,
+            CodexPluginTrustState::Unknown
+        );
+        assert!(diagnostics.plugin.last_accepted_plugin_event.is_none());
+    }
+
+    #[test]
+    fn plugin_delivery_evidence_cannot_cross_marketplace_identity() {
+        let plugin = CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            false,
+        )
+        .with_plugin_id(Some("lili@marketplace-a"));
+        let mut diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(plugin);
+        let mut event = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
+        assert!(mark_plugin_hook_event(&mut event, "lili@marketplace-b"));
+
+        diagnostics.record_accepted_event(&event);
+
         assert_eq!(
             diagnostics.plugin.trust_state,
             CodexPluginTrustState::Unknown

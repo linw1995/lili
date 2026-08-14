@@ -306,7 +306,7 @@ impl SpoolStore {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(SpoolError::UnsafePath);
         }
-        validate_private_metadata(&metadata)?;
+        validate_private_metadata(&path, &metadata)?;
         if metadata.len() > MAX_METRICS_BYTES {
             return Err(SpoolError::MalformedMetrics);
         }
@@ -429,7 +429,7 @@ impl SpoolLock {
                     if metadata.file_type().is_symlink() || !metadata.is_dir() {
                         return Err(SpoolError::UnsafePath);
                     }
-                    validate_private_metadata(&metadata)?;
+                    validate_private_metadata(&path, &metadata)?;
                     let stale = metadata
                         .modified()
                         .ok()
@@ -479,7 +479,7 @@ fn read_record(path: &Path) -> Result<(SpoolRecord, u64), SpoolError> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(SpoolError::UnsafePath);
     }
-    validate_private_metadata(&metadata)?;
+    validate_private_metadata(path, &metadata)?;
     if metadata.len() > MAX_SPOOL_RECORD_BYTES as u64 {
         return Err(SpoolError::RecordTooLarge);
     }
@@ -637,7 +637,7 @@ fn temporary_write_is_stale(path: &Path, now: SystemTime) -> Result<bool, SpoolE
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(SpoolError::UnsafePath);
     }
-    validate_private_metadata(&metadata)?;
+    validate_private_metadata(path, &metadata)?;
     Ok(metadata
         .modified()
         .ok()
@@ -691,13 +691,14 @@ fn configure_private_directory(path: &Path, metadata: &fs::Metadata) -> Result<(
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn configure_private_directory(_path: &Path, _metadata: &fs::Metadata) -> Result<(), SpoolError> {
+#[cfg(windows)]
+fn configure_private_directory(path: &Path, _metadata: &fs::Metadata) -> Result<(), SpoolError> {
+    crate::windows_acl::enforce_owner_only(path, true)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn validate_private_metadata(metadata: &fs::Metadata) -> Result<(), SpoolError> {
+fn validate_private_metadata(_path: &Path, metadata: &fs::Metadata) -> Result<(), SpoolError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     if metadata.uid() != rustix::process::geteuid().as_raw()
@@ -708,8 +709,9 @@ fn validate_private_metadata(metadata: &fs::Metadata) -> Result<(), SpoolError> 
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_private_metadata(_metadata: &fs::Metadata) -> Result<(), SpoolError> {
+#[cfg(windows)]
+fn validate_private_metadata(path: &Path, metadata: &fs::Metadata) -> Result<(), SpoolError> {
+    crate::windows_acl::enforce_owner_only(path, metadata.is_dir())?;
     Ok(())
 }
 

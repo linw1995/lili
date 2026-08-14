@@ -5,6 +5,8 @@ mod reducer;
 mod spool;
 mod transport;
 mod types;
+#[cfg(windows)]
+mod windows_acl;
 
 pub use codex::{
     CodexAdapterDiagnostics, CodexHookSource, CodexIntegrationSurface, CodexPluginAvailability,

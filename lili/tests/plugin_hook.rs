@@ -73,9 +73,11 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
         return;
     };
     let temp = TempDir::new();
-    let plugin_root = temp.0.join("package with spaces");
-    let launcher = install_plugin_runtime(&plugin_root, target);
     let codex_home = temp.0.join("codex home with spaces");
+    let plugin_root = codex_home
+        .join("plugins/cache/lili-local/lili")
+        .join(env!("CARGO_PKG_VERSION"));
+    let launcher = install_plugin_runtime(&plugin_root, target);
     let barrier = Arc::new(Barrier::new(FIXTURES.len() + 1));
     let started = Instant::now();
     let workers = FIXTURES.map(|fixture| {
@@ -161,9 +163,11 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
     );
 
     let temp = TempDir::new();
-    let plugin_root = temp.0.join("versioned plugin package");
-    let launcher = install_plugin_runtime(&plugin_root, target);
     let codex_home = temp.0.join("offline codex home");
+    let plugin_root = codex_home
+        .join("plugins/cache/lili-local/lili")
+        .join(env!("CARGO_PKG_VERSION"));
+    let launcher = install_plugin_runtime(&plugin_root, target);
     for (surface, fixture) in VERSIONED_FIXTURES {
         let output = invoke(&launcher, &plugin_root, &codex_home, fixture);
         assert_eq!(output.status.code(), Some(0), "{surface} failed");
@@ -205,7 +209,11 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
     while let Some(claim) = spool.claim_next(unix_time_ms()).unwrap() {
         let event = claim.event();
         assert_eq!(event.provider.as_str(), "codex");
-        assert!(event.source_discriminator.starts_with("plugin:0.1.0:hook:"));
+        assert!(
+            event
+                .source_discriminator
+                .starts_with("plugin:lili@lili-local:0.1.0:hook:")
+        );
         assert!(serde_json::to_vec(event).unwrap().len() <= 64 * 1024);
         *identity_counts
             .entry(event.event_id.as_str().to_owned())
@@ -235,6 +243,16 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
 
 fn install_plugin_runtime(plugin_root: &Path, target: &str) -> PathBuf {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/lili");
+    let manifest = plugin_root.join(".codex-plugin/plugin.json");
+    fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    fs::write(
+        manifest,
+        format!(
+            r#"{{"name":"lili","version":"{}"}}"#,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
     let launcher = plugin_root.join("hooks/forward");
     fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     fs::copy(source_root.join("hooks/forward"), &launcher).unwrap();

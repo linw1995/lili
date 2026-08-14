@@ -1,5 +1,6 @@
 use std::{
     ffi::OsString,
+    fs,
     io::Read,
     path::Path,
     process::{Command, Stdio},
@@ -105,7 +106,16 @@ pub async fn run_from_environment() -> HookResult {
             payload,
             plugin_attributed,
         } => {
-            process_payload_with_source(&codex_home, &payload, unix_time_ms(), plugin_attributed)
+            let plugin_id = plugin_attributed
+                .then(|| installed_plugin_selector(&codex_home))
+                .flatten();
+            if plugin_attributed && plugin_id.is_none() {
+                return HookResult::failure(
+                    HookExitCode::InvalidInput,
+                    "plugin invocation identity could not be verified",
+                );
+            }
+            process_payload_with_source(&codex_home, &payload, unix_time_ms(), plugin_id.as_deref())
                 .await
         }
         HookInvocation::Coexist {
@@ -120,14 +130,14 @@ pub async fn run_from_environment() -> HookResult {
 }
 
 pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> HookResult {
-    process_payload_with_source(codex_home, payload, now_ms, false).await
+    process_payload_with_source(codex_home, payload, now_ms, None).await
 }
 
 async fn process_payload_with_source(
     codex_home: &Path,
     payload: &[u8],
     now_ms: u64,
-    plugin_attributed: bool,
+    plugin_id: Option<&str>,
 ) -> HookResult {
     let mut event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
@@ -138,7 +148,7 @@ async fn process_payload_with_source(
             );
         }
     };
-    if plugin_attributed && !mark_plugin_hook_event(&mut event) {
+    if plugin_id.is_some_and(|plugin_id| !mark_plugin_hook_event(&mut event, plugin_id)) {
         return HookResult::failure(
             HookExitCode::InvalidInput,
             "plugin invocation requires a supported Codex lifecycle event",
@@ -176,6 +186,42 @@ async fn process_payload_with_source(
             "hook event could not be delivered or spooled",
         ),
     }
+}
+
+fn installed_plugin_selector(codex_home: &Path) -> Option<String> {
+    let plugin_root = std::env::var_os("PLUGIN_ROOT")?;
+    installed_plugin_selector_for_root(codex_home, Path::new(&plugin_root))
+}
+
+fn installed_plugin_selector_for_root(codex_home: &Path, plugin_root: &Path) -> Option<String> {
+    let plugin_root = fs::canonicalize(plugin_root).ok()?;
+    let codex_home = fs::canonicalize(codex_home).ok()?;
+    let version = plugin_root.file_name()?.to_str()?;
+    let plugin_directory = plugin_root.parent()?;
+    let plugin_name = plugin_directory.file_name()?.to_str()?;
+    let marketplace_directory = plugin_directory.parent()?;
+    let marketplace_name = marketplace_directory.file_name()?.to_str()?;
+    let cache_directory = marketplace_directory.parent()?;
+    let plugins_directory = cache_directory.parent()?;
+    if version != env!("CARGO_PKG_VERSION")
+        || cache_directory.file_name()?.to_str()? != "cache"
+        || plugins_directory.file_name()?.to_str()? != "plugins"
+        || plugins_directory.parent()? != codex_home
+    {
+        return None;
+    }
+    let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
+    if fs::metadata(&manifest_path).ok()?.len() > 64 * 1024 {
+        return None;
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
+    if manifest.get("name").and_then(serde_json::Value::as_str) != Some(plugin_name)
+        || manifest.get("version").and_then(serde_json::Value::as_str) != Some(version)
+    {
+        return None;
+    }
+    Some(format!("{plugin_name}@{marketplace_name}"))
 }
 
 #[cfg(test)]
@@ -457,6 +503,38 @@ mod tests {
     }
 
     #[test]
+    fn installed_plugin_selector_is_bound_to_cache_path_and_manifest() {
+        let temp = TempDir::new();
+        let root = temp
+            .0
+            .join("plugins/cache/marketplace-a/lili")
+            .join(env!("CARGO_PKG_VERSION"));
+        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+        fs::write(
+            root.join(".codex-plugin/plugin.json"),
+            format!(
+                r#"{{"name":"lili","version":"{}"}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            installed_plugin_selector_for_root(&temp.0, &root).as_deref(),
+            Some("lili@marketplace-a")
+        );
+
+        let copied = temp.0.join("copied-plugin");
+        fs::create_dir_all(copied.join(".codex-plugin")).unwrap();
+        fs::copy(
+            root.join(".codex-plugin/plugin.json"),
+            copied.join(".codex-plugin/plugin.json"),
+        )
+        .unwrap();
+        assert!(installed_plugin_selector_for_root(&temp.0, &copied).is_none());
+    }
+
+    #[test]
     fn coexistence_failures_do_not_mask_the_other_delivery() {
         let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed");
         assert_eq!(
@@ -487,7 +565,8 @@ mod tests {
         let lifecycle =
             br#"{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1"}"#;
         let legacy = normalize_hook_json(lifecycle, 1_000).unwrap();
-        let result = process_payload_with_source(&temp.0, lifecycle, 1_000, true).await;
+        let result =
+            process_payload_with_source(&temp.0, lifecycle, 1_000, Some("lili@lili-local")).await;
         assert_eq!(result, HookResult::success(HookOutcome::Spooled));
         let spool = SpoolStore::for_codex_home(&temp.0);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
