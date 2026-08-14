@@ -364,15 +364,19 @@ fn start_native_ingestion(
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
     let runtime_dir = codex_home.join("lili").join("runtime");
     let codex_adapter = inspect(codex_home).codex_adapter;
+    let evidence_store = CodexPluginEvidenceStore::for_codex_home(codex_home);
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
-        let endpoint = BoundForwardingEndpoint::bind(&runtime_dir)?;
+        let endpoint = BoundForwardingEndpoint::bind_with_credentials_pre_publish(
+            &runtime_dir,
+            |credentials| evidence_store.save(&codex_adapter, credentials),
+        )?;
         let credentials = endpoint.credentials();
         let (handle, actor) = NativeIngestionActor::channel_with_diagnostics_and_evidence_store(
             state,
             credentials,
             DEFAULT_INGESTION_QUEUE_CAPACITY,
             codex_adapter,
-            Some(CodexPluginEvidenceStore::for_codex_home(codex_home)),
+            Some(evidence_store),
         )
         .await;
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
