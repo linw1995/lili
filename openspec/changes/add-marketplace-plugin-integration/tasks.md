@@ -32,7 +32,7 @@
 - [x] 5.1 Publish matching website, support, privacy-policy, and terms content covering local data categories, purposes, recipients, retention, deletion controls, security boundaries, and the absence of telemetry or remote transfer.
 - [x] 5.2 Add final short and long descriptions, starter prompts, release notes, availability, prerequisite instructions, and a dated Marketplace compliance checklist with no inaccurate ChatGPT lifecycle or OpenAI endorsement claims.
 - [x] 5.3 Add at least five reproducible positive reviewer cases covering setup, trusted delivery, offline recovery, migration, and diagnostics, with fixture data and expected workflow and result shapes.
-- [ ] 5.4 Add at least three reproducible negative reviewer cases covering unsupported ChatGPT lifecycle observation, permission approval or secret extraction, remote transfer, and unsupported hosts.
+- [x] 5.4 Add at least three reproducible negative reviewer cases covering unsupported ChatGPT lifecycle observation, permission approval or secret extraction, remote transfer, and unsupported hosts.
 - [ ] 5.5 Add automated consistency checks across the manifest, skill, documentation, policies, submission metadata, release contents, and observed runtime data handling.
 
 ## 6. Marketplace and Packaged Acceptance
