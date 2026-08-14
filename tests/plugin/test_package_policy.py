@@ -17,7 +17,7 @@ def valid_hooks() -> dict:
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
         "commandWindows": (
-            '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
             '-File "${PLUGIN_ROOT}\\hooks\\forward.ps1"'
         ),
         "timeout": 1,

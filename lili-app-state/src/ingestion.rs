@@ -285,9 +285,7 @@ impl NativeIngestionActor {
 
     async fn reduce_event(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
         let outcome = self.state.apply_session_event(event.clone()).await;
-        if outcome != ReductionOutcome::Duplicate {
-            self.diagnostics.codex_adapter.record_accepted_event(&event);
-        }
+        self.diagnostics.codex_adapter.record_accepted_event(&event);
         match outcome {
             ReductionOutcome::Applied { .. } => {
                 self.diagnostics.accepted_messages =
@@ -460,6 +458,72 @@ mod tests {
                 .unwrap()
                 .event_id,
             "event-1"
+        );
+
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn normal_plugin_overlap_duplicate_records_delivery_evidence() {
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let plugin = CodexPluginDiagnostics::discovered(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            true,
+        )
+        .with_plugin_id(Some("lili@lili-local"));
+        let diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(plugin);
+        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics(
+            state.clone(),
+            credentials.clone(),
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+            diagnostics,
+        )
+        .await;
+        let task = tokio::spawn(actor.run());
+
+        let mut legacy = event();
+        legacy.event_id = lili_session::EventId::parse("normal-overlap-event").unwrap();
+        legacy.source_discriminator = "hook:Stop".to_owned();
+        let mut plugin = legacy.clone();
+        assert!(mark_plugin_hook_event(&mut plugin, "lili@lili-local"));
+
+        for (event, sent_at_ms, expected) in [
+            (legacy, 1_000, ForwardingAckDisposition::Accepted),
+            (plugin, 1_001, ForwardingAckDisposition::Duplicate),
+        ] {
+            let message = credentials.sign(event, sent_at_ms).unwrap();
+            assert_eq!(
+                handle
+                    .ingest(payload(&message.to_frame().unwrap()), sent_at_ms)
+                    .await
+                    .unwrap()
+                    .disposition(),
+                expected
+            );
+        }
+
+        let diagnostics = state.ingestion_diagnostics().await;
+        assert_eq!(state.snapshot().await.revision, 1);
+        assert_eq!(diagnostics.accepted_messages, 1);
+        assert_eq!(diagnostics.duplicate_events, 1);
+        assert_eq!(
+            diagnostics
+                .codex_adapter
+                .plugin
+                .last_accepted_plugin_event
+                .as_ref()
+                .map(|event| (event.event_id.as_str(), event.plugin_id.as_deref())),
+            Some(("normal-overlap-event", Some("lili@lili-local")))
         );
 
         drop(handle);

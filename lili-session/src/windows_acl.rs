@@ -20,7 +20,9 @@ use windows_sys::Win32::{
         PSID, SE_DACL_PROTECTED, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
         TokenUser,
     },
-    Storage::FileSystem::FILE_ALL_ACCESS,
+    Storage::FileSystem::{
+        FILE_ALL_ACCESS, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    },
     System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -138,6 +140,23 @@ pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
         || unsafe { EqualSid(ace_sid, expected_owner) } == 0
     {
         return Err(unsafe_acl_error());
+    }
+    Ok(())
+}
+
+pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+    let source = wide_path(source);
+    let destination = wide_path(destination);
+    // SAFETY: Both paths are NUL-terminated and remain valid for the duration of the call.
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -278,5 +297,25 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn replacement_overwrites_an_existing_file() {
+        let sequence = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "lili-private-replace-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::write(&source, b"new").unwrap();
+        fs::write(&destination, b"old").unwrap();
+
+        replace_file(&source, &destination).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(fs::read(&destination).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
     }
 }

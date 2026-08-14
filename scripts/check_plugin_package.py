@@ -18,7 +18,7 @@ EXPECTED_HOOK_EVENTS = {
 }
 HANDLER_FIELDS = {"type", "command", "commandWindows", "timeout", "statusMessage", "async"}
 GROUP_FIELDS = {"matcher", "hooks"}
-TRUSTED_WINDOWS_POWERSHELL = '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'
+TRUSTED_WINDOWS_POWERSHELL = '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'
 EXECUTABLE_SUFFIXES = {".bat", ".cmd", ".exe", ".ps1", ".sh"}
 EXECUTABLE_MAGICS = (
     b"\x7fELF",

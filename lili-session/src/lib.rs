@@ -45,3 +45,17 @@ pub use types::{
 };
 
 pub const SESSION_SCHEMA_VERSION: u16 = 1;
+
+pub(crate) fn replace_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_acl::replace_file(source, destination)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(source, destination)
+    }
+}

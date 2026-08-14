@@ -14,7 +14,7 @@ EXPECTED_EVENTS = {
 }
 EXPECTED_COMMAND = '"${PLUGIN_ROOT}/hooks/forward"'
 EXPECTED_WINDOWS_COMMAND = (
-    '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+    '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
     '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
     '-Command "$input | & (Join-Path $env:PLUGIN_ROOT \'hooks\\forward.ps1\')"'
 )
