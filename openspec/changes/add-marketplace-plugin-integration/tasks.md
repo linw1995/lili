@@ -17,7 +17,7 @@
 - [x] 3.1 Add plugin-bundled `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `Stop`, and `SessionEnd` observer hooks using `${PLUGIN_ROOT}`, bounded timeouts, asynchronous execution where supported, and a Windows command override.
 - [x] 3.2 Add POSIX and PowerShell launchers that select only packaged supported targets, preserve stdin, quote plugin paths safely, ignore provider content during command construction, and fail closed without `PATH` fallback.
 - [x] 3.3 Extend release builds to produce the required signed or platform-standard `lili-hook` binaries from the same source version and assemble them into a deterministic universal plugin archive.
-- [ ] 3.4 Add launcher and hook tests for paths with spaces, unsupported hosts, missing or tampered binaries, bounded exit behavior, empty stdout, non-decision permission handling, and concurrent invocation.
+- [x] 3.4 Add launcher and hook tests for paths with spaces, unsupported hosts, missing or tampered binaries, bounded exit behavior, empty stdout, non-decision permission handling, and concurrent invocation.
 
 ## 4. Integration Status and Migration
 

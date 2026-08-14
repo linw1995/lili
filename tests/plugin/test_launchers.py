@@ -4,9 +4,9 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
-
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = WORKSPACE_ROOT / "plugins" / "lili"
@@ -31,6 +31,23 @@ class PluginLauncherContractTests(unittest.TestCase):
             self.assertIn(f"bin/{target}/lili-hook", declared)
         self.assertIn("bin/x86_64-pc-windows-msvc/lili-hook.exe", declared)
 
+    def test_unsupported_hosts_have_no_fallback_target(self) -> None:
+        posix = POSIX_LAUNCHER.read_text(encoding="utf-8")
+        windows = WINDOWS_LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn("Darwin:arm64)", posix)
+        self.assertIn("Linux:x86_64)", posix)
+        self.assertIn(
+            '*)\n        fail "Lili plugin does not support this host" 64', posix
+        )
+        self.assertNotIn("Darwin:x86_64)", posix)
+        self.assertNotIn("Linux:aarch64)", posix)
+        self.assertIn(
+            "$architecture -ne [Runtime.InteropServices.Architecture]::X64", windows
+        )
+        self.assertIn(
+            'Fail-LiliLauncher "Lili plugin does not support this host" 64', windows
+        )
+
     def test_launchers_do_not_construct_commands_from_stdin(self) -> None:
         posix = POSIX_LAUNCHER.read_text(encoding="utf-8")
         windows = WINDOWS_LAUNCHER.read_text(encoding="utf-8")
@@ -44,14 +61,20 @@ class PluginLauncherContractTests(unittest.TestCase):
             "Get-Content",
         ):
             self.assertNotIn(forbidden, windows)
-        self.assertIn('exec "$forwarder" --integration-id lili-session-v1 --json-stdin', posix)
-        self.assertIn('& $forwarderPath --integration-id "lili-session-v1" --json-stdin', windows)
+        self.assertIn(
+            'exec "$forwarder" --integration-id lili-session-v1 --json-stdin', posix
+        )
+        self.assertIn(
+            '& $forwarderPath --integration-id "lili-session-v1" --json-stdin', windows
+        )
 
     def test_posix_launcher_preserves_stdin_with_spaces_in_root(self) -> None:
         target = SUPPORTED_POSIX_TARGETS.get((platform.system(), platform.machine()))
         if target is None:
             self.skipTest("current host is outside the published POSIX target matrix")
-        with tempfile.TemporaryDirectory(prefix="lili plugin launcher ") as temporary_directory:
+        with tempfile.TemporaryDirectory(
+            prefix="lili plugin launcher "
+        ) as temporary_directory:
             plugin_root = Path(temporary_directory) / "package with spaces"
             launcher = plugin_root / "hooks" / "forward"
             launcher.parent.mkdir(parents=True)
@@ -61,9 +84,9 @@ class PluginLauncherContractTests(unittest.TestCase):
             forwarder.parent.mkdir(parents=True)
             forwarder.write_text(
                 "#!/bin/sh\n"
-                "test \"$1\" = \"--integration-id\" || exit 91\n"
-                "test \"$2\" = \"lili-session-v1\" || exit 92\n"
-                "test \"$3\" = \"--json-stdin\" || exit 93\n"
+                'test "$1" = "--integration-id" || exit 91\n'
+                'test "$2" = "lili-session-v1" || exit 92\n'
+                'test "$3" = "--json-stdin" || exit 93\n'
                 "/bin/cat\n",
                 encoding="utf-8",
             )
@@ -88,12 +111,50 @@ class PluginLauncherContractTests(unittest.TestCase):
         target = SUPPORTED_POSIX_TARGETS.get((platform.system(), platform.machine()))
         if target is None:
             self.skipTest("current host is outside the published POSIX target matrix")
-        with tempfile.TemporaryDirectory(prefix="lili plugin missing target ") as temporary_directory:
+        with tempfile.TemporaryDirectory(
+            prefix="lili plugin missing target "
+        ) as temporary_directory:
             plugin_root = Path(temporary_directory) / "package"
             launcher = plugin_root / "hooks" / "forward"
             launcher.parent.mkdir(parents=True)
             shutil.copy2(POSIX_LAUNCHER, launcher)
             launcher.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PLUGIN_ROOT"] = str(plugin_root)
+            started = time.monotonic()
+            result = subprocess.run(
+                [str(launcher)],
+                input=b"{}\n",
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(result.returncode, 66)
+            self.assertEqual(result.stdout, b"")
+            self.assertEqual(
+                result.stderr, b"Lili plugin forwarder is missing or invalid\n"
+            )
+            self.assertLess(elapsed, 1.0)
+
+    def test_posix_launcher_rejects_symlinked_forwarder(self) -> None:
+        target = SUPPORTED_POSIX_TARGETS.get((platform.system(), platform.machine()))
+        if target is None:
+            self.skipTest("current host is outside the published POSIX target matrix")
+        with tempfile.TemporaryDirectory(
+            prefix="lili plugin symlink target "
+        ) as temporary_directory:
+            plugin_root = Path(temporary_directory) / "package"
+            launcher = plugin_root / "hooks" / "forward"
+            launcher.parent.mkdir(parents=True)
+            shutil.copy2(POSIX_LAUNCHER, launcher)
+            launcher.chmod(0o755)
+            external = Path(temporary_directory) / "external-hook"
+            external.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            external.chmod(0o755)
+            forwarder = plugin_root / "bin" / target / "lili-hook"
+            forwarder.parent.mkdir(parents=True)
+            forwarder.symlink_to(external)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
             result = subprocess.run(
@@ -105,7 +166,9 @@ class PluginLauncherContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 66)
             self.assertEqual(result.stdout, b"")
-            self.assertEqual(result.stderr, b"Lili plugin forwarder is missing or invalid\n")
+            self.assertEqual(
+                result.stderr, b"Lili plugin forwarder is missing or invalid\n"
+            )
 
 
 if __name__ == "__main__":
