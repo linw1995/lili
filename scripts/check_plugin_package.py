@@ -182,6 +182,12 @@ def validate_hook_references(document: dict, plugin_root: Path) -> None:
                         r"\$\{PLUGIN_ROOT\}([/\\][^\"'\s]+)",
                         handler[field],
                     )
+                    references.extend(
+                        re.findall(
+                            r"Join-Path \$env:PLUGIN_ROOT ['\"]([^'\"]+)['\"]",
+                            handler[field],
+                        )
+                    )
                     require(len(references) == 1, f"{event} {field} must reference one packaged path")
                     relative = "./" + references[0].lstrip("/\\").replace("\\", "/")
                     target = resolve_manifest_path(plugin_root, relative, f"{event}.{field}")

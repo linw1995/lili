@@ -65,8 +65,9 @@ class PluginLauncherContractTests(unittest.TestCase):
             'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
             posix,
         )
+        self.assertIn("$OutputEncoding = [Text.UTF8Encoding]::new($false)", windows)
         self.assertIn(
-            '& $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
+            '$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
             windows,
         )
 
