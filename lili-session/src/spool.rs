@@ -15,6 +15,7 @@ use crate::{NormalizedSessionEvent, SessionEventKind};
 const SPOOL_VERSION: u16 = 1;
 const METRICS_FILE_NAME: &str = "metrics.json";
 const LOCK_DIRECTORY_NAME: &str = ".lock";
+const STAGED_RECORD_SUFFIX: &str = ".staged";
 pub const MAX_SPOOL_RECORD_BYTES: usize = 64 * 1024;
 const MAX_METRICS_BYTES: u64 = 4 * 1024;
 const LOCK_RETRY_COUNT: usize = 375;
@@ -98,9 +99,6 @@ impl SpoolStore {
         validate_limits(self.limits)?;
         event.validate().map_err(|_| SpoolError::InvalidEvent)?;
         ensure_private_directory(&self.directory)?;
-        let _lock = SpoolLock::acquire(&self.directory)?;
-        let mut metrics = self.load_metrics_unlocked()?;
-        let original_metrics = metrics.clone();
         let record = SpoolRecord {
             version: SPOOL_VERSION,
             enqueued_at_ms,
@@ -110,15 +108,29 @@ impl SpoolStore {
         if payload.len() > MAX_SPOOL_RECORD_BYTES {
             return Err(SpoolError::RecordTooLarge);
         }
-        let pending_path = self.directory.join(pending_file_name(enqueued_at_ms)?);
-        atomic_write(&pending_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
-        let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
-        let retained = self.enforce_limits(candidates, &mut metrics)?;
-        self.save_metrics_if_changed(&original_metrics, &metrics)?;
-        if retained
-            .iter()
-            .any(|candidate| candidate.path == pending_path)
-        {
+        let pending_name = pending_file_name(enqueued_at_ms)?;
+        let pending_path = self.directory.join(&pending_name);
+        let staged_path = self
+            .directory
+            .join(staged_file_name_from_pending(&pending_name)?);
+        atomic_write(&staged_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
+        let mut staged_guard = TemporaryFileGuard::new(staged_path.clone());
+
+        let retained = {
+            let _lock = SpoolLock::acquire(&self.directory)?;
+            promote_staged_record(&staged_path, &pending_path)?;
+            staged_guard.commit();
+            let mut metrics = self.load_metrics_unlocked()?;
+            let original_metrics = metrics.clone();
+            let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
+            let retained = self.enforce_limits(candidates, &mut metrics)?;
+            self.save_metrics_if_changed(&original_metrics, &metrics)?;
+            retained
+                .iter()
+                .any(|candidate| candidate.path == pending_path)
+        };
+        sync_directory(&self.directory)?;
+        if retained {
             Ok(SpoolEnqueueOutcome::Stored)
         } else {
             Ok(SpoolEnqueueOutcome::DroppedByLimit)
@@ -134,6 +146,18 @@ impl SpoolStore {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with(".write-") && name.ends_with(".tmp") {
                 remove_unsafe_record(&entry.path())?;
+                continue;
+            }
+            if name.ends_with(STAGED_RECORD_SUFFIX) {
+                validate_record_file(&entry.path())?;
+                let target = self.directory.join(pending_file_name_from_staged(&name)?);
+                let target = if target.exists() {
+                    self.directory.join(pending_file_name(now_nonce_seed())?)
+                } else {
+                    target
+                };
+                fs::rename(entry.path(), target)?;
+                recovered += 1;
                 continue;
             }
             if !name.contains(".claim-") {
@@ -525,6 +549,41 @@ fn pending_file_name_from_claim(name: &str) -> Result<String, SpoolError> {
     Ok(format!("{base}.pending"))
 }
 
+fn staged_file_name_from_pending(name: &str) -> Result<String, SpoolError> {
+    let base = name
+        .strip_suffix(".pending")
+        .filter(|base| !base.is_empty())
+        .ok_or(SpoolError::MalformedRecord)?;
+    Ok(format!("{base}{STAGED_RECORD_SUFFIX}"))
+}
+
+fn pending_file_name_from_staged(name: &str) -> Result<String, SpoolError> {
+    let base = name
+        .strip_suffix(STAGED_RECORD_SUFFIX)
+        .filter(|base| !base.is_empty())
+        .ok_or(SpoolError::MalformedRecord)?;
+    Ok(format!("{base}.pending"))
+}
+
+fn promote_staged_record(staged: &Path, pending: &Path) -> Result<(), SpoolError> {
+    match fs::symlink_metadata(staged) {
+        Ok(_) => {
+            if pending.try_exists()? {
+                return Err(SpoolError::UnsafePath);
+            }
+            fs::rename(staged, pending)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !pending.try_exists()? {
+                return Err(error.into());
+            }
+            validate_record_file(pending)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn now_nonce_seed() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -749,6 +808,31 @@ mod tests {
         pending.clear();
         assert_eq!(store.recover_claims().unwrap(), 1);
         assert!(store.claim_next(101).unwrap().is_some());
+    }
+
+    #[test]
+    fn recovery_publishes_interrupted_staged_record() {
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        store
+            .enqueue(&event("event-1", "turn_completed"), 100)
+            .unwrap();
+        let pending = fs::read_dir(&temp.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.to_string_lossy().ends_with(".pending"))
+            .unwrap();
+        let pending_name = pending.file_name().unwrap().to_str().unwrap();
+        let staged = temp
+            .0
+            .join(staged_file_name_from_pending(pending_name).unwrap());
+        fs::rename(&pending, &staged).unwrap();
+
+        assert_eq!(store.recover_claims().unwrap(), 1);
+        assert!(!staged.exists());
+        let claim = store.claim_next(101).unwrap().unwrap();
+        assert_eq!(claim.event().event_id.as_str(), "event-1");
     }
 
     #[test]
