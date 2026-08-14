@@ -196,19 +196,30 @@ mod process_tree {
 
 #[cfg(windows)]
 mod process_tree {
-    use std::{ffi::c_void, io, mem, ptr};
+    use std::{ffi::c_void, io, mem, os::windows::process::CommandExt, ptr};
 
     use tokio::process::{Child, Command};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE},
-        System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, TerminateJobObject,
+        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
+                Thread32Next,
+            },
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject,
+            },
+            Threading::{CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
         },
     };
 
-    pub fn configure(_command: &mut Command) {}
+    pub fn configure(command: &mut Command) {
+        // No action code may run until its parent is assigned to the job. Otherwise an action
+        // can create a descendant between spawn and assignment that the job cannot terminate.
+        command.as_std_mut().creation_flags(CREATE_SUSPENDED);
+    }
 
     #[derive(Debug)]
     pub struct ProcessTree {
@@ -225,6 +236,9 @@ mod process_tree {
                 .raw_handle()
                 .map(|handle| handle as HANDLE)
                 .ok_or_else(|| io::Error::other("child process handle is unavailable"))?;
+            let process_id = child
+                .id()
+                .ok_or_else(|| io::Error::other("child process identity is unavailable"))?;
             let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
             if job.is_null() {
                 return Err(io::Error::last_os_error());
@@ -240,8 +254,23 @@ mod process_tree {
                         .expect("job limit structure fits in u32"),
                 )
             };
-            if configured == 0 || unsafe { AssignProcessToJobObject(job, process) } == 0 {
+            if configured == 0 {
                 let error = io::Error::last_os_error();
+                unsafe {
+                    CloseHandle(job);
+                }
+                return Err(error);
+            }
+            if unsafe { AssignProcessToJobObject(job, process) } == 0 {
+                let error = io::Error::last_os_error();
+                unsafe {
+                    CloseHandle(job);
+                }
+                return Err(error);
+            }
+            // A process created suspended has only its primary thread. Resume it only after the
+            // job assignment so every descendant inherits the action job from creation onward.
+            if let Err(error) = resume_process(process_id) {
                 unsafe {
                     CloseHandle(job);
                 }
@@ -271,6 +300,57 @@ mod process_tree {
         fn drop(&mut self) {
             unsafe {
                 CloseHandle(self.job);
+            }
+        }
+    }
+
+    fn resume_process(process_id: u32) -> io::Result<()> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let result = resume_process_from_snapshot(snapshot, process_id);
+        unsafe {
+            CloseHandle(snapshot);
+        }
+        result
+    }
+
+    fn resume_process_from_snapshot(snapshot: HANDLE, process_id: u32) -> io::Result<()> {
+        let mut entry = THREADENTRY32 {
+            dwSize: u32::try_from(mem::size_of::<THREADENTRY32>())
+                .expect("thread entry size fits in u32"),
+            ..Default::default()
+        };
+        if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        loop {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let previous_count = unsafe { ResumeThread(thread) };
+                let result = if previous_count == u32::MAX {
+                    Err(io::Error::last_os_error())
+                } else if previous_count == 1 {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(format!(
+                        "unexpected primary thread suspend count {previous_count}"
+                    )))
+                };
+                unsafe {
+                    CloseHandle(thread);
+                }
+                return result;
+            }
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "child primary thread is unavailable",
+                ));
             }
         }
     }

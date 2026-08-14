@@ -6,6 +6,8 @@ use std::{
     },
 };
 
+use lili_actions::ActionExecutionOutcome;
+use lili_app_state::AppState;
 use serde::Deserialize;
 use tauri::{AppHandle, WebviewWindow};
 
@@ -25,20 +27,24 @@ window.addEventListener('DOMContentLoaded', () => {
       && pet.closest('.pet-sprite')?.getAttribute('data-hit-region') === 'pet';
     const transparent = getComputedStyle(document.body).backgroundColor
       .replaceAll(' ', '') === 'rgba(0,0,0,0)';
+    const hydrated = document.querySelector('#lili-app[data-hydrated="true"]') !== null;
     const notification = document.querySelector('.notification-activate');
-    if (!activated && notification instanceof HTMLButtonElement) {
+    if (!activated && hydrated && notification instanceof HTMLButtonElement) {
       activated = true;
       notification.click();
     }
     const feedback = document.querySelector('.action-feedback[data-action-result="failure"]');
     const actionTimedOut = feedback?.textContent?.includes('Action timed out') === true;
+    const feedbackActionId = feedback?.getAttribute('data-action-id') ?? null;
     if (imageReady && transparent && activated && actionTimedOut) {
       window.clearInterval(poll);
       finish({
         transparent,
         pinnedContent: imageReady,
+        hydrated,
         hookDelivered: activated,
         actionTimedOut,
+        feedbackActionId,
       });
       return;
     }
@@ -47,8 +53,10 @@ window.addEventListener('DOMContentLoaded', () => {
       finish({
         transparent,
         pinnedContent: imageReady,
+        hydrated,
         hookDelivered: activated,
         actionTimedOut,
+        feedbackActionId,
       });
     }
   }, 50);
@@ -60,65 +68,121 @@ window.addEventListener('DOMContentLoaded', () => {
 pub struct BrowserAcceptanceReport {
     transparent: bool,
     pinned_content: bool,
+    hydrated: bool,
     hook_delivered: bool,
     action_timed_out: bool,
+    feedback_action_id: Option<String>,
 }
 
 #[derive(Default)]
 pub struct DesktopAcceptanceState {
     codex_home: Mutex<Option<PathBuf>>,
+    app_state: Mutex<Option<AppState>>,
     completed: AtomicBool,
 }
 
 impl DesktopAcceptanceState {
-    pub fn configure(&self, codex_home: Option<PathBuf>) {
+    pub fn configure(&self, codex_home: Option<PathBuf>, app_state: AppState) {
         *self
             .codex_home
             .lock()
             .expect("desktop acceptance state must not be poisoned") = codex_home;
+        *self
+            .app_state
+            .lock()
+            .expect("desktop acceptance state must not be poisoned") = Some(app_state);
     }
 }
 
 #[tauri::command]
-pub fn complete_desktop_acceptance(
+pub async fn complete_desktop_acceptance(
     app: AppHandle,
     window: WebviewWindow,
     state: tauri::State<'_, DesktopAcceptanceState>,
     drag_state: tauri::State<'_, crate::WindowDragState>,
     report: BrowserAcceptanceReport,
-) {
+) -> Result<(), String> {
     if state.completed.swap(true, Ordering::AcqRel) {
-        return;
+        return Ok(());
     }
     let codex_home = state.codex_home.lock().ok().and_then(|path| path.clone());
+    let app_state = state.app_state.lock().ok().and_then(|state| state.clone());
+    let action_audit = match app_state {
+        Some(state) => state.action_audit().await,
+        None => Vec::new(),
+    };
+    let expected_action_id = expected_action_id();
+    let action_contract = action_audit.as_slice().first().is_some_and(|entry| {
+        action_audit.len() == 1
+            && entry.action_id == expected_action_id
+            && entry.outcome == ActionExecutionOutcome::TimedOut
+    });
+    eprintln!(
+        "desktop acceptance browser={report:?} audit={}",
+        serde_json::to_string(&action_audit).unwrap_or_else(|_| "unavailable".to_owned())
+    );
     let placement = crate::current_window_placement(&window);
-    let window_contract = window.is_always_on_top().is_ok_and(|enabled| enabled)
-        && window.is_decorated().is_ok_and(|decorated| !decorated)
-        && placement.is_some()
-        && native_window_contract(&window);
+    let always_on_top_contract = window.is_always_on_top().is_ok_and(|enabled| enabled);
+    let undecorated_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
+    let placement_contract = placement.is_some();
+    let native_window_contract = native_window_contract(&window);
+    let window_contract = always_on_top_contract
+        && undecorated_contract
+        && placement_contract
+        && native_window_contract;
     let dpi_contract = placement.is_some_and(|placement| placement.scale_milli() >= 500);
     let tray_contract = app.tray_by_id("lili-tray").is_some();
-    let visibility_contract = window.hide().is_ok()
-        && window.is_visible().is_ok_and(|visible| !visible)
-        && window.show().is_ok()
-        && window.is_visible().is_ok_and(|visible| visible);
+    let hide_contract = window.hide().is_ok();
+    let hidden_contract = hide_contract && window.is_visible().is_ok_and(|visible| !visible);
+    let show_contract = hidden_contract && window.show().is_ok();
+    let shown_contract = show_contract && window.is_visible().is_ok_and(|visible| visible);
+    let visibility_contract = hide_contract && hidden_contract && show_contract && shown_contract;
     let transport_contract = codex_home.as_deref().is_some_and(private_transport_is_live);
     let absolute_position_contract = absolute_position_contract(&window, &drag_state);
+    eprintln!(
+        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={native_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract}"
+    );
     let passed = cfg!(any(
         target_os = "macos",
         target_os = "windows",
         target_os = "linux"
     )) && report.transparent
         && report.pinned_content
+        && report.hydrated
         && report.hook_delivered
         && report.action_timed_out
+        && report.feedback_action_id.as_deref() == Some(expected_action_id)
+        && action_contract
         && window_contract
         && dpi_contract
         && tray_contract
         && visibility_contract
         && transport_contract
         && absolute_position_contract;
-    app.exit(if passed { 0 } else { 1 });
+    let result_recorded = match codex_home {
+        Some(codex_home) => std::fs::write(
+            codex_home.join("lili").join("desktop-acceptance-result"),
+            if passed { "passed\n" } else { "failed\n" },
+        )
+        .inspect_err(|error| eprintln!("desktop acceptance result could not be recorded: {error}"))
+        .is_ok(),
+        None => {
+            eprintln!("desktop acceptance result could not be recorded: CODEX_HOME is unavailable");
+            false
+        }
+    };
+    app.exit(if passed && result_recorded { 0 } else { 1 });
+    Ok(())
+}
+
+fn expected_action_id() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows-tree-timeout"
+    } else if cfg!(target_os = "macos") {
+        "macos-timeout"
+    } else {
+        "linux-timeout"
+    }
 }
 
 fn absolute_position_contract(window: &WebviewWindow, state: &crate::WindowDragState) -> bool {

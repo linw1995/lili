@@ -41,6 +41,8 @@ mod windows {
         let app_binary = required_file(arguments.next(), "packaged app")?;
         let hook_binary = required_file(arguments.next(), "hook")?;
         let action_fixture = required_file(arguments.next(), "action fixture")?;
+        let action_fixture = fs::canonicalize(action_fixture)
+            .map_err(|error| format!("action fixture path could not be resolved: {error}"))?;
         let installer = required_file(arguments.next(), "NSIS installer")?;
         let repository_root = required_directory(arguments.next(), "repository root")?;
         let codex_binary = required_file(arguments.next(), "Codex")?;
@@ -74,8 +76,18 @@ mod windows {
         }
         wait_for_clean_exit(&mut app, Duration::from_secs(35))?;
         let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))?;
+        if process_ids.len() != 2 {
+            return Err(
+                "action fixture did not record exactly one parent and one child".to_owned(),
+            );
+        }
         if process_ids.into_iter().any(process_is_alive) {
             return Err("timed-out action left a process tree alive".to_owned());
+        }
+        let acceptance_result = fs::read_to_string(workspace.acceptance_result())
+            .map_err(|error| format!("desktop acceptance result is unavailable: {error}"))?;
+        if acceptance_result != "passed\n" {
+            return Err("desktop acceptance contracts did not pass".to_owned());
         }
         println!(
             "{{\"windowsAcceptance\":\"passed\",\"marketplace\":\"lili-local\",\"target\":\"{}\"}}",
@@ -180,6 +192,7 @@ mod windows {
     struct AcceptanceWorkspace {
         path: PathBuf,
         process_ids: PathBuf,
+        acceptance_result: PathBuf,
     }
 
     impl AcceptanceWorkspace {
@@ -195,6 +208,7 @@ mod windows {
             fs::create_dir_all(path.join("lili"))
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
             let process_ids = path.join("action-processes.txt");
+            let acceptance_result = path.join("lili").join("desktop-acceptance-result");
             let command = toml_string(&action_fixture);
             let output = toml_string(&process_ids);
             fs::write(
@@ -204,7 +218,11 @@ mod windows {
                 ),
             )
             .map_err(|error| format!("acceptance action config could not be written: {error}"))?;
-            Ok(Self { path, process_ids })
+            Ok(Self {
+                path,
+                process_ids,
+                acceptance_result,
+            })
         }
 
         fn path(&self) -> &Path {
@@ -213,6 +231,10 @@ mod windows {
 
         fn process_ids(&self) -> &Path {
             &self.process_ids
+        }
+
+        fn acceptance_result(&self) -> &Path {
+            &self.acceptance_result
         }
     }
 

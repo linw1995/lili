@@ -1133,6 +1133,12 @@ pub fn hydrate() {
     leptos::mount::hydrate_body(move || {
         view! { <App presentation=presentation.clone()/> }
     });
+    if let Some(app) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("lili-app"))
+    {
+        let _ = app.set_attribute("data-hydrated", "true");
+    }
 }
 
 #[cfg(test)]

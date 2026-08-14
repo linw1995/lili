@@ -1,5 +1,10 @@
 $ErrorActionPreference = "Stop"
 
+cargo test --locked --package lili-session owner_rights_named_pipe_is_private
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 for ($attempt = 1; $attempt -le 3; $attempt++) {
     cargo tauri build --bundles nsis -- --locked
     if ($LASTEXITCODE -eq 0) {
