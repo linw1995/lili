@@ -105,6 +105,7 @@ jobs:
           path: target/coverage/result/crap.md
 
   linux-desktop:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -136,7 +137,7 @@ jobs:
           if-no-files-found: error
 
   macos-desktop:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
@@ -167,6 +168,7 @@ jobs:
           if-no-files-found: error
 
   windows-desktop:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -199,6 +201,7 @@ jobs:
           if-no-files-found: error
 
   marketplace-acceptance:
+    if: ${{ github.event_name != 'pull_request' }}
     needs:
       - quality
       - linux-desktop
