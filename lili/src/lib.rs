@@ -12,6 +12,7 @@ mod macos_panel;
 mod platform_pinning;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
@@ -40,6 +41,8 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::oneshot;
+
+const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 
 pub fn run() {
     diagnostics::init();
@@ -389,7 +392,17 @@ async fn run_native_services(
         diagnostics::warn("spool", "recover_claims", "recovery_failed");
     }
     drain_offline_spool(&spool, &handle).await;
-    serve_native_ingestion(endpoint, handle).await;
+    tokio::join!(
+        serve_native_ingestion(endpoint, handle.clone()),
+        drain_offline_spool_continuously(spool, handle),
+    );
+}
+
+async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeIngestionHandle) {
+    loop {
+        tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;
+        drain_offline_spool(&spool, &handle).await;
+    }
 }
 
 async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
@@ -1167,7 +1180,68 @@ fn desktop_assets(
 
 #[cfg(test)]
 mod tests {
+    use lili_session::{
+        ForwardingCredentials, ProviderCapabilitiesInputV1, ProviderInputV1, SpoolEnqueueOutcome,
+        SpoolLimits, normalize_provider_input,
+    };
+
     use super::*;
+
+    #[tokio::test]
+    async fn live_spool_drainer_ingests_events_enqueued_after_startup() {
+        let root =
+            std::env::temp_dir().join(format!("lili-live-spool-drain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let spool = SpoolStore::new(root.join("spool"), SpoolLimits::default());
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let (handle, actor) = NativeIngestionActor::channel(
+            state.clone(),
+            credentials,
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+        )
+        .await;
+        let actor_task = tokio::spawn(actor.run());
+
+        drain_offline_spool(&spool, &handle).await;
+        let mut snapshots = handle.subscribe();
+        let drainer_task = tokio::spawn(drain_offline_spool_continuously(
+            spool.clone(),
+            handle.clone(),
+        ));
+        let now_ms = unix_time_ms();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-after-startup".to_owned()),
+            session_id: Some("session-after-startup".to_owned()),
+            turn_id: Some("turn-after-startup".to_owned()),
+            occurred_at_ms: Some(now_ms),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: Some("hook:Stop".to_owned()),
+        })
+        .unwrap();
+        assert_eq!(
+            spool.enqueue(&event, now_ms).unwrap(),
+            SpoolEnqueueOutcome::Stored
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), snapshots.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshots.borrow().revision, 1);
+        assert!(spool.claim_next(unix_time_ms()).unwrap().is_none());
+
+        drainer_task.abort();
+        drainer_task.await.unwrap_err();
+        drop(handle);
+        actor_task.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn packaged_assets_are_preferred() {
