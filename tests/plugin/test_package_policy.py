@@ -16,7 +16,10 @@ def valid_hooks() -> dict:
     handler = {
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
-        "commandWindows": 'powershell.exe -File "${PLUGIN_ROOT}\\hooks\\forward.ps1"',
+        "commandWindows": (
+            '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+            '-File "${PLUGIN_ROOT}\\hooks\\forward.ps1"'
+        ),
         "timeout": 1,
         "async": True,
     }
@@ -76,6 +79,17 @@ class PluginPackagePolicyTests(unittest.TestCase):
 
     def test_current_complete_shape_passes(self) -> None:
         validate_workspace(self.root)
+
+    def test_bare_windows_interpreter_is_rejected(self) -> None:
+        hooks_path = self.root / "plugins" / "lili" / "hooks" / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        for groups in hooks["hooks"].values():
+            groups[0]["hooks"][0]["commandWindows"] = (
+                'powershell.exe -File "${PLUGIN_ROOT}\\hooks\\forward.ps1"'
+            )
+        hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+
+        self.assert_rejected("trusted absolute PowerShell path")
 
     def test_path_escape_is_rejected(self) -> None:
         _, manifest = self.manifest()

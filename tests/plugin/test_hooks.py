@@ -14,7 +14,8 @@ EXPECTED_EVENTS = {
 }
 EXPECTED_COMMAND = '"${PLUGIN_ROOT}/hooks/forward"'
 EXPECTED_WINDOWS_COMMAND = (
-    'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+    '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
     '-Command "$input | & (Join-Path $env:PLUGIN_ROOT \'hooks\\forward.ps1\')"'
 )
 
@@ -40,6 +41,7 @@ class PluginHooksTests(unittest.TestCase):
                 self.assertEqual(handler["commandWindows"], EXPECTED_WINDOWS_COMMAND)
                 self.assertEqual(handler["command"].count("${PLUGIN_ROOT}"), 1)
                 self.assertEqual(handler["commandWindows"].count("$env:PLUGIN_ROOT"), 1)
+                self.assertNotIn("powershell.exe -NoLogo", handler["commandWindows"])
 
     def test_every_event_is_bounded_and_synchronous_on_reviewed_codex(self) -> None:
         for event, groups in self.document["hooks"].items():

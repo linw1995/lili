@@ -18,6 +18,7 @@ EXPECTED_HOOK_EVENTS = {
 }
 HANDLER_FIELDS = {"type", "command", "commandWindows", "timeout", "statusMessage", "async"}
 GROUP_FIELDS = {"matcher", "hooks"}
+TRUSTED_WINDOWS_POWERSHELL = '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'
 EXECUTABLE_SUFFIXES = {".bat", ".cmd", ".exe", ".ps1", ".sh"}
 EXECUTABLE_MAGICS = (
     b"\x7fELF",
@@ -159,6 +160,10 @@ def validate_hook_schema(path: Path) -> dict:
                 require(isinstance(handler["command"], str) and handler["command"], f"empty hook command: {event}")
                 if "commandWindows" in handler:
                     require(isinstance(handler["commandWindows"], str) and handler["commandWindows"], f"invalid Windows command: {event}")
+                    require(
+                        handler["commandWindows"].startswith(TRUSTED_WINDOWS_POWERSHELL + " "),
+                        f"Windows command must use the trusted absolute PowerShell path: {event}",
+                    )
                 if "timeout" in handler:
                     timeout = handler["timeout"]
                     require(isinstance(timeout, int) and not isinstance(timeout, bool) and timeout >= 1, f"invalid timeout: {event}")
