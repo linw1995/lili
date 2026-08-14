@@ -28,6 +28,7 @@ use windows_sys::Win32::{
 };
 
 pub(crate) fn enforce_owner_only(path: &Path, container: bool) -> io::Result<()> {
+    validate_owner(path)?;
     let current_user = CurrentUser::read()?;
     let sid = current_user.sid()?;
     let entry = EXPLICIT_ACCESS_W {
@@ -72,6 +73,35 @@ pub(crate) fn enforce_owner_only(path: &Path, container: bool) -> io::Result<()>
     Ok(())
 }
 
+pub(crate) fn validate_owner(path: &Path) -> io::Result<()> {
+    let current_user = CurrentUser::read()?;
+    let expected_owner = current_user.sid()?;
+    let wide_path = wide_path(path);
+    let mut owner: PSID = null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+    // SAFETY: wide_path is NUL-terminated and all output pointers refer to writable storage.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let _descriptor = LocalAllocation(descriptor);
+    if !same_sid(owner, expected_owner) {
+        return Err(unsafe_acl_error());
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
     let current_user = CurrentUser::read()?;
     let expected_owner = current_user.sid()?;
@@ -96,7 +126,7 @@ pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let descriptor = LocalAllocation(descriptor);
-    if owner.is_null() || dacl.is_null() || unsafe { EqualSid(owner, expected_owner) } == 0 {
+    if dacl.is_null() || !same_sid(owner, expected_owner) {
         return Err(unsafe_acl_error());
     }
 
@@ -137,7 +167,7 @@ pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
     let ace_sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
     if u32::from(ace.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
         || ace.Mask != FILE_ALL_ACCESS
-        || unsafe { EqualSid(ace_sid, expected_owner) } == 0
+        || !same_sid(ace_sid, expected_owner)
     {
         return Err(unsafe_acl_error());
     }
@@ -163,6 +193,10 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> 
 
 fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+fn same_sid(actual: PSID, expected: PSID) -> bool {
+    !actual.is_null() && !expected.is_null() && unsafe { EqualSid(actual, expected) } != 0
 }
 
 fn unsafe_acl_error() -> io::Error {
@@ -262,10 +296,34 @@ mod tests {
         fs,
         sync::atomic::{AtomicU64, Ordering},
     };
+    use windows_sys::Win32::Security::{CreateWellKnownSid, WinWorldSid};
 
     use super::*;
 
     static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn owner_comparison_rejects_a_different_valid_sid() {
+        let current_user = CurrentUser::read().unwrap();
+        let mut world_sid = [0_u8; 68];
+        let mut world_sid_size = u32::try_from(world_sid.len()).unwrap();
+        // SAFETY: world_sid is writable for the supplied size and the domain SID is optional.
+        assert_ne!(
+            unsafe {
+                CreateWellKnownSid(
+                    WinWorldSid,
+                    null_mut(),
+                    world_sid.as_mut_ptr().cast(),
+                    &mut world_sid_size,
+                )
+            },
+            0
+        );
+        assert!(!same_sid(
+            current_user.sid().unwrap(),
+            world_sid.as_mut_ptr().cast()
+        ));
+    }
 
     #[test]
     fn owner_only_validation_rejects_a_null_dacl() {

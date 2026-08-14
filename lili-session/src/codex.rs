@@ -319,6 +319,18 @@ impl CodexAdapterDiagnostics {
     }
 
     pub fn record_accepted_event(&mut self, event: &NormalizedSessionEvent) {
+        self.record_accepted_event_inner(event, true);
+    }
+
+    pub fn record_accepted_spooled_event(&mut self, event: &NormalizedSessionEvent) {
+        self.record_accepted_event_inner(event, false);
+    }
+
+    fn record_accepted_event_inner(
+        &mut self,
+        event: &NormalizedSessionEvent,
+        trust_plugin_attribution: bool,
+    ) {
         if event.provider.as_str() != "codex" {
             return;
         }
@@ -338,9 +350,13 @@ impl CodexAdapterDiagnostics {
             event_type: event.event_type,
             occurred_at_ms: event.occurred_at_ms,
             surface,
-            plugin_id: plugin_identity_from_source(&event.source_discriminator)
+            plugin_id: trust_plugin_attribution
+                .then(|| plugin_identity_from_source(&event.source_discriminator))
+                .flatten()
                 .map(|(plugin_id, _)| plugin_id.to_owned()),
-            plugin_version: plugin_version_from_source(&event.source_discriminator)
+            plugin_version: trust_plugin_attribution
+                .then(|| plugin_version_from_source(&event.source_discriminator))
+                .flatten()
                 .map(str::to_owned),
         };
         if accepted.plugin_version.is_some() {

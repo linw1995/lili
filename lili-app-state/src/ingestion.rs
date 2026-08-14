@@ -227,7 +227,9 @@ impl NativeIngestionActor {
                 }
                 IngestionCommand::IngestSpooled { event, response } => {
                     let outcome = if event.validate().is_ok() {
-                        Ok(self.reduce_event(event).await)
+                        Ok(self
+                            .reduce_event(event, PluginAttributionTrust::Unauthenticated)
+                            .await)
                     } else {
                         self.diagnostics
                             .record_rejection(RejectionCategory::Malformed);
@@ -269,7 +271,13 @@ impl NativeIngestionActor {
             }
         };
         let outcome = match verified.purpose() {
-            ForwardingPurpose::Event => self.reduce_event(verified.event().clone()).await,
+            ForwardingPurpose::Event => {
+                self.reduce_event(
+                    verified.event().clone(),
+                    PluginAttributionTrust::Authenticated,
+                )
+                .await
+            }
             ForwardingPurpose::Verification => {
                 self.verification_reducer.reduce(verified.event().clone())
             }
@@ -283,9 +291,21 @@ impl NativeIngestionActor {
         Ok(verified.acknowledgement(disposition))
     }
 
-    async fn reduce_event(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
+    async fn reduce_event(
+        &mut self,
+        event: NormalizedSessionEvent,
+        plugin_attribution: PluginAttributionTrust,
+    ) -> ReductionOutcome {
         let outcome = self.state.apply_session_event(event.clone()).await;
-        self.diagnostics.codex_adapter.record_accepted_event(&event);
+        match plugin_attribution {
+            PluginAttributionTrust::Authenticated => {
+                self.diagnostics.codex_adapter.record_accepted_event(&event)
+            }
+            PluginAttributionTrust::Unauthenticated => self
+                .diagnostics
+                .codex_adapter
+                .record_accepted_spooled_event(&event),
+        }
         match outcome {
             ReductionOutcome::Applied { .. } => {
                 self.diagnostics.accepted_messages =
@@ -313,6 +333,12 @@ impl NativeIngestionActor {
             .replace_ingestion_diagnostics(self.diagnostics.clone())
             .await;
     }
+}
+
+#[derive(Clone, Copy)]
+enum PluginAttributionTrust {
+    Authenticated,
+    Unauthenticated,
 }
 
 enum IngestionCommand {
@@ -365,6 +391,12 @@ pub enum IngestionError {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use lili_session::{
         CodexIntegrationSurface, CodexPluginAvailability, CodexPluginDiagnostics, DESKTOP_VERSION,
         ProviderCapabilitiesInputV1, ProviderInputV1, mark_plugin_hook_event,
@@ -372,6 +404,26 @@ mod tests {
     };
 
     use super::*;
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("lili-ingestion-{}-{sequence}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn event() -> lili_session::NormalizedSessionEvent {
         normalize_provider_input(ProviderInputV1 {
@@ -653,6 +705,59 @@ mod tests {
             ReductionOutcome::Applied { revision: 1 }
         );
         assert_eq!(state.snapshot().await.revision, 1);
+
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spooled_plugin_attribution_does_not_become_delivery_evidence() {
+        let temp = TempDir::new();
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let plugin = CodexPluginDiagnostics::discovered(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            true,
+        )
+        .with_plugin_id(Some("lili@lili-local"));
+        let diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(plugin);
+        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics_and_evidence_store(
+            state.clone(),
+            credentials.clone(),
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+            diagnostics,
+            Some(store.clone()),
+        )
+        .await;
+        let task = tokio::spawn(actor.run());
+        let mut spooled = event();
+        spooled.source_discriminator = "hook:Stop".to_owned();
+        assert!(mark_plugin_hook_event(&mut spooled, "lili@lili-local"));
+
+        assert_eq!(
+            handle.ingest_spooled(spooled).await.unwrap(),
+            ReductionOutcome::Applied { revision: 1 }
+        );
+
+        let diagnostics = state.ingestion_diagnostics().await.codex_adapter;
+        assert!(diagnostics.plugin.last_accepted_plugin_event.is_none());
+        let accepted = diagnostics.last_accepted_event.as_ref().unwrap();
+        assert!(accepted.plugin_id.is_none());
+        assert!(accepted.plugin_version.is_none());
+        let persisted = store.load(&credentials).unwrap();
+        assert!(persisted.plugin.last_accepted_plugin_event.is_none());
+        let persisted = persisted.last_accepted_event.as_ref().unwrap();
+        assert!(persisted.plugin_id.is_none());
+        assert!(persisted.plugin_version.is_none());
 
         drop(handle);
         task.await.unwrap();
