@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::{IntegrationInspection, UninstallOutcome, inspect, preview_uninstall, uninstall};
 
-pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 1;
+pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +37,7 @@ pub struct PluginMigrationEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct PluginMigrationAssessment {
     pub schema_version: u16,
+    pub codex_home: PathBuf,
     pub state: PluginMigrationState,
     pub plugin_selector: String,
     pub install_command: Vec<String>,
@@ -148,6 +149,7 @@ pub fn assess_plugin_migration(
 
     PluginMigrationAssessment {
         schema_version: PLUGIN_MIGRATION_SCHEMA_VERSION,
+        codex_home: inspection.codex_home.clone(),
         state,
         plugin_selector: plugin_selector.to_owned(),
         install_command: vec![
@@ -271,7 +273,35 @@ pub fn cleanup_legacy_after_verification(
     codex_home: &Path,
     assessment: &PluginMigrationAssessment,
 ) -> Result<UninstallOutcome, PluginMigrationError> {
+    cleanup_legacy_after_verification_with_host(
+        &mut CodexPluginLifecycleHost,
+        codex_home,
+        assessment,
+    )
+}
+
+#[doc(hidden)]
+pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
+    host: &mut H,
+    codex_home: &Path,
+    assessment: &PluginMigrationAssessment,
+) -> Result<UninstallOutcome, PluginMigrationError> {
     if !assessment.cleanup_allowed() || !assessment.blockers.is_empty() {
+        return Err(PluginMigrationError::FailedPrecondition);
+    }
+    let current = host.inspect(codex_home);
+    let plugin = &current.codex_adapter.plugin;
+    if assessment.schema_version != PLUGIN_MIGRATION_SCHEMA_VERSION
+        || assessment.codex_home != codex_home
+        || current.codex_home != codex_home
+        || !valid_plugin_selector(&assessment.plugin_selector)
+        || plugin.codex_support != CodexPluginSupport::Supported
+        || plugin.availability != CodexPluginAvailability::Installed
+        || plugin.installed != Some(true)
+        || plugin.enabled != Some(true)
+        || plugin.ipc_compatibility != CodexPluginIpcCompatibility::Supported
+        || plugin.hook_source != CodexHookSource::Overlap
+    {
         return Err(PluginMigrationError::FailedPrecondition);
     }
     let preview = preview_uninstall(codex_home)?;
@@ -572,9 +602,84 @@ mod tests {
                 overlap_deduplication_verified: true,
             },
         );
-        let outcome = cleanup_legacy_after_verification(&temp.0, &assessment).unwrap();
+        let mut current = inspection.clone();
+        current.codex_adapter = accepted_plugin_diagnostics();
+        let mut host = FakeHost {
+            inspections: VecDeque::from([current]),
+            install_result: Ok(()),
+            installed: 0,
+            rolled_back: 0,
+        };
+        let outcome =
+            cleanup_legacy_after_verification_with_host(&mut host, &temp.0, &assessment).unwrap();
         assert!(outcome.complete);
         assert!(!temp.0.join(crate::CONFIG_FILE_NAME).exists());
         assert!(!temp.0.join(crate::HOOKS_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn stale_or_cross_home_cleanup_assessment_preserves_legacy_integration() {
+        let source = TempDir::new();
+        let source_inspection = legacy_inspection(&source);
+        let assessment = assess_plugin_migration(
+            &source_inspection,
+            &accepted_plugin_diagnostics(),
+            "lili@test-marketplace",
+            &PluginMigrationEvidence {
+                exact_hooks_reviewed_by_user: true,
+                synthetic_delivery_verified: true,
+                overlap_deduplication_verified: true,
+            },
+        );
+
+        let target = TempDir::new();
+        let mut current = legacy_inspection(&target);
+        current.codex_adapter = accepted_plugin_diagnostics();
+        let mut host = FakeHost {
+            inspections: VecDeque::from([current]),
+            install_result: Ok(()),
+            installed: 0,
+            rolled_back: 0,
+        };
+        assert!(matches!(
+            cleanup_legacy_after_verification_with_host(&mut host, &target.0, &assessment),
+            Err(PluginMigrationError::FailedPrecondition)
+        ));
+        assert!(target.0.join(crate::CONFIG_FILE_NAME).exists());
+        assert!(target.0.join(crate::HOOKS_FILE_NAME).exists());
+
+        for plugin in [
+            CodexPluginDiagnostics::discovered(
+                Some(TESTED_CODEX_VERSION),
+                CodexPluginAvailability::Installed,
+                true,
+                false,
+                Some(DESKTOP_VERSION),
+                true,
+            ),
+            CodexPluginDiagnostics::discovered(
+                Some(TESTED_CODEX_VERSION),
+                CodexPluginAvailability::Available,
+                false,
+                false,
+                Some(DESKTOP_VERSION),
+                true,
+            ),
+        ] {
+            let mut current = source_inspection.clone();
+            current.codex_adapter.plugin = plugin;
+            let mut host = FakeHost {
+                inspections: VecDeque::from([current]),
+                install_result: Ok(()),
+                installed: 0,
+                rolled_back: 0,
+            };
+            assert!(matches!(
+                cleanup_legacy_after_verification_with_host(&mut host, &source.0, &assessment),
+                Err(PluginMigrationError::FailedPrecondition)
+            ));
+            assert!(source.0.join(crate::CONFIG_FILE_NAME).exists());
+            assert!(source.0.join(crate::HOOKS_FILE_NAME).exists());
+        }
     }
 }

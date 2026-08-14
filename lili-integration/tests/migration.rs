@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -9,10 +9,11 @@ use std::{
 };
 
 use lili_integration::{
-    CONFIG_FILE_NAME, HOOKS_FILE_NAME, LILI_INTEGRATION_ID, PluginMigrationError,
-    PluginMigrationEvidence, PluginMigrationState, assess_plugin_migration,
-    build_coexistence_install_plan, build_install_plan, cleanup_legacy_after_verification,
-    inspect_with_version, install_with_verifier,
+    CONFIG_FILE_NAME, HOOKS_FILE_NAME, IntegrationInspection, LILI_INTEGRATION_ID,
+    PluginLifecycleHost, PluginMigrationAssessment, PluginMigrationError, PluginMigrationEvidence,
+    PluginMigrationState, UninstallOutcome, assess_plugin_migration,
+    build_coexistence_install_plan, build_install_plan,
+    cleanup_legacy_after_verification_with_host, inspect_with_version, install_with_verifier,
 };
 use lili_session::{
     CodexAdapterDiagnostics, CodexHookSource, CodexIntegrationSurface, CodexPluginAvailability,
@@ -85,6 +86,33 @@ fn plugin_diagnostics(legacy_active: bool, version: &str) -> CodexAdapterDiagnos
     diagnostics
 }
 
+fn cleanup_with_diagnostics(
+    temp: &TempDir,
+    assessment: &PluginMigrationAssessment,
+    diagnostics: CodexAdapterDiagnostics,
+) -> Result<UninstallOutcome, PluginMigrationError> {
+    let mut current = inspect_with_version(&temp.0, Some(TESTED_CODEX_VERSION.to_owned()));
+    current.codex_adapter = diagnostics;
+    let mut host = InspectionHost(Some(current));
+    cleanup_legacy_after_verification_with_host(&mut host, &temp.0, assessment)
+}
+
+struct InspectionHost(Option<IntegrationInspection>);
+
+impl PluginLifecycleHost for InspectionHost {
+    fn install(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+        unreachable!("cleanup must not install a plugin")
+    }
+
+    fn inspect(&mut self, _codex_home: &Path) -> IntegrationInspection {
+        self.0.take().expect("cleanup inspection is single-use")
+    }
+
+    fn rollback(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+        unreachable!("cleanup must not remove a plugin")
+    }
+}
+
 #[test]
 fn clean_plugin_adoption_reaches_plugin_primary_without_legacy_cleanup() {
     let temp = TempDir::new();
@@ -126,9 +154,13 @@ fn cleanup_preserves_unrelated_notify_and_hooks() {
         &verified_evidence(),
     );
     assert!(
-        cleanup_legacy_after_verification(&temp.0, &assessment)
-            .unwrap()
-            .complete
+        cleanup_with_diagnostics(
+            &temp,
+            &assessment,
+            plugin_diagnostics(true, DESKTOP_VERSION)
+        )
+        .unwrap()
+        .complete
     );
     let config = fs::read_to_string(temp.0.join(CONFIG_FILE_NAME)).unwrap();
     assert!(config.contains("model = \"gpt-5\""));
@@ -154,7 +186,7 @@ fn untrusted_plugin_cannot_cleanup_legacy_integration() {
     );
     assert_eq!(assessment.state, PluginMigrationState::AwaitingHookReview);
     assert!(matches!(
-        cleanup_legacy_after_verification(&temp.0, &assessment),
+        cleanup_with_diagnostics(&temp, &assessment, diagnostics),
         Err(PluginMigrationError::FailedPrecondition)
     ));
     assert!(temp.0.join(CONFIG_FILE_NAME).exists());
@@ -243,7 +275,11 @@ fn failed_verification_and_repeated_assessment_never_remove_legacy_early() {
         );
         assert_eq!(assessment.state, PluginMigrationState::AwaitingVerification);
         assert!(matches!(
-            cleanup_legacy_after_verification(&temp.0, &assessment),
+            cleanup_with_diagnostics(
+                &temp,
+                &assessment,
+                plugin_diagnostics(true, DESKTOP_VERSION)
+            ),
             Err(PluginMigrationError::FailedPrecondition)
         ));
     }
@@ -268,7 +304,11 @@ fn modified_legacy_provenance_blocks_cleanup_without_partial_changes() {
     );
     assert_eq!(assessment.state, PluginMigrationState::Blocked);
     assert!(matches!(
-        cleanup_legacy_after_verification(&temp.0, &assessment),
+        cleanup_with_diagnostics(
+            &temp,
+            &assessment,
+            plugin_diagnostics(true, DESKTOP_VERSION)
+        ),
         Err(PluginMigrationError::FailedPrecondition)
     ));
     assert_eq!(
@@ -293,7 +333,7 @@ fn completed_migration_is_stable_when_assessed_again() {
         "lili@test-marketplace",
         &verified_evidence(),
     );
-    cleanup_legacy_after_verification(&temp.0, &ready).unwrap();
+    cleanup_with_diagnostics(&temp, &ready, diagnostics.clone()).unwrap();
 
     let inspection = inspect_with_version(&temp.0, Some(TESTED_CODEX_VERSION.to_owned()));
     let diagnostics = plugin_diagnostics(false, DESKTOP_VERSION);

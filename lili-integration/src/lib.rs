@@ -26,8 +26,8 @@ pub use migration::{
     CodexPluginLifecycleHost, PLUGIN_MIGRATION_SCHEMA_VERSION, PluginLifecycleHost,
     PluginMigrationAssessment, PluginMigrationError, PluginMigrationEvidence, PluginMigrationState,
     PluginRemovalOutcome, assess_plugin_migration, cleanup_legacy_after_verification,
-    install_plugin, install_plugin_with_rollback, remove_plugin, remove_plugin_with_host,
-    rollback_plugin,
+    cleanup_legacy_after_verification_with_host, install_plugin, install_plugin_with_rollback,
+    remove_plugin, remove_plugin_with_host, rollback_plugin,
 };
 pub use plan::{
     InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, IntegrationOperationKind,
