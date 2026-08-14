@@ -8,7 +8,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/forward\"",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')\"",
-            "timeout": 1,
+            "timeout": 2,
             "statusMessage": "Forwarding event to Lili",
             "async": false
           }
@@ -22,7 +22,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/forward\"",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')\"",
-            "timeout": 1,
+            "timeout": 2,
             "statusMessage": "Forwarding event to Lili",
             "async": false
           }
@@ -36,7 +36,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/forward\"",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')\"",
-            "timeout": 1,
+            "timeout": 2,
             "statusMessage": "Forwarding event to Lili",
             "async": false
           }
@@ -50,7 +50,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/forward\"",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')\"",
-            "timeout": 1,
+            "timeout": 2,
             "statusMessage": "Forwarding event to Lili",
             "async": false
           }
@@ -64,7 +64,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/forward\"",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')\"",
-            "timeout": 1,
+            "timeout": 2,
             "statusMessage": "Forwarding event to Lili",
             "async": false
           }

@@ -177,17 +177,18 @@
       "workflow": [
         "Ask the starter prompt and provide the fixture data as the bounded diagnostics result.",
         "Confirm the skill keeps legacy delivery active during plugin installation, review, trust, and verification.",
-        "Produce one synthetic event and one real plugin-attributed event while both sources overlap.",
-        "Confirm stable event identity produces one user-visible result.",
+        "Produce one real plugin-attributed event while both sources overlap.",
+        "Run lili integrate assess --plugin lili@test-marketplace and confirm authenticated synthetic delivery and stable event identity produce one user-visible result.",
         "Review the provenance-aware cleanup preview, then explicitly run the displayed cleanup command.",
         "Inspect the resulting configuration and diagnostics."
       ],
       "expectedResult": {
         "shape": {
           "assessment": {
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "state": "cleanup_ready",
             "verifiedPluginVersion": "0.1.0",
+            "verifiedPluginEventId": "plugin-event",
             "blockers": [],
             "cleanupCommand": [
               "lili",
@@ -207,6 +208,7 @@
         },
         "assertions": [
           "The skill recommends cleanup only after every trust and delivery precondition is observed.",
+          "Cleanup rejects an edited assessment or a verification receipt from another desktop runtime.",
           "Cleanup removes only provenance-owned legacy entries.",
           "The plugin, desktop application, application data, unrelated hooks, and unrelated notify command remain intact."
         ]

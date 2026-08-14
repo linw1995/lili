@@ -30,8 +30,9 @@ pub use spool::{
     SpoolMetrics, SpoolStore, decode_spool_record,
 };
 pub use transport::{
-    BoundForwardingEndpoint, ForwardingConnection, ForwardingCredentialStore,
-    ForwardingTransportError, deliver_forwarding_message, private_forwarding_endpoint_is_live,
+    BoundForwardingEndpoint, CodexPluginEvidenceStore, ForwardingConnection,
+    ForwardingCredentialStore, ForwardingTransportError, deliver_forwarding_message,
+    private_forwarding_endpoint_is_live,
 };
 pub use types::{
     DisplayProjectContext, DisplaySummary, DisplayValueError, EventId, IdentityError,

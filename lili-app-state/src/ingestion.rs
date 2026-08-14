@@ -1,7 +1,7 @@
 use lili_session::{
-    CodexAdapterDiagnostics, ForwardingAck, ForwardingAckDisposition, ForwardingCredentials,
-    ForwardingProtocolError, ForwardingVerifier, NormalizedSessionEvent, ReductionOutcome,
-    SpoolMetrics,
+    CodexAdapterDiagnostics, CodexPluginEvidenceStore, ForwardingAck, ForwardingAckDisposition,
+    ForwardingCredentials, ForwardingProtocolError, ForwardingVerifier, NormalizedSessionEvent,
+    ReductionOutcome, SpoolMetrics,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -135,6 +135,7 @@ pub struct NativeIngestionActor {
     receiver: mpsc::Receiver<IngestionCommand>,
     snapshot_sender: watch::Sender<ViewSnapshot>,
     diagnostics: IngestionDiagnostics,
+    codex_evidence_store: Option<CodexPluginEvidenceStore>,
 }
 
 impl NativeIngestionActor {
@@ -158,6 +159,23 @@ impl NativeIngestionActor {
         capacity: usize,
         codex_adapter: CodexAdapterDiagnostics,
     ) -> (NativeIngestionHandle, Self) {
+        Self::channel_with_diagnostics_and_evidence_store(
+            state,
+            credentials,
+            capacity,
+            codex_adapter,
+            None,
+        )
+        .await
+    }
+
+    pub async fn channel_with_diagnostics_and_evidence_store(
+        state: AppState,
+        credentials: ForwardingCredentials,
+        capacity: usize,
+        codex_adapter: CodexAdapterDiagnostics,
+        codex_evidence_store: Option<CodexPluginEvidenceStore>,
+    ) -> (NativeIngestionHandle, Self) {
         let capacity = capacity.max(1);
         let (sender, receiver) = mpsc::channel(capacity);
         let (snapshot_sender, snapshots) = watch::channel(state.snapshot().await);
@@ -170,6 +188,7 @@ impl NativeIngestionActor {
                 codex_adapter,
                 ..IngestionDiagnostics::default()
             },
+            codex_evidence_store,
         };
         (NativeIngestionHandle { sender, snapshots }, actor)
     }
@@ -267,6 +286,9 @@ impl NativeIngestionActor {
     }
 
     async fn publish_diagnostics(&self) {
+        if let Some(store) = &self.codex_evidence_store {
+            let _ = store.save(&self.diagnostics.codex_adapter);
+        }
         self.state
             .replace_ingestion_diagnostics(self.diagnostics.clone())
             .await;

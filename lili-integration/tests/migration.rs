@@ -122,6 +122,14 @@ impl PluginLifecycleHost for InspectionHost {
         })
     }
 
+    fn migration_evidence_verified(
+        &mut self,
+        _codex_home: &Path,
+        _assessment: &PluginMigrationAssessment,
+    ) -> bool {
+        true
+    }
+
     fn rollback(
         &mut self,
         _codex_home: &Path,
@@ -419,6 +427,46 @@ fn modified_legacy_provenance_blocks_cleanup_without_partial_changes() {
         fs::read(temp.0.join(HOOKS_FILE_NAME)).unwrap(),
         hooks_before
     );
+}
+
+#[test]
+fn modified_legacy_hook_blocks_cleanup_without_partial_changes() {
+    let temp = TempDir::new();
+    temp.install_legacy();
+    let config_before = fs::read(temp.0.join(CONFIG_FILE_NAME)).unwrap();
+    let hooks_path = temp.0.join(HOOKS_FILE_NAME);
+    let mut hooks: serde_json::Value =
+        serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+    let command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"] =
+        serde_json::Value::String(format!("{command} --custom"));
+    let hooks_before = serde_json::to_vec_pretty(&hooks).unwrap();
+    fs::write(&hooks_path, &hooks_before).unwrap();
+
+    let inspection = inspect_with_version(&temp.0, Some(TESTED_CODEX_VERSION.to_owned()));
+    let assessment = assess_plugin_migration(
+        &inspection,
+        &plugin_diagnostics(true, DESKTOP_VERSION),
+        "lili@test-marketplace",
+        &verified_evidence(),
+    );
+    assert_eq!(assessment.state, PluginMigrationState::Blocked);
+    assert!(matches!(
+        cleanup_with_diagnostics(
+            &temp,
+            &assessment,
+            plugin_diagnostics(true, DESKTOP_VERSION)
+        ),
+        Err(PluginMigrationError::FailedPrecondition)
+    ));
+    assert_eq!(
+        fs::read(temp.0.join(CONFIG_FILE_NAME)).unwrap(),
+        config_before
+    );
+    assert_eq!(fs::read(hooks_path).unwrap(), hooks_before);
 }
 
 #[test]

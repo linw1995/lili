@@ -276,7 +276,7 @@ fn planned_hook(
         handler_type: "command".to_owned(),
         command: format!("{} {suffix}", quote_posix(hook_binary)),
         command_windows: format!("{} {suffix}", quote_windows(hook_binary)),
-        timeout_seconds: 1,
+        timeout_seconds: 2,
         integration_id: LILI_INTEGRATION_ID.to_owned(),
     }
 }

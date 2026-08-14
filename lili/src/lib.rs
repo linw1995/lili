@@ -29,7 +29,8 @@ use lili_integration::{IntegrationKind, inspect};
 use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
 use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
-    BoundForwardingEndpoint, ClaimedSpoolRecord, ForwardingTransportError, SpoolStore,
+    BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
+    ForwardingTransportError, SpoolStore,
 };
 use loopback::LoopbackServer;
 use tauri::{
@@ -363,11 +364,12 @@ fn start_native_ingestion(
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
         let endpoint = BoundForwardingEndpoint::bind(&runtime_dir)?;
         let credentials = endpoint.credentials();
-        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics(
+        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics_and_evidence_store(
             state,
             credentials,
             DEFAULT_INGESTION_QUEUE_CAPACITY,
             codex_adapter,
+            Some(CodexPluginEvidenceStore::for_codex_home(codex_home)),
         )
         .await;
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))

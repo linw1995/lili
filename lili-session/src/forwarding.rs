@@ -21,6 +21,7 @@ const SECRET_BYTES: usize = 32;
 const MAC_BYTES: usize = 32;
 const MAX_ENDPOINT_TEXT_BYTES: usize = 1024;
 const SIGNATURE_DOMAIN: &[u8] = b"lili-forwarding-v1";
+const EVIDENCE_SIGNATURE_DOMAIN: &[u8] = b"lili-evidence-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -169,6 +170,47 @@ impl ForwardingCredentials {
 
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+
+    pub fn authenticate_evidence(
+        &self,
+        evidence_domain: &str,
+        payload: &[u8],
+    ) -> Result<String, ForwardingProtocolError> {
+        if evidence_domain.is_empty()
+            || evidence_domain.len() > 128
+            || evidence_domain.chars().any(char::is_control)
+            || payload.len() > MAX_FORWARDING_FRAME_BYTES
+        {
+            return Err(ForwardingProtocolError::Malformed);
+        }
+        let bytes = evidence_signing_bytes(evidence_domain, payload);
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.secret).expect("HMAC accepts a key of any size");
+        mac.update(&bytes);
+        Ok(encode_hex(&mac.finalize().into_bytes()))
+    }
+
+    pub fn verify_evidence(
+        &self,
+        evidence_domain: &str,
+        payload: &[u8],
+        authentication: &str,
+    ) -> Result<(), ForwardingProtocolError> {
+        if evidence_domain.is_empty()
+            || evidence_domain.len() > 128
+            || evidence_domain.chars().any(char::is_control)
+            || payload.len() > MAX_FORWARDING_FRAME_BYTES
+        {
+            return Err(ForwardingProtocolError::Malformed);
+        }
+        let supplied = decode_hex_array::<MAC_BYTES>(authentication)
+            .ok_or(ForwardingProtocolError::InvalidMac)?;
+        Hmac::<Sha256>::new_from_slice(&self.secret)
+            .expect("HMAC accepts a key of any size")
+            .chain_update(evidence_signing_bytes(evidence_domain, payload))
+            .verify_slice(&supplied)
+            .map_err(|_| ForwardingProtocolError::InvalidMac)
     }
 
     pub fn sign(
@@ -442,6 +484,21 @@ fn signing_bytes(message: &UnsignedForwardingMessage) -> Result<Vec<u8>, Forward
     Ok(bytes)
 }
 
+fn evidence_signing_bytes(evidence_domain: &str, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        EVIDENCE_SIGNATURE_DOMAIN.len() + evidence_domain.len() + payload.len() + 24,
+    );
+    for field in [
+        EVIDENCE_SIGNATURE_DOMAIN,
+        evidence_domain.as_bytes(),
+        payload,
+    ] {
+        bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes
+}
+
 fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, ForwardingProtocolError> {
     let payload = serde_json::to_vec(value).map_err(|_| ForwardingProtocolError::Malformed)?;
     if payload.len() > MAX_FORWARDING_FRAME_BYTES {
@@ -613,6 +670,25 @@ mod tests {
         assert_eq!(
             verifier.verify_payload(payload(&message.to_frame().unwrap()), 1_000),
             Err(ForwardingProtocolError::WrongInstance)
+        );
+    }
+
+    #[test]
+    fn evidence_authentication_is_domain_separated_and_detects_edits() {
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let authentication = credentials
+            .authenticate_evidence("plugin-migration", b"receipt")
+            .unwrap();
+        credentials
+            .verify_evidence("plugin-migration", b"receipt", &authentication)
+            .unwrap();
+        assert_eq!(
+            credentials.verify_evidence("plugin-migration", b"edited", &authentication),
+            Err(ForwardingProtocolError::InvalidMac)
+        );
+        assert_eq!(
+            credentials.verify_evidence("other", b"receipt", &authentication),
+            Err(ForwardingProtocolError::InvalidMac)
         );
     }
 

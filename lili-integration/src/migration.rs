@@ -1,13 +1,14 @@
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use lili_session::{
     CodexAdapterDiagnostics, CodexHookSource, CodexPluginAvailability, CodexPluginIpcCompatibility,
-    CodexPluginSupport, CodexPluginTrustState,
+    CodexPluginSupport, CodexPluginTrustState, ForwardingCredentialStore, ForwardingCredentials,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -17,9 +18,14 @@ use crate::{
     preview_uninstall, uninstall,
 };
 
-pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 3;
+pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 4;
 pub const PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME: &str = "lili-plugin-migration-assessment.json";
+pub const PLUGIN_MIGRATION_VERIFICATION_FILE_NAME: &str = "lili-plugin-migration-verification.json";
 const MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES: u64 = 64 * 1024;
+const MAX_PLUGIN_MIGRATION_VERIFICATION_BYTES: u64 = 16 * 1024;
+const PLUGIN_MIGRATION_VERIFICATION_SCHEMA_VERSION: u16 = 1;
+const PLUGIN_MIGRATION_EVIDENCE_DOMAIN: &str = "plugin-migration-verification";
+static NEXT_VERIFICATION_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,11 +54,37 @@ pub struct PluginMigrationAssessment {
     pub state: PluginMigrationState,
     pub plugin_selector: String,
     pub verified_plugin_version: Option<String>,
+    pub verified_plugin_event_id: Option<String>,
     pub install_command: Vec<String>,
     pub rollback_command: Vec<String>,
     pub cleanup_command: Vec<String>,
     pub blockers: Vec<String>,
     pub next_actions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginMigrationVerification {
+    schema_version: u16,
+    runtime_instance_id: String,
+    assessment_sha256: String,
+    synthetic_event_id: String,
+    exact_hooks_reviewed_by_user: bool,
+    synthetic_delivery_verified: bool,
+    overlap_deduplication_verified: bool,
+    authentication: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnsignedPluginMigrationVerification<'a> {
+    schema_version: u16,
+    runtime_instance_id: &'a str,
+    assessment_sha256: &'a str,
+    synthetic_event_id: &'a str,
+    exact_hooks_reviewed_by_user: bool,
+    synthetic_delivery_verified: bool,
+    overlap_deduplication_verified: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -84,13 +116,18 @@ pub fn assess_plugin_migration(
     let plugin_compatible =
         diagnostics.plugin.ipc_compatibility == CodexPluginIpcCompatibility::Supported;
     let plugin_identity_matches = diagnostics.plugin.plugin_id.as_deref() == Some(plugin_selector);
-    let verified_plugin_version = diagnostics
+    let verified_plugin_event = diagnostics
         .plugin
         .last_accepted_plugin_event
         .as_ref()
-        .and_then(|event| event.plugin_version.clone())
-        .filter(|version| diagnostics.plugin.plugin_version.as_ref() == Some(version));
-    let real_delivery = verified_plugin_version.is_some()
+        .filter(|event| {
+            event.plugin_version.is_some()
+                && event.plugin_version.as_ref() == diagnostics.plugin.plugin_version.as_ref()
+        });
+    let verified_plugin_version =
+        verified_plugin_event.and_then(|event| event.plugin_version.clone());
+    let verified_plugin_event_id = verified_plugin_event.map(|event| event.event_id.clone());
+    let real_delivery = verified_plugin_event.is_some()
         && diagnostics.plugin.trust_state == CodexPluginTrustState::TrustedAtLastDelivery;
     let cleanup_preview = legacy_active.then(|| preview_uninstall(&inspection.codex_home));
 
@@ -175,6 +212,7 @@ pub fn assess_plugin_migration(
         state,
         plugin_selector: plugin_selector.to_owned(),
         verified_plugin_version,
+        verified_plugin_event_id,
         install_command: vec![
             "codex".to_owned(),
             "plugin".to_owned(),
@@ -222,6 +260,13 @@ pub trait PluginLifecycleHost {
     fn hooks_trusted(&mut self, _codex_home: &Path, _plugin_selector: &str) -> bool {
         false
     }
+    fn migration_evidence_verified(
+        &mut self,
+        _codex_home: &Path,
+        _assessment: &PluginMigrationAssessment,
+    ) -> bool {
+        false
+    }
     fn rollback(
         &mut self,
         codex_home: &Path,
@@ -247,6 +292,14 @@ impl PluginLifecycleHost for CodexPluginLifecycleHost {
 
     fn hooks_trusted(&mut self, codex_home: &Path, plugin_selector: &str) -> bool {
         plugin_hooks_are_trusted(codex_home, plugin_selector)
+    }
+
+    fn migration_evidence_verified(
+        &mut self,
+        codex_home: &Path,
+        assessment: &PluginMigrationAssessment,
+    ) -> bool {
+        verify_saved_plugin_migration_evidence(codex_home, assessment)
     }
 
     fn rollback(
@@ -364,7 +417,11 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
         || !assessment.blockers.is_empty()
         || !valid_plugin_selector(&assessment.plugin_selector)
         || assessment.verified_plugin_version.is_none()
+        || assessment.verified_plugin_event_id.is_none()
     {
+        return Err(PluginMigrationError::FailedPrecondition);
+    }
+    if !host.migration_evidence_verified(codex_home, assessment) {
         return Err(PluginMigrationError::FailedPrecondition);
     }
     if !host.hooks_trusted(codex_home, &assessment.plugin_selector) {
@@ -372,6 +429,7 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
     }
     let current = host.inspect(codex_home, &assessment.plugin_selector);
     let plugin = &current.codex_adapter.plugin;
+    let accepted = plugin.last_accepted_plugin_event.as_ref();
     let codex_version_allowed = matches!(
         plugin.codex_support,
         CodexPluginSupport::Supported | CodexPluginSupport::Unreviewed
@@ -383,6 +441,10 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
         || plugin.installed != Some(true)
         || plugin.enabled != Some(true)
         || assessment.verified_plugin_version.as_ref() != plugin.plugin_version.as_ref()
+        || accepted.and_then(|event| event.plugin_version.as_ref())
+            != assessment.verified_plugin_version.as_ref()
+        || accepted.map(|event| &event.event_id) != assessment.verified_plugin_event_id.as_ref()
+        || plugin.trust_state != CodexPluginTrustState::TrustedAtLastDelivery
         || plugin.ipc_compatibility != CodexPluginIpcCompatibility::Supported
         || plugin.hook_source != CodexHookSource::Overlap
     {
@@ -420,6 +482,177 @@ pub fn load_plugin_migration_assessment(
         return Err(PluginMigrationError::AssessmentUnreadable);
     }
     serde_json::from_slice(&payload).map_err(|_| PluginMigrationError::MalformedAssessment)
+}
+
+pub fn save_plugin_migration_verification(
+    codex_home: &Path,
+    assessment: &PluginMigrationAssessment,
+    credentials: &ForwardingCredentials,
+    synthetic_event_id: &str,
+) -> Result<PathBuf, PluginMigrationError> {
+    if !assessment.cleanup_allowed()
+        || assessment.codex_home != codex_home
+        || assessment.verified_plugin_version.is_none()
+        || assessment.verified_plugin_event_id.is_none()
+        || synthetic_event_id.is_empty()
+        || synthetic_event_id.len() > 128
+        || synthetic_event_id.chars().any(char::is_control)
+    {
+        return Err(PluginMigrationError::FailedPrecondition);
+    }
+    let assessment_sha256 = assessment_sha256(assessment)?;
+    let unsigned = UnsignedPluginMigrationVerification {
+        schema_version: PLUGIN_MIGRATION_VERIFICATION_SCHEMA_VERSION,
+        runtime_instance_id: credentials.instance_id(),
+        assessment_sha256: &assessment_sha256,
+        synthetic_event_id,
+        exact_hooks_reviewed_by_user: true,
+        synthetic_delivery_verified: true,
+        overlap_deduplication_verified: true,
+    };
+    let payload =
+        serde_json::to_vec(&unsigned).map_err(|_| PluginMigrationError::MalformedVerification)?;
+    let authentication = credentials
+        .authenticate_evidence(PLUGIN_MIGRATION_EVIDENCE_DOMAIN, &payload)
+        .map_err(|_| PluginMigrationError::MalformedVerification)?;
+    let verification = PluginMigrationVerification {
+        schema_version: unsigned.schema_version,
+        runtime_instance_id: unsigned.runtime_instance_id.to_owned(),
+        assessment_sha256,
+        synthetic_event_id: synthetic_event_id.to_owned(),
+        exact_hooks_reviewed_by_user: true,
+        synthetic_delivery_verified: true,
+        overlap_deduplication_verified: true,
+        authentication,
+    };
+    let mut encoded = serde_json::to_vec_pretty(&verification)
+        .map_err(|_| PluginMigrationError::MalformedVerification)?;
+    encoded.push(b'\n');
+    if encoded.len() as u64 > MAX_PLUGIN_MIGRATION_VERIFICATION_BYTES {
+        return Err(PluginMigrationError::MalformedVerification);
+    }
+    let path = codex_home
+        .join("lili")
+        .join(PLUGIN_MIGRATION_VERIFICATION_FILE_NAME);
+    write_private_verification(&path, &encoded)?;
+    Ok(path)
+}
+
+fn verify_saved_plugin_migration_evidence(
+    codex_home: &Path,
+    assessment: &PluginMigrationAssessment,
+) -> bool {
+    let credential_store =
+        ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"));
+    let Ok(record) = credential_store.load() else {
+        return false;
+    };
+    let Ok(credentials) = record.credentials() else {
+        return false;
+    };
+    let path = codex_home
+        .join("lili")
+        .join(PLUGIN_MIGRATION_VERIFICATION_FILE_NAME);
+    let Ok(verification) = load_plugin_migration_verification(&path) else {
+        return false;
+    };
+    let Ok(expected_assessment_sha256) = assessment_sha256(assessment) else {
+        return false;
+    };
+    if verification.schema_version != PLUGIN_MIGRATION_VERIFICATION_SCHEMA_VERSION
+        || verification.runtime_instance_id != credentials.instance_id()
+        || verification.assessment_sha256 != expected_assessment_sha256
+        || verification.synthetic_event_id.is_empty()
+        || !verification.exact_hooks_reviewed_by_user
+        || !verification.synthetic_delivery_verified
+        || !verification.overlap_deduplication_verified
+    {
+        return false;
+    }
+    let unsigned = UnsignedPluginMigrationVerification {
+        schema_version: verification.schema_version,
+        runtime_instance_id: &verification.runtime_instance_id,
+        assessment_sha256: &verification.assessment_sha256,
+        synthetic_event_id: &verification.synthetic_event_id,
+        exact_hooks_reviewed_by_user: verification.exact_hooks_reviewed_by_user,
+        synthetic_delivery_verified: verification.synthetic_delivery_verified,
+        overlap_deduplication_verified: verification.overlap_deduplication_verified,
+    };
+    serde_json::to_vec(&unsigned).is_ok_and(|payload| {
+        credentials
+            .verify_evidence(
+                PLUGIN_MIGRATION_EVIDENCE_DOMAIN,
+                &payload,
+                &verification.authentication,
+            )
+            .is_ok()
+    })
+}
+
+fn assessment_sha256(
+    assessment: &PluginMigrationAssessment,
+) -> Result<String, PluginMigrationError> {
+    let payload =
+        serde_json::to_vec(assessment).map_err(|_| PluginMigrationError::MalformedAssessment)?;
+    Ok(crate::sha256_hex(&payload))
+}
+
+fn load_plugin_migration_verification(
+    path: &Path,
+) -> Result<PluginMigrationVerification, PluginMigrationError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| PluginMigrationError::VerificationUnreadable)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_PLUGIN_MIGRATION_VERIFICATION_BYTES
+    {
+        return Err(PluginMigrationError::VerificationUnreadable);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(PluginMigrationError::VerificationUnreadable);
+        }
+    }
+    let mut payload = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(path)
+        .map_err(|_| PluginMigrationError::VerificationUnreadable)?
+        .take(MAX_PLUGIN_MIGRATION_VERIFICATION_BYTES + 1)
+        .read_to_end(&mut payload)
+        .map_err(|_| PluginMigrationError::VerificationUnreadable)?;
+    serde_json::from_slice(&payload).map_err(|_| PluginMigrationError::MalformedVerification)
+}
+
+fn write_private_verification(path: &Path, payload: &[u8]) -> Result<(), PluginMigrationError> {
+    let directory = path
+        .parent()
+        .ok_or(PluginMigrationError::VerificationUnreadable)?;
+    fs::create_dir_all(directory).map_err(|_| PluginMigrationError::VerificationUnreadable)?;
+    let sequence = NEXT_VERIFICATION_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(
+        ".plugin-verification-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|_| PluginMigrationError::VerificationUnreadable)?;
+    let result = file
+        .write_all(payload)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(PluginMigrationError::VerificationUnreadable);
+    }
+    Ok(())
 }
 
 fn valid_plugin_selector(selector: &str) -> bool {
@@ -487,6 +720,10 @@ pub enum PluginMigrationError {
     AssessmentUnreadable,
     #[error("plugin migration assessment is malformed")]
     MalformedAssessment,
+    #[error("plugin migration verification could not be read safely")]
+    VerificationUnreadable,
+    #[error("plugin migration verification is malformed")]
+    MalformedVerification,
     #[error("legacy cleanup failed: {0}")]
     LegacyCleanup(#[from] crate::UninstallError),
 }
@@ -501,8 +738,8 @@ mod tests {
     };
 
     use lili_session::{
-        CodexPluginDiagnostics, CodexPluginTrustState, DESKTOP_VERSION, LastAcceptedCodexEvent,
-        SessionEventKind, TESTED_CODEX_VERSION,
+        BoundForwardingEndpoint, CodexPluginDiagnostics, CodexPluginTrustState, DESKTOP_VERSION,
+        LastAcceptedCodexEvent, SessionEventKind, TESTED_CODEX_VERSION,
     };
 
     use crate::{build_install_plan, inspect_with_version, install_with_verifier};
@@ -645,6 +882,15 @@ mod tests {
                 inspection.codex_adapter.plugin.trust_state
                     == CodexPluginTrustState::TrustedAtLastDelivery
             })
+        }
+
+        fn migration_evidence_verified(
+            &mut self,
+            codex_home: &Path,
+            _assessment: &PluginMigrationAssessment,
+        ) -> bool {
+            assert_eq!(codex_home, self.expected_home);
+            true
         }
 
         fn rollback(
@@ -923,6 +1169,44 @@ mod tests {
             load_plugin_migration_assessment(&path),
             Err(PluginMigrationError::AssessmentUnreadable)
         ));
+    }
+
+    #[tokio::test]
+    async fn cleanup_verification_is_bound_to_runtime_and_exact_assessment() {
+        let temp = TempDir::new();
+        let inspection = legacy_inspection(&temp);
+        let assessment = assess_plugin_migration(
+            &inspection,
+            &accepted_plugin_diagnostics(),
+            "lili@test-marketplace",
+            &PluginMigrationEvidence {
+                exact_hooks_reviewed_by_user: true,
+                synthetic_delivery_verified: true,
+                overlap_deduplication_verified: true,
+            },
+        );
+        let runtime_dir = temp.0.join("lili/runtime");
+        let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
+        save_plugin_migration_verification(
+            &temp.0,
+            &assessment,
+            &endpoint.credentials(),
+            "synthetic-event",
+        )
+        .unwrap();
+        assert!(verify_saved_plugin_migration_evidence(&temp.0, &assessment));
+
+        let mut edited = assessment.clone();
+        edited.next_actions.push("edited".to_owned());
+        assert!(!verify_saved_plugin_migration_evidence(&temp.0, &edited));
+
+        drop(endpoint);
+        let replacement = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
+        assert!(!verify_saved_plugin_migration_evidence(
+            &temp.0,
+            &assessment
+        ));
+        drop(replacement);
     }
 
     #[test]

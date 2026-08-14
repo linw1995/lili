@@ -15,7 +15,7 @@ use std::{
 
 use lili_session::{
     CodexAdapterDiagnostics, CodexIntegrationSurface, CodexPluginAvailability,
-    CodexPluginDiagnostics, TESTED_CODEX_VERSION,
+    CodexPluginDiagnostics, CodexPluginEvidenceStore, TESTED_CODEX_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,11 +28,12 @@ pub use install::{
 };
 pub use migration::{
     CodexPluginLifecycleHost, PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME,
-    PLUGIN_MIGRATION_SCHEMA_VERSION, PluginLifecycleHost, PluginMigrationAssessment,
-    PluginMigrationError, PluginMigrationEvidence, PluginMigrationState, PluginRemovalOutcome,
-    assess_plugin_migration, cleanup_legacy_after_verification,
+    PLUGIN_MIGRATION_SCHEMA_VERSION, PLUGIN_MIGRATION_VERIFICATION_FILE_NAME, PluginLifecycleHost,
+    PluginMigrationAssessment, PluginMigrationError, PluginMigrationEvidence, PluginMigrationState,
+    PluginRemovalOutcome, assess_plugin_migration, cleanup_legacy_after_verification,
     cleanup_legacy_after_verification_with_host, install_plugin, install_plugin_with_rollback,
     load_plugin_migration_assessment, remove_plugin, remove_plugin_with_host, rollback_plugin,
+    save_plugin_migration_verification,
 };
 pub use plan::{
     InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, IntegrationOperationKind,
@@ -205,9 +206,15 @@ fn inspect_with_evidence(
             })
         },
     );
-    let codex_adapter =
+    let discovered =
         CodexAdapterDiagnostics::with_discovery(codex_version.as_deref(), discovered_surfaces)
             .with_plugin(plugin);
+    let codex_adapter = CodexPluginEvidenceStore::for_codex_home(codex_home)
+        .load()
+        .map_or(discovered.clone(), |mut runtime| {
+            runtime.refresh_discovery(discovered);
+            runtime
+        });
 
     let mut warnings = Vec::new();
     if codex_version.is_none() {
@@ -268,7 +275,7 @@ fn detect_plugin_list(codex_home: &Path) -> Option<Vec<u8>> {
     Some(output.stdout)
 }
 
-pub(crate) fn plugin_hooks_are_trusted(codex_home: &Path, plugin_selector: &str) -> bool {
+pub fn plugin_hooks_are_trusted(codex_home: &Path, plugin_selector: &str) -> bool {
     let mut child = match Command::new("codex")
         .args(["app-server", "--stdio"])
         .env("CODEX_HOME", codex_home)
