@@ -11,3 +11,4 @@ cargo test --locked -p lili-session lifecycle_adapter_does_not_retain_prompt_or_
 cargo test --locked -p lili-session plugin_diagnostics_require_observed_delivery_for_trust
 cargo test --locked -p lili-session credentials_rotate_and_debug_output_redacts_the_secret
 cargo test --locked -p lili --test permission_hook
+cargo test --locked -p lili --features release-tools --test plugin_hook

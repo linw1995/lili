@@ -320,6 +320,8 @@ struct LifecycleInput {
     hook_event_name: Option<String>,
     source: Option<String>,
     last_assistant_message: Option<String>,
+    tool_name: Option<String>,
+    tool_input: Option<serde_json::Value>,
 }
 
 pub fn normalize_hook_json(
@@ -405,6 +407,7 @@ pub fn normalize_lifecycle_json(
         .hook_event_name
         .as_deref()
         .ok_or(NormalizationError::MissingField("hook event name"))?;
+    let event_id = lifecycle_event_id(&input, hook);
     let (event_type, turn_id, summary) = match hook {
         SESSION_START_HOOK => ("session_started", None, None),
         USER_PROMPT_SUBMIT_HOOK => ("turn_started", input.turn_id, None),
@@ -422,7 +425,7 @@ pub fn normalize_lifecycle_json(
         version: SESSION_SCHEMA_VERSION,
         provider: Some("codex".to_owned()),
         event_type: Some(event_type.to_owned()),
-        event_id: None,
+        event_id,
         session_id: input.session_id,
         turn_id,
         occurred_at_ms: Some(occurred_at_ms),
@@ -460,6 +463,48 @@ fn notify_event_id(thread_id: Option<&str>, turn_id: Option<&str>) -> Option<Str
         write!(&mut event_id, "{byte:02x}").expect("writing to a string cannot fail");
     }
     Some(event_id)
+}
+
+fn lifecycle_event_id(input: &LifecycleInput, hook: &str) -> Option<String> {
+    let session_id = input.session_id.as_deref()?;
+    let mut digest = Sha256::new();
+    update_identity_field(&mut digest, hook.as_bytes());
+    update_identity_field(&mut digest, session_id.as_bytes());
+
+    match hook {
+        USER_PROMPT_SUBMIT_HOOK | STOP_HOOK => {
+            update_identity_field(&mut digest, input.turn_id.as_deref()?.as_bytes());
+        }
+        PERMISSION_REQUEST_HOOK => {
+            update_identity_field(&mut digest, input.turn_id.as_deref()?.as_bytes());
+            update_optional_identity_field(&mut digest, input.tool_name.as_deref());
+            let tool_input = serde_json::to_vec(input.tool_input.as_ref()?).ok()?;
+            update_identity_field(&mut digest, &tool_input);
+        }
+        SESSION_START_HOOK | SESSION_END_HOOK => {}
+        _ => return None,
+    }
+
+    let mut event_id = String::from("codex-hook-");
+    for byte in digest.finalize() {
+        write!(&mut event_id, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    Some(event_id)
+}
+
+fn update_optional_identity_field(digest: &mut Sha256, field: Option<&str>) {
+    match field {
+        Some(field) => {
+            digest.update([1]);
+            update_identity_field(digest, field.as_bytes());
+        }
+        None => digest.update([0]),
+    }
+}
+
+fn update_identity_field(digest: &mut Sha256, field: &[u8]) {
+    digest.update((field.len() as u64).to_be_bytes());
+    digest.update(field);
 }
 
 fn notify_source(client: Option<&str>) -> Result<String, NormalizationError> {
@@ -755,6 +800,30 @@ mod tests {
             stop.summary.unwrap().text(),
             "Fixture verification completed successfully."
         );
+    }
+
+    #[test]
+    fn lifecycle_identity_is_stable_across_delivery_time() {
+        for (payload, _, _) in LIFECYCLE_FIXTURES {
+            let first = normalize_lifecycle_json(payload, 42).unwrap();
+            let second = normalize_lifecycle_json(payload, 99).unwrap();
+            assert_eq!(first.event_id, second.event_id);
+            assert_eq!(second.occurred_at_ms, 99);
+        }
+    }
+
+    #[test]
+    fn permission_identity_distinguishes_requests_without_retaining_arguments() {
+        let first = normalize_lifecycle_json(LIFECYCLE_FIXTURES[2].0, 42).unwrap();
+        let mut changed: serde_json::Value =
+            serde_json::from_slice(LIFECYCLE_FIXTURES[2].0).unwrap();
+        changed["tool_input"]["command"] = serde_json::json!("cargo check");
+        let second = normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42).unwrap();
+
+        assert_ne!(first.event_id, second.event_id);
+        let normalized = serde_json::to_string(&second).unwrap();
+        assert!(!normalized.contains("cargo check"));
+        assert!(!normalized.contains("tool_input"));
     }
 
     #[test]

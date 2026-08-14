@@ -44,6 +44,11 @@ name = "lili-windows-acceptance"
 path = "src/bin/lili-windows-acceptance.rs"
 required-features = ["acceptance"]
 
+[[test]]
+name = "plugin_hook"
+path = "tests/plugin_hook.rs"
+required-features = ["release-tools"]
+
 [lib]
 name = "lili_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
