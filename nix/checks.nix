@@ -18,6 +18,7 @@
     "build"
     "build-app"
     "plugin-archive"
+    "marketplace-check"
     "build-css"
     "format"
     "format-check"
@@ -49,6 +50,7 @@
       "coverage"
       "codex-matrix"
       "desktop-smoke"
+      "marketplace-check"
     ]
     ++ pkgs.lib.optionals toolchain.isDarwin ["macos-acceptance"]
     ++ pkgs.lib.optionals toolchain.isLinux ["linux-acceptance"];

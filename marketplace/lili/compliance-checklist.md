@@ -31,8 +31,8 @@ Status: In preparation. This checklist records repository evidence and remaining
 - [x] Packaged launchers select only declared targets, preserve standard input, emit no model-visible output, and fail closed on unsupported or tampered targets.
 - [x] Runtime diagnostics distinguish plugin, legacy, and overlapping hook sources and report compatibility and remediation without exposing source paths.
 - [x] Migration preserves unrelated configuration and rolls back when trust, compatibility, delivery verification, or provenance checks fail.
-- [ ] Positive and negative reviewer cases are complete and reproducible from the final archive.
-- [ ] Automated consistency checks cover the manifest, skill, documentation, policies, submission metadata, release contents, and observed runtime handling.
+- [x] Positive and negative reviewer cases are complete and reproducible from repository fixtures; final-archive execution remains part of packaged acceptance.
+- [x] Automated consistency checks cover the manifest, skill, documentation, policies, submission metadata, release contents, and observed runtime handling.
 - [ ] Clean local Marketplace install, trust, delivery, update, rollback, disable, and removal acceptance passes on every declared host.
 - [ ] Final archive checksums, signing evidence where applicable, dependency and license inventory, vulnerability scan, and secret inspection are complete.
 

@@ -67,7 +67,16 @@ in {
     text = ''
       python3 scripts/check-plugin-assets.py
       python3 scripts/check_plugin_package.py
+      python3 scripts/check_marketplace_consistency.py
       exec python3 scripts/build_plugin_archive.py "$@"
+    '';
+  };
+
+  marketplace-check = mkNativeWorkspaceApp {
+    name = "marketplace-check";
+    runtimeInputs = [pkgs.python3 toolchain.rustToolchain];
+    text = ''
+      exec bash scripts/check-marketplace.sh "$@"
     '';
   };
 

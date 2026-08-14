@@ -50,6 +50,7 @@ jobs:
       - run: nix run .#spec-validate
       - run: nix run .#workflow-lint
       - run: nix run .#codex-matrix
+      - run: nix run .#marketplace-check
 
   coverage:
     runs-on: ubuntu-latest
