@@ -7,9 +7,10 @@ mod transport;
 mod types;
 
 pub use codex::{
-    CodexAdapterDiagnostics, CodexIntegrationSurface, LastAcceptedCodexEvent,
-    MissingLifecycleCoverage, TESTED_CODEX_VERSION, normalize_hook_json, normalize_lifecycle_json,
-    normalize_notify_json,
+    CodexAdapterDiagnostics, CodexHookSource, CodexIntegrationSurface, CodexPluginAvailability,
+    CodexPluginDiagnostics, CodexPluginIpcCompatibility, CodexPluginSupport, CodexPluginTrustState,
+    DESKTOP_VERSION, LastAcceptedCodexEvent, MissingLifecycleCoverage, TESTED_CODEX_VERSION,
+    mark_plugin_hook_event, normalize_hook_json, normalize_lifecycle_json, normalize_notify_json,
 };
 pub use forwarding::{
     DEFAULT_NONCE_CAPACITY, DEFAULT_REPLAY_WINDOW_MS, FORWARDING_PROTOCOL_VERSION, ForwardingAck,

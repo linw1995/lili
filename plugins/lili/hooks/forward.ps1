@@ -57,7 +57,7 @@ if (-not $forwarderItem.PSIsContainer -and
     Fail-LiliLauncher "Lili plugin forwarder is missing or invalid" 66
 }
 
-& $forwarderPath --integration-id "lili-session-v1" --json-stdin
+& $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin
 if ($null -eq $LASTEXITCODE) {
     Fail-LiliLauncher "Lili plugin forwarder did not return an exit code" 67
 }

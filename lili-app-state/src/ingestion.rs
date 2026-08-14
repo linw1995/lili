@@ -126,6 +126,21 @@ impl NativeIngestionActor {
         credentials: ForwardingCredentials,
         capacity: usize,
     ) -> (NativeIngestionHandle, Self) {
+        Self::channel_with_diagnostics(
+            state,
+            credentials,
+            capacity,
+            CodexAdapterDiagnostics::default(),
+        )
+        .await
+    }
+
+    pub async fn channel_with_diagnostics(
+        state: AppState,
+        credentials: ForwardingCredentials,
+        capacity: usize,
+        codex_adapter: CodexAdapterDiagnostics,
+    ) -> (NativeIngestionHandle, Self) {
         let capacity = capacity.max(1);
         let (sender, receiver) = mpsc::channel(capacity);
         let (snapshot_sender, snapshots) = watch::channel(state.snapshot().await);
@@ -134,7 +149,10 @@ impl NativeIngestionActor {
             verifier: ForwardingVerifier::new(credentials),
             receiver,
             snapshot_sender,
-            diagnostics: IngestionDiagnostics::default(),
+            diagnostics: IngestionDiagnostics {
+                codex_adapter,
+                ..IngestionDiagnostics::default()
+            },
         };
         (NativeIngestionHandle { sender, snapshots }, actor)
     }

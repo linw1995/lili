@@ -31,7 +31,7 @@ State the active surface before giving setup advice.
 Prefer existing diagnostics and read-only commands. Explain each command before running it.
 
 1. Run `codex --version` when a local Codex command is available.
-2. Run `codex plugin list --json` to inspect plugin installation metadata. Do not alter plugin state.
+2. Run `codex plugin list --available --json` to inspect installed and available plugin metadata. Do not alter plugin state.
 3. Run the packaged `bin/lili integrate inspect` command only by a user-supplied or user-confirmed absolute release path. Do not resolve an arbitrary `lili` from `PATH`.
 4. Ask the user to read the Lili tray **Diagnostics** view when desktop version, plugin attribution, IPC compatibility, or last accepted event is unavailable through a safe command.
 5. Record unavailable facts as `unknown`. Do not infer hook trust from installation or enablement, and do not infer delivery from discovery alone.

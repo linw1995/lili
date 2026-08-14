@@ -62,10 +62,12 @@ class PluginLauncherContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, windows)
         self.assertIn(
-            'exec "$forwarder" --integration-id lili-session-v1 --json-stdin', posix
+            'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
+            posix,
         )
         self.assertIn(
-            '& $forwarderPath --integration-id "lili-session-v1" --json-stdin', windows
+            '& $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
+            windows,
         )
 
     def test_posix_launcher_preserves_stdin_with_spaces_in_root(self) -> None:
@@ -86,7 +88,8 @@ class PluginLauncherContractTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 'test "$1" = "--integration-id" || exit 91\n'
                 'test "$2" = "lili-session-v1" || exit 92\n'
-                'test "$3" = "--json-stdin" || exit 93\n'
+                'test "$3" = "--plugin-hook" || exit 93\n'
+                'test "$4" = "--json-stdin" || exit 94\n'
                 "/bin/cat\n",
                 encoding="utf-8",
             )

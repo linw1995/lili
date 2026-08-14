@@ -10,7 +10,7 @@ use lili_integration::LILI_INTEGRATION_ID;
 use lili_pet::resolve_codex_home;
 use lili_session::{
     ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolStore,
-    deliver_forwarding_message, normalize_hook_json,
+    deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,
 };
 
 pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(150);
@@ -74,7 +74,10 @@ impl HookResult {
 
 #[derive(Debug, Eq, PartialEq)]
 enum HookInvocation {
-    Direct(Vec<u8>),
+    Direct {
+        payload: Vec<u8>,
+        plugin_attributed: bool,
+    },
     Coexist {
         original_argv: Vec<String>,
         payload: Vec<u8>,
@@ -98,8 +101,12 @@ pub async fn run_from_environment() -> HookResult {
         }
     };
     match invocation {
-        HookInvocation::Direct(payload) => {
-            process_payload(&codex_home, &payload, unix_time_ms()).await
+        HookInvocation::Direct {
+            payload,
+            plugin_attributed,
+        } => {
+            process_payload_with_source(&codex_home, &payload, unix_time_ms(), plugin_attributed)
+                .await
         }
         HookInvocation::Coexist {
             original_argv,
@@ -113,7 +120,16 @@ pub async fn run_from_environment() -> HookResult {
 }
 
 pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> HookResult {
-    let event = match normalize_hook_json(payload, now_ms) {
+    process_payload_with_source(codex_home, payload, now_ms, false).await
+}
+
+async fn process_payload_with_source(
+    codex_home: &Path,
+    payload: &[u8],
+    now_ms: u64,
+    plugin_attributed: bool,
+) -> HookResult {
+    let mut event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
         Err(_) => {
             return HookResult::failure(
@@ -122,6 +138,12 @@ pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> 
             );
         }
     };
+    if plugin_attributed && !mark_plugin_hook_event(&mut event) {
+        return HookResult::failure(
+            HookExitCode::InvalidInput,
+            "plugin invocation requires a supported Codex lifecycle event",
+        );
+    }
 
     let credential_store =
         ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"));
@@ -162,7 +184,7 @@ fn read_hook_payload<R: Read>(
     stdin: &mut R,
 ) -> Result<Vec<u8>, HookResult> {
     match read_hook_invocation(arguments, stdin)? {
-        HookInvocation::Direct(payload) => Ok(payload),
+        HookInvocation::Direct { payload, .. } => Ok(payload),
         HookInvocation::Coexist { .. } => Err(HookResult::failure(
             HookExitCode::Usage,
             "coexistence invocation is not a direct hook payload",
@@ -214,29 +236,45 @@ fn read_hook_invocation<R: Read>(
             })
         }
         [mode, payload] if mode == "--json-argv" => {
-            bounded_argv_payload(payload).map(HookInvocation::Direct)
+            bounded_argv_payload(payload).map(|payload| HookInvocation::Direct {
+                payload,
+                plugin_attributed: false,
+            })
         }
         [mode] if mode == "--json-stdin" => {
-            let mut payload = Vec::new();
-            stdin
-                .take(MAX_PROVIDER_PAYLOAD_BYTES as u64 + 1)
-                .read_to_end(&mut payload)
-                .map_err(|_| {
-                    HookResult::failure(HookExitCode::InvalidInput, "hook stdin could not be read")
-                })?;
-            if payload.len() > MAX_PROVIDER_PAYLOAD_BYTES {
-                return Err(HookResult::failure(
-                    HookExitCode::InvalidInput,
-                    "hook payload exceeds 64 KiB",
-                ));
-            }
-            Ok(HookInvocation::Direct(payload))
+            bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
+                payload,
+                plugin_attributed: false,
+            })
+        }
+        [plugin, mode] if plugin == "--plugin-hook" && mode == "--json-stdin" => {
+            bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
+                payload,
+                plugin_attributed: true,
+            })
         }
         _ => Err(HookResult::failure(
             HookExitCode::Usage,
-            "usage: lili-hook --json-argv <json> | --json-stdin",
+            "usage: lili-hook [--plugin-hook] --json-stdin | --json-argv <json>",
         )),
     }
+}
+
+fn bounded_stdin_payload<R: Read>(stdin: &mut R) -> Result<Vec<u8>, HookResult> {
+    let mut payload = Vec::new();
+    stdin
+        .take(MAX_PROVIDER_PAYLOAD_BYTES as u64 + 1)
+        .read_to_end(&mut payload)
+        .map_err(|_| {
+            HookResult::failure(HookExitCode::InvalidInput, "hook stdin could not be read")
+        })?;
+    if payload.len() > MAX_PROVIDER_PAYLOAD_BYTES {
+        return Err(HookResult::failure(
+            HookExitCode::InvalidInput,
+            "hook payload exceeds 64 KiB",
+        ));
+    }
+    Ok(payload)
 }
 
 fn bounded_argv_payload(payload: &OsString) -> Result<Vec<u8>, HookResult> {
@@ -396,6 +434,29 @@ mod tests {
     }
 
     #[test]
+    fn plugin_marker_is_explicit_and_stdin_only() {
+        let invocation = read_hook_invocation(
+            &[
+                OsString::from("--integration-id"),
+                OsString::from(LILI_INTEGRATION_ID),
+                OsString::from("--plugin-hook"),
+                OsString::from("--json-stdin"),
+            ],
+            &mut Cursor::new(
+                br#"{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1"}"#,
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            invocation,
+            HookInvocation::Direct {
+                plugin_attributed: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn coexistence_failures_do_not_mask_the_other_delivery() {
         let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed");
         assert_eq!(
@@ -417,6 +478,21 @@ mod tests {
         let spool = SpoolStore::for_codex_home(&temp.0);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
         assert_eq!(claim.event().event_id.as_str(), "event-1");
+        claim.commit().unwrap();
+    }
+
+    #[tokio::test]
+    async fn plugin_invocation_spools_attributed_event_without_changing_identity() {
+        let temp = TempDir::new();
+        let lifecycle =
+            br#"{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1"}"#;
+        let legacy = normalize_hook_json(lifecycle, 1_000).unwrap();
+        let result = process_payload_with_source(&temp.0, lifecycle, 1_000, true).await;
+        assert_eq!(result, HookResult::success(HookOutcome::Spooled));
+        let spool = SpoolStore::for_codex_home(&temp.0);
+        let claim = spool.claim_next(1_001).unwrap().unwrap();
+        assert_eq!(claim.event().event_id, legacy.event_id);
+        assert!(claim.event().source_discriminator.starts_with("plugin:"));
         claim.commit().unwrap();
     }
 

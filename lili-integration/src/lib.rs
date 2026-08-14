@@ -8,7 +8,10 @@ use std::{
     process::Command,
 };
 
-use lili_session::{CodexIntegrationSurface, TESTED_CODEX_VERSION};
+use lili_session::{
+    CodexAdapterDiagnostics, CodexIntegrationSurface, CodexPluginAvailability,
+    CodexPluginDiagnostics, TESTED_CODEX_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -31,6 +34,7 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const HOOKS_FILE_NAME: &str = "hooks.json";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 128;
+const MAX_PLUGIN_LIST_BYTES: usize = 1024 * 1024;
 const HOOK_SURFACES: [(&str, CodexIntegrationSurface); 5] = [
     ("SessionStart", CodexIntegrationSurface::SessionStart),
     (
@@ -101,16 +105,27 @@ pub struct IntegrationInspection {
     pub hooks: IntegrationFileInspection,
     pub notify: NotifyInspection,
     pub hook_surfaces: Vec<HookSurfaceInspection>,
+    pub codex_adapter: CodexAdapterDiagnostics,
     pub warnings: Vec<String>,
 }
 
 pub fn inspect(codex_home: &Path) -> IntegrationInspection {
-    inspect_with_version(codex_home, detect_codex_version())
+    let codex_version = detect_codex_version();
+    let plugin_list = detect_plugin_list();
+    inspect_with_evidence(codex_home, codex_version, plugin_list.as_deref())
 }
 
 pub fn inspect_with_version(
     codex_home: &Path,
     codex_version: Option<String>,
+) -> IntegrationInspection {
+    inspect_with_evidence(codex_home, codex_version, None)
+}
+
+fn inspect_with_evidence(
+    codex_home: &Path,
+    codex_version: Option<String>,
+    plugin_list: Option<&[u8]>,
 ) -> IntegrationInspection {
     let config_path = codex_home.join(CONFIG_FILE_NAME);
     let hooks_path = codex_home.join(HOOKS_FILE_NAME);
@@ -136,6 +151,27 @@ pub fn inspect_with_version(
         })
         .collect::<Vec<_>>();
     hook_surfaces.sort_by_key(|surface| surface.surface);
+    let legacy_active = notify.kind == IntegrationKind::Lili
+        || hook_surfaces
+            .iter()
+            .any(|surface| surface.lili_handlers > 0);
+    let discovered_surfaces = hook_surfaces
+        .iter()
+        .filter(|surface| surface.lili_handlers > 0)
+        .map(|surface| surface.surface)
+        .chain((notify.kind == IntegrationKind::Lili).then_some(CodexIntegrationSurface::Notify));
+    let plugin = plugin_list.map_or_else(
+        || CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active),
+        |output| {
+            parse_plugin_diagnostics(output, codex_version.as_deref(), legacy_active)
+                .unwrap_or_else(|| {
+                    CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active)
+                })
+        },
+    );
+    let codex_adapter =
+        CodexAdapterDiagnostics::with_discovery(codex_version.as_deref(), discovered_surfaces)
+            .with_plugin(plugin);
 
     let mut warnings = Vec::new();
     if codex_version.is_none() {
@@ -172,6 +208,7 @@ pub fn inspect_with_version(
         hooks: hooks_file,
         notify,
         hook_surfaces,
+        codex_adapter,
         warnings,
     }
 }
@@ -179,6 +216,85 @@ pub fn inspect_with_version(
 pub fn detect_codex_version() -> Option<String> {
     let output = Command::new("codex").arg("--version").output().ok()?;
     parse_codex_version(output.status.success(), &output.stdout)
+}
+
+fn detect_plugin_list() -> Option<Vec<u8>> {
+    let output = Command::new("codex")
+        .args(["plugin", "list", "--available", "--json"])
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.len() > MAX_PLUGIN_LIST_BYTES {
+        return None;
+    }
+    Some(output.stdout)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginListOutput {
+    #[serde(default)]
+    installed: Vec<PluginListRecord>,
+    #[serde(default)]
+    available: Vec<PluginListRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginListRecord {
+    plugin_id: Option<String>,
+    name: Option<String>,
+    version: Option<String>,
+    enabled: Option<bool>,
+}
+
+fn parse_plugin_diagnostics(
+    output: &[u8],
+    codex_version: Option<&str>,
+    legacy_active: bool,
+) -> Option<CodexPluginDiagnostics> {
+    if output.len() > MAX_PLUGIN_LIST_BYTES {
+        return None;
+    }
+    let list: PluginListOutput = serde_json::from_slice(output).ok()?;
+    if let Some(plugin) = list.installed.iter().find(|plugin| plugin.is_lili()) {
+        return Some(CodexPluginDiagnostics::discovered(
+            codex_version,
+            CodexPluginAvailability::Installed,
+            true,
+            plugin.enabled?,
+            plugin.version.as_deref(),
+            legacy_active,
+        ));
+    }
+    if let Some(plugin) = list.available.iter().find(|plugin| plugin.is_lili()) {
+        return Some(CodexPluginDiagnostics::discovered(
+            codex_version,
+            CodexPluginAvailability::Available,
+            false,
+            false,
+            plugin.version.as_deref(),
+            legacy_active,
+        ));
+    }
+    Some(CodexPluginDiagnostics::discovered(
+        codex_version,
+        CodexPluginAvailability::NotAvailable,
+        false,
+        false,
+        None,
+        legacy_active,
+    ))
+}
+
+impl PluginListRecord {
+    fn is_lili(&self) -> bool {
+        self.name.as_deref() == Some("lili")
+            || self
+                .plugin_id
+                .as_deref()
+                .and_then(|plugin_id| plugin_id.split('@').next())
+                == Some("lili")
+    }
 }
 
 fn parse_codex_version(success: bool, stdout: &[u8]) -> Option<String> {
@@ -475,5 +591,44 @@ notify = ["other-notifier", "secret-argument"]
         assert_eq!(parse_codex_version(true, b"  \n"), None);
         assert_eq!(parse_codex_version(true, &[b'x'; 65]), None);
         assert_eq!(parse_codex_version(true, b"codex 0.147\0.0"), None);
+    }
+
+    #[test]
+    fn plugin_list_reports_only_bounded_lili_status() {
+        let output = br#"{
+          "installed": [{
+            "pluginId": "lili@example",
+            "name": "lili",
+            "version": "0.1.0",
+            "installed": true,
+            "enabled": true,
+            "source": {"path": "/private/plugin/path"}
+          }],
+          "available": []
+        }"#;
+        let diagnostics =
+            parse_plugin_diagnostics(output, Some(TESTED_CODEX_VERSION), true).unwrap();
+        assert_eq!(diagnostics.availability, CodexPluginAvailability::Installed);
+        assert_eq!(diagnostics.installed, Some(true));
+        assert_eq!(diagnostics.enabled, Some(true));
+        assert_eq!(diagnostics.plugin_version.as_deref(), Some("0.1.0"));
+        assert!(
+            !serde_json::to_string(&diagnostics)
+                .unwrap()
+                .contains("/private/plugin/path")
+        );
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_plugin_state_remains_unknown() {
+        assert!(parse_plugin_diagnostics(b"not-json", None, false).is_none());
+        let missing_enabled = br#"{
+          "installed": [{"pluginId": "lili@example", "name": "lili", "version": "0.1.0"}],
+          "available": []
+        }"#;
+        assert!(parse_plugin_diagnostics(missing_enabled, None, false).is_none());
+        assert!(
+            parse_plugin_diagnostics(&vec![b'x'; MAX_PLUGIN_LIST_BYTES + 1], None, false).is_none()
+        );
     }
 }

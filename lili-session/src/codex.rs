@@ -17,8 +17,10 @@ const USER_PROMPT_SUBMIT_HOOK: &str = "UserPromptSubmit";
 const PERMISSION_REQUEST_HOOK: &str = "PermissionRequest";
 const STOP_HOOK: &str = "Stop";
 const SESSION_END_HOOK: &str = "SessionEnd";
+const PLUGIN_SOURCE_PREFIX: &str = "plugin:";
 
 pub const TESTED_CODEX_VERSION: &str = "0.147.0";
+pub const DESKTOP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +45,50 @@ pub enum MissingLifecycleCoverage {
     AttentionResolution,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexPluginSupport {
+    Supported,
+    Unreviewed,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexPluginAvailability {
+    Installed,
+    Available,
+    NotAvailable,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexHookSource {
+    None,
+    Legacy,
+    Plugin,
+    Overlap,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexPluginTrustState {
+    NotApplicable,
+    Unknown,
+    TrustedAtLastDelivery,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexPluginIpcCompatibility {
+    Supported,
+    Unsupported,
+    PackageMismatch,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastAcceptedCodexEvent {
@@ -50,6 +96,130 @@ pub struct LastAcceptedCodexEvent {
     pub event_type: crate::SessionEventKind,
     pub occurred_at_ms: u64,
     pub surface: CodexIntegrationSurface,
+    pub plugin_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexPluginDiagnostics {
+    pub codex_support: CodexPluginSupport,
+    pub availability: CodexPluginAvailability,
+    pub installed: Option<bool>,
+    pub enabled: Option<bool>,
+    pub hook_source: CodexHookSource,
+    pub trust_state: CodexPluginTrustState,
+    pub plugin_version: Option<String>,
+    pub desktop_version: String,
+    pub ipc_compatibility: CodexPluginIpcCompatibility,
+    pub last_accepted_plugin_event: Option<LastAcceptedCodexEvent>,
+    pub remediation: Vec<String>,
+}
+
+impl CodexPluginDiagnostics {
+    pub fn unavailable(codex_version: Option<&str>, legacy_active: bool) -> Self {
+        let codex_support = match bounded_version(codex_version) {
+            Some(version) if version == TESTED_CODEX_VERSION => CodexPluginSupport::Supported,
+            Some(_) => CodexPluginSupport::Unreviewed,
+            None => CodexPluginSupport::Unknown,
+        };
+        Self {
+            codex_support,
+            availability: CodexPluginAvailability::Unknown,
+            installed: None,
+            enabled: None,
+            hook_source: if legacy_active {
+                CodexHookSource::Legacy
+            } else {
+                CodexHookSource::Unknown
+            },
+            trust_state: CodexPluginTrustState::Unknown,
+            plugin_version: None,
+            desktop_version: DESKTOP_VERSION.to_owned(),
+            ipc_compatibility: CodexPluginIpcCompatibility::Unknown,
+            last_accepted_plugin_event: None,
+            remediation: vec![
+                "Run `codex plugin list --available --json` before changing the current integration."
+                    .to_owned(),
+            ],
+        }
+    }
+
+    pub fn discovered(
+        codex_version: Option<&str>,
+        availability: CodexPluginAvailability,
+        installed: bool,
+        enabled: bool,
+        plugin_version: Option<&str>,
+        legacy_active: bool,
+    ) -> Self {
+        let plugin_version = bounded_version(plugin_version);
+        let codex_support = match bounded_version(codex_version) {
+            Some(version) if version == TESTED_CODEX_VERSION => CodexPluginSupport::Supported,
+            Some(_) => CodexPluginSupport::Unreviewed,
+            None => CodexPluginSupport::Unknown,
+        };
+        let plugin_active = installed && enabled;
+        let hook_source = match (legacy_active, plugin_active) {
+            (true, true) => CodexHookSource::Overlap,
+            (true, false) => CodexHookSource::Legacy,
+            (false, true) => CodexHookSource::Plugin,
+            (false, false) => CodexHookSource::None,
+        };
+        let ipc_compatibility = if installed {
+            match plugin_version.as_deref() {
+                Some(version) if supported_release_version(version) => {
+                    CodexPluginIpcCompatibility::Supported
+                }
+                Some(_) => CodexPluginIpcCompatibility::Unsupported,
+                None => CodexPluginIpcCompatibility::Unknown,
+            }
+        } else {
+            CodexPluginIpcCompatibility::Unknown
+        };
+        let trust_state = if installed && enabled {
+            CodexPluginTrustState::Unknown
+        } else {
+            CodexPluginTrustState::NotApplicable
+        };
+        let remediation = plugin_remediation(
+            codex_support,
+            availability,
+            installed,
+            enabled,
+            ipc_compatibility,
+        );
+        Self {
+            codex_support,
+            availability,
+            installed: Some(installed),
+            enabled: Some(enabled),
+            hook_source,
+            trust_state,
+            plugin_version,
+            desktop_version: DESKTOP_VERSION.to_owned(),
+            ipc_compatibility,
+            last_accepted_plugin_event: None,
+            remediation,
+        }
+    }
+
+    fn record_plugin_event(&mut self, event: LastAcceptedCodexEvent) {
+        let observed_version = event.plugin_version.as_deref();
+        if let (Some(installed), Some(observed)) =
+            (self.plugin_version.as_deref(), observed_version)
+            && installed != observed
+        {
+            self.ipc_compatibility = CodexPluginIpcCompatibility::PackageMismatch;
+        } else if observed_version.is_some_and(supported_release_version) {
+            self.ipc_compatibility = CodexPluginIpcCompatibility::Supported;
+        }
+        self.hook_source = match self.hook_source {
+            CodexHookSource::Legacy | CodexHookSource::Overlap => CodexHookSource::Overlap,
+            _ => CodexHookSource::Plugin,
+        };
+        self.trust_state = CodexPluginTrustState::TrustedAtLastDelivery;
+        self.last_accepted_plugin_event = Some(event);
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -60,6 +230,7 @@ pub struct CodexAdapterDiagnostics {
     pub discovered_surfaces: Vec<CodexIntegrationSurface>,
     pub missing_lifecycle_coverage: Vec<MissingLifecycleCoverage>,
     pub last_accepted_event: Option<LastAcceptedCodexEvent>,
+    pub plugin: CodexPluginDiagnostics,
     pub remediation: Vec<String>,
 }
 
@@ -74,14 +245,21 @@ impl CodexAdapterDiagnostics {
         let codex_version = bounded_version(codex_version);
         let missing_lifecycle_coverage = missing_coverage(&discovered_surfaces);
         let remediation = remediation(codex_version.as_deref(), &missing_lifecycle_coverage);
+        let plugin = CodexPluginDiagnostics::unavailable(codex_version.as_deref(), false);
         Self {
             tested_codex_version: TESTED_CODEX_VERSION.to_owned(),
             codex_version,
             discovered_surfaces,
             missing_lifecycle_coverage,
             last_accepted_event: None,
+            plugin,
             remediation,
         }
+    }
+
+    pub fn with_plugin(mut self, plugin: CodexPluginDiagnostics) -> Self {
+        self.plugin = plugin;
+        self
     }
 
     pub fn record_accepted_event(&mut self, event: &NormalizedSessionEvent) {
@@ -99,12 +277,18 @@ impl CodexAdapterDiagnostics {
             self.codex_version.as_deref(),
             &self.missing_lifecycle_coverage,
         );
-        self.last_accepted_event = Some(LastAcceptedCodexEvent {
+        let accepted = LastAcceptedCodexEvent {
             event_id: event.event_id.as_str().to_owned(),
             event_type: event.event_type,
             occurred_at_ms: event.occurred_at_ms,
             surface,
-        });
+            plugin_version: plugin_version_from_source(&event.source_discriminator)
+                .map(str::to_owned),
+        };
+        if accepted.plugin_version.is_some() {
+            self.plugin.record_plugin_event(accepted.clone());
+        }
+        self.last_accepted_event = Some(accepted);
     }
 }
 
@@ -154,6 +338,21 @@ pub fn normalize_hook_json(
         return normalize_lifecycle_json(payload, occurred_at_ms);
     }
     normalize_json(payload)
+}
+
+pub fn mark_plugin_hook_event(event: &mut NormalizedSessionEvent) -> bool {
+    if event.provider.as_str() != "codex" || !event.source_discriminator.starts_with("hook:") {
+        return false;
+    }
+    let prefix = format!("{PLUGIN_SOURCE_PREFIX}{DESKTOP_VERSION}:");
+    let remaining = MAX_SOURCE_DISCRIMINATOR_CHARS.saturating_sub(prefix.chars().count());
+    let source = event
+        .source_discriminator
+        .chars()
+        .take(remaining)
+        .collect::<String>();
+    event.source_discriminator = format!("{prefix}{source}");
+    true
 }
 
 pub fn normalize_notify_json(
@@ -314,6 +513,9 @@ fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
     if source == "notify" || source.starts_with("notify:") {
         return Some(CodexIntegrationSurface::Notify);
     }
+    let source = plugin_version_from_source(source)
+        .and_then(|_| source.splitn(3, ':').nth(2))
+        .unwrap_or(source);
     match source.split(':').nth(1) {
         Some(SESSION_START_HOOK) => Some(CodexIntegrationSurface::SessionStart),
         Some(USER_PROMPT_SUBMIT_HOOK) => Some(CodexIntegrationSurface::UserPromptSubmit),
@@ -322,6 +524,76 @@ fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
         Some(SESSION_END_HOOK) => Some(CodexIntegrationSurface::SessionEnd),
         _ => None,
     }
+}
+
+fn plugin_version_from_source(source: &str) -> Option<&str> {
+    let remainder = source.strip_prefix(PLUGIN_SOURCE_PREFIX)?;
+    let (version, nested_source) = remainder.split_once(':')?;
+    if !release_version(version) || !nested_source.starts_with("hook:") {
+        return None;
+    }
+    Some(version)
+}
+
+fn supported_release_version(version: &str) -> bool {
+    release_version(version) && version.starts_with("0.1.")
+}
+
+fn release_version(version: &str) -> bool {
+    let mut components = version.split('.');
+    matches!(
+        (
+            components.next().and_then(parse_release_component),
+            components.next().and_then(parse_release_component),
+            components.next().and_then(parse_release_component),
+            components.next(),
+        ),
+        (Some(_), Some(_), Some(_), None)
+    )
+}
+
+fn parse_release_component(value: &str) -> Option<u64> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn plugin_remediation(
+    codex_support: CodexPluginSupport,
+    availability: CodexPluginAvailability,
+    installed: bool,
+    enabled: bool,
+    compatibility: CodexPluginIpcCompatibility,
+) -> Vec<String> {
+    let mut guidance = Vec::new();
+    if codex_support != CodexPluginSupport::Supported {
+        guidance
+            .push("Keep the current integration until this Codex version is reviewed.".to_owned());
+    }
+    if availability == CodexPluginAvailability::Available && !installed {
+        guidance
+            .push("Install the Lili plugin with the supported Codex plugin command.".to_owned());
+    } else if availability == CodexPluginAvailability::NotAvailable {
+        guidance.push(
+            "Keep the current integration because the Lili plugin is not available.".to_owned(),
+        );
+    } else if installed && !enabled {
+        guidance.push(
+            "Enable the installed Lili plugin, then review its hook trust prompt.".to_owned(),
+        );
+    } else if installed && enabled {
+        guidance.push("Review the exact hook definitions and wait for a real plugin event before legacy cleanup.".to_owned());
+    }
+    if compatibility == CodexPluginIpcCompatibility::Unsupported {
+        guidance.push(
+            "Use matching supported Lili plugin and desktop versions before migration.".to_owned(),
+        );
+    } else if compatibility == CodexPluginIpcCompatibility::PackageMismatch {
+        guidance
+            .push("Disable the plugin and reinstall the matching unmodified package.".to_owned());
+    }
+    guidance
 }
 
 fn missing_coverage(surfaces: &[CodexIntegrationSurface]) -> Vec<MissingLifecycleCoverage> {
@@ -539,6 +811,58 @@ mod tests {
                 .remediation
                 .iter()
                 .any(|guidance| guidance.contains("version-keyed fixture"))
+        );
+    }
+
+    #[test]
+    fn plugin_attribution_preserves_legacy_event_identity() {
+        let legacy = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
+        let mut plugin = legacy.clone();
+        assert!(mark_plugin_hook_event(&mut plugin));
+        assert_eq!(plugin.event_id, legacy.event_id);
+        assert_eq!(
+            plugin.source_discriminator,
+            format!("plugin:{DESKTOP_VERSION}:hook:Stop")
+        );
+        assert!(plugin.validate().is_ok());
+    }
+
+    #[test]
+    fn plugin_diagnostics_require_observed_delivery_for_trust() {
+        let plugin = CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            true,
+        );
+        let mut diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(plugin);
+        assert_eq!(
+            diagnostics.plugin.trust_state,
+            CodexPluginTrustState::Unknown
+        );
+        assert_eq!(diagnostics.plugin.hook_source, CodexHookSource::Overlap);
+
+        let mut event = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
+        assert!(mark_plugin_hook_event(&mut event));
+        diagnostics.record_accepted_event(&event);
+
+        assert_eq!(
+            diagnostics.plugin.trust_state,
+            CodexPluginTrustState::TrustedAtLastDelivery
+        );
+        assert_eq!(
+            diagnostics
+                .plugin
+                .last_accepted_plugin_event
+                .as_ref()
+                .and_then(|event| event.plugin_version.as_deref()),
+            Some(DESKTOP_VERSION)
         );
     }
 }
