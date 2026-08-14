@@ -100,6 +100,7 @@ impl SpoolStore {
         ensure_private_directory(&self.directory)?;
         let _lock = SpoolLock::acquire(&self.directory)?;
         let mut metrics = self.load_metrics_unlocked()?;
+        let original_metrics = metrics.clone();
         let record = SpoolRecord {
             version: SPOOL_VERSION,
             enqueued_at_ms,
@@ -113,7 +114,7 @@ impl SpoolStore {
         atomic_write(&pending_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
         let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
         let retained = self.enforce_limits(candidates, &mut metrics)?;
-        self.save_metrics_unlocked(&metrics)?;
+        self.save_metrics_if_changed(&original_metrics, &metrics)?;
         if retained
             .iter()
             .any(|candidate| candidate.path == pending_path)
@@ -159,6 +160,7 @@ impl SpoolStore {
         ensure_private_directory(&self.directory)?;
         let _lock = SpoolLock::acquire(&self.directory)?;
         let mut metrics = self.load_metrics_unlocked()?;
+        let original_metrics = metrics.clone();
         let mut candidates = self.collect_pending(now_ms, &mut metrics)?;
         candidates.sort_by(|left, right| {
             right
@@ -167,7 +169,7 @@ impl SpoolStore {
                 .then_with(|| left.record.enqueued_at_ms.cmp(&right.record.enqueued_at_ms))
                 .then_with(|| left.path.cmp(&right.path))
         });
-        self.save_metrics_unlocked(&metrics)?;
+        self.save_metrics_if_changed(&original_metrics, &metrics)?;
         let Some(candidate) = candidates.into_iter().next() else {
             return Ok(None);
         };
@@ -295,6 +297,17 @@ impl SpoolStore {
             &payload,
             MAX_METRICS_BYTES,
         )
+    }
+
+    fn save_metrics_if_changed(
+        &self,
+        original: &SpoolMetrics,
+        current: &SpoolMetrics,
+    ) -> Result<(), SpoolError> {
+        if current != original {
+            self.save_metrics_unlocked(current)?;
+        }
+        Ok(())
     }
 }
 

@@ -92,7 +92,12 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
 
     for worker in workers {
         let output = worker.join().unwrap();
-        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "plugin hook failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(
             output.stdout.is_empty(),
             "plugin hooks must not emit model-visible output"
