@@ -226,9 +226,9 @@ pub fn invoke_installed_plugin_hook(
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-File",
+            "-Command",
+            "$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')",
         ]);
-        command.arg(plugin.root.join("hooks").join("forward.ps1"));
         command
     };
     #[cfg(not(target_os = "windows"))]

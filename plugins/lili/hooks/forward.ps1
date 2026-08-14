@@ -57,24 +57,9 @@ if (-not $forwarderItem.PSIsContainer -and
     Fail-LiliLauncher "Lili plugin forwarder is missing or invalid" 66
 }
 
-$startInfo = [Diagnostics.ProcessStartInfo]::new()
-$startInfo.FileName = $forwarderPath
-$startInfo.Arguments = "--integration-id lili-session-v1 --plugin-hook --json-stdin"
-$startInfo.UseShellExecute = $false
-$startInfo.RedirectStandardInput = $true
-$process = [Diagnostics.Process]::new()
-$process.StartInfo = $startInfo
-try {
-    if (-not $process.Start()) {
-        Fail-LiliLauncher "Lili plugin forwarder could not start" 67
-    }
-    [Console]::OpenStandardInput().CopyTo($process.StandardInput.BaseStream)
-    $process.StandardInput.Close()
-    $process.WaitForExit()
-    $exitCode = $process.ExitCode
-} catch {
-    Fail-LiliLauncher "Lili plugin forwarder could not complete" 67
-} finally {
-    $process.Dispose()
+$OutputEncoding = [Text.UTF8Encoding]::new($false)
+$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin
+if ($null -eq $LASTEXITCODE) {
+    Fail-LiliLauncher "Lili plugin forwarder did not return an exit code" 67
 }
-exit $exitCode
+exit $LASTEXITCODE
