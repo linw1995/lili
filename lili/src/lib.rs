@@ -406,8 +406,7 @@ async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeInges
 }
 
 async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
-    publish_spool_metrics(spool, handle).await;
-    while let Some(claim) = next_spool_claim(spool) {
+    while let Some(claim) = next_spool_claim(spool).await {
         if !ingest_spool_claim(claim, handle).await {
             break;
         }
@@ -416,15 +415,17 @@ async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle)
 }
 
 async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandle) {
-    if let Ok(metrics) = spool.metrics() {
+    let spool = spool.clone();
+    if let Ok(Ok(metrics)) = tokio::task::spawn_blocking(move || spool.metrics()).await {
         let _ = handle.set_spool_metrics(metrics).await;
     }
 }
 
-fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
-    match spool.claim_next(unix_time_ms()) {
-        Ok(claim) => claim,
-        Err(_) => {
+async fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
+    let spool = spool.clone();
+    match tokio::task::spawn_blocking(move || spool.claim_next(unix_time_ms())).await {
+        Ok(Ok(claim)) => claim,
+        Ok(Err(_)) | Err(_) => {
             diagnostics::warn("spool", "claim", "read_failed");
             None
         }
@@ -434,7 +435,10 @@ fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
 async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionHandle) -> bool {
     match handle.ingest_spooled(claim.event().clone()).await {
         Ok(_) => {
-            if claim.commit().is_ok() {
+            if tokio::task::spawn_blocking(move || claim.commit())
+                .await
+                .is_ok_and(|result| result.is_ok())
+            {
                 true
             } else {
                 diagnostics::warn("spool", "commit", "commit_failed");
@@ -442,7 +446,10 @@ async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionH
             }
         }
         Err(_) => {
-            if claim.release().is_err() {
+            if !tokio::task::spawn_blocking(move || claim.release())
+                .await
+                .is_ok_and(|result| result.is_ok())
+            {
                 diagnostics::warn("spool", "release", "release_failed");
             }
             diagnostics::warn("ingestion", "reduce_spooled", "unavailable");
@@ -1240,6 +1247,35 @@ mod tests {
         drainer_task.await.unwrap_err();
         drop(handle);
         actor_task.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spool_lock_backoff_does_not_block_async_runtime() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let root =
+            std::env::temp_dir().join(format!("lili-spool-lock-backoff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let spool = SpoolStore::new(root.join("spool"), SpoolLimits::default());
+        spool.metrics().unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(spool.directory().join(".lock"))
+            .unwrap();
+
+        let claim_spool = spool.clone();
+        let claim_task = tokio::spawn(async move { next_spool_claim(&claim_spool).await });
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            tokio::time::sleep(Duration::from_millis(10)),
+        )
+        .await
+        .unwrap();
+
+        std::fs::remove_dir(spool.directory().join(".lock")).unwrap();
+        assert!(claim_task.await.unwrap().is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -48,6 +48,18 @@ impl IngestionDiagnostics {
         };
         *counter = counter.saturating_add(1);
     }
+
+    fn replace_spool_metrics(&mut self, metrics: &SpoolMetrics) -> bool {
+        let changed = self.spool_expired_drops != metrics.expired_drops
+            || self.spool_limit_drops != metrics.limit_drops
+            || self.spool_malformed_drops != metrics.malformed_drops;
+        if changed {
+            self.spool_expired_drops = metrics.expired_drops;
+            self.spool_limit_drops = metrics.limit_drops;
+            self.spool_malformed_drops = metrics.malformed_drops;
+        }
+        changed
+    }
 }
 
 #[derive(Clone)]
@@ -225,10 +237,9 @@ impl NativeIngestionActor {
                     let _ = response.send(outcome);
                 }
                 IngestionCommand::SetSpoolMetrics(metrics) => {
-                    self.diagnostics.spool_expired_drops = metrics.expired_drops;
-                    self.diagnostics.spool_limit_drops = metrics.limit_drops;
-                    self.diagnostics.spool_malformed_drops = metrics.malformed_drops;
-                    self.publish_diagnostics().await;
+                    if self.diagnostics.replace_spool_metrics(&metrics) {
+                        self.publish_diagnostics().await;
+                    }
                 }
                 IngestionCommand::RefreshCodexAdapter {
                     diagnostics,
@@ -385,6 +396,19 @@ mod tests {
         let length = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
         assert_eq!(length, frame.len() - 4);
         frame[4..].to_vec()
+    }
+
+    #[test]
+    fn spool_metrics_only_publish_when_counters_change() {
+        let mut diagnostics = IngestionDiagnostics::default();
+        let mut metrics = SpoolMetrics::default();
+
+        assert!(!diagnostics.replace_spool_metrics(&metrics));
+
+        metrics.expired_drops = 1;
+        assert!(diagnostics.replace_spool_metrics(&metrics));
+        assert_eq!(diagnostics.spool_expired_drops, 1);
+        assert!(!diagnostics.replace_spool_metrics(&metrics));
     }
 
     #[tokio::test]
