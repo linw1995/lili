@@ -272,9 +272,17 @@ in {
       then ''
         cargo tauri build --bundles app -- --locked
         cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-macos-acceptance
+        codex_binary="''${CODEX_BIN:-}"
+        if [[ -z "$codex_binary" ]]; then
+          codex_binary="$(command -v codex)"
+        fi
+        test -f "$codex_binary"
         exec target/release/lili-macos-acceptance \
           target/release/bundle/macos/Lili.app/Contents/MacOS/lili \
-          target/release/lili-hook
+          target/release/lili-hook \
+          target/release/bundle/macos/Lili.app \
+          "$PWD" \
+          "$codex_binary"
       ''
       else ''
         echo "macOS acceptance requires macOS" >&2
@@ -293,7 +301,12 @@ in {
         cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-linux-acceptance
         bundle="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
         test -n "$bundle"
-        acceptance=(target/release/lili-linux-acceptance target/release/lili target/release/lili-hook "$bundle")
+        codex_binary="''${CODEX_BIN:-}"
+        if [[ -z "$codex_binary" ]]; then
+          codex_binary="$(command -v codex)"
+        fi
+        test -f "$codex_binary"
+        acceptance=(target/release/lili-linux-acceptance target/release/lili target/release/lili-hook "$bundle" "$PWD" "$codex_binary")
         if [[ "''${LILI_ACCEPTANCE_HEADLESS:-}" == "1" ]]; then
           exec xvfb-run -a "''${acceptance[@]}"
         fi

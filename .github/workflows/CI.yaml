@@ -103,6 +103,12 @@ jobs:
       - uses: ./.github/actions/setup-nix
         with:
           cache-key-name: linux-desktop
+      - name: Install reviewed Codex CLI
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          codex_binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$codex_binary"
+          echo "CODEX_BIN=$PWD/$codex_binary" >> "$GITHUB_ENV"
       - name: Run Linux desktop acceptance
         run: LILI_ACCEPTANCE_HEADLESS=1 nix run .#linux-acceptance
 
@@ -113,6 +119,12 @@ jobs:
       - uses: ./.github/actions/setup-nix
         with:
           cache-key-name: macos-desktop
+      - name: Install reviewed Codex CLI
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          codex_binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$codex_binary"
+          echo "CODEX_BIN=$PWD/$codex_binary" >> "$GITHUB_ENV"
       - name: Run macOS desktop acceptance
         run: nix run .#macos-acceptance
 
@@ -121,6 +133,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-windows
+      - name: Install reviewed Codex CLI
+        shell: pwsh
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          $codexBinary = Get-ChildItem -Path "target/codex-cli/node_modules/@openai" -Filter "codex.exe" -Recurse | Select-Object -First 1
+          if ($null -eq $codexBinary) { throw "Codex binary was not installed" }
+          "CODEX_BIN=$($codexBinary.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run Windows desktop acceptance
         shell: pwsh
         run: ./scripts/windows-acceptance.ps1

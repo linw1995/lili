@@ -22,13 +22,21 @@ mod linux {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
-    const PAYLOAD: &str = r#"{"version":1,"provider":"codex","type":"attention_required","eventId":"linux-acceptance-event","sessionId":"linux-acceptance-session","turnId":"linux-acceptance-turn","occurredAtMs":1800000000000,"project":{"label":"Acceptance"},"summary":"Interaction required"}"#;
+    use lili_lib::acceptance_marketplace::{
+        LINUX_X86_64, install_local_marketplace_plugin, invoke_installed_plugin_hook,
+    };
+
+    const PAYLOAD: &[u8] = include_bytes!(
+        "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
+    );
 
     pub fn run() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
         let app_binary = required_file(arguments.next(), "packaged app")?;
         let hook_binary = required_file(arguments.next(), "hook")?;
         let bundle = required_file(arguments.next(), "desktop bundle")?;
+        let repository_root = required_directory(arguments.next(), "repository root")?;
+        let codex_binary = required_file(arguments.next(), "Codex")?;
         if arguments.next().is_some()
             || bundle.extension().and_then(|value| value.to_str()) != Some("deb")
         {
@@ -36,6 +44,13 @@ mod linux {
         }
 
         let workspace = AcceptanceWorkspace::new()?;
+        let plugin = install_local_marketplace_plugin(
+            &codex_binary,
+            &repository_root,
+            workspace.path(),
+            &hook_binary,
+            LINUX_X86_64,
+        )?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
         let credential_path = workspace
             .path()
@@ -46,17 +61,15 @@ mod linux {
             terminate(&mut app);
             return Err("desktop app did not publish forwarding credentials".to_owned());
         }
-        let hook = Command::new(hook_binary)
-            .args(["--json-argv", PAYLOAD])
-            .env("CODEX_HOME", workspace.path())
-            .output()
-            .map_err(|error| format!("hook forwarder could not start: {error}"))?;
-        if !hook.status.success() || !hook.stdout.is_empty() || !hook.stderr.is_empty() {
+        if let Err(error) = invoke_installed_plugin_hook(&plugin, workspace.path(), PAYLOAD) {
             terminate(&mut app);
-            return Err("Codex hook delivery did not complete silently".to_owned());
+            return Err(error);
         }
         wait_for_clean_exit(&mut app, Duration::from_secs(35))?;
-        println!("{{\"linuxAcceptance\":\"passed\"}}");
+        println!(
+            "{{\"linuxAcceptance\":\"passed\",\"marketplace\":\"lili-local\",\"target\":\"{}\"}}",
+            LINUX_X86_64.triple
+        );
         Ok(())
     }
 
@@ -67,6 +80,18 @@ mod linux {
         path.is_file()
             .then_some(path)
             .ok_or_else(|| format!("{label} path is not a file"))
+    }
+
+    fn required_directory(
+        value: Option<std::ffi::OsString>,
+        label: &str,
+    ) -> Result<PathBuf, String> {
+        let path = value
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("missing {label} path"))?;
+        path.is_dir()
+            .then_some(path)
+            .ok_or_else(|| format!("{label} path is not a directory"))
     }
 
     fn spawn_app(binary: &Path, codex_home: &Path) -> Result<Child, String> {

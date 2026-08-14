@@ -28,7 +28,13 @@ mod windows {
         System::Threading::{OpenProcess, WaitForSingleObject},
     };
 
-    const PAYLOAD: &str = r#"{"version":1,"provider":"codex","type":"attention_required","eventId":"windows-acceptance-event","sessionId":"windows-acceptance-session","turnId":"windows-acceptance-turn","occurredAtMs":1800000000000,"project":{"label":"Acceptance"},"summary":"Interaction required"}"#;
+    use lili_lib::acceptance_marketplace::{
+        WINDOWS_X86_64, install_local_marketplace_plugin, invoke_installed_plugin_hook,
+    };
+
+    const PAYLOAD: &[u8] = include_bytes!(
+        "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
+    );
 
     pub fn run() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
@@ -36,6 +42,8 @@ mod windows {
         let hook_binary = required_file(arguments.next(), "hook")?;
         let action_fixture = required_file(arguments.next(), "action fixture")?;
         let installer = required_file(arguments.next(), "NSIS installer")?;
+        let repository_root = required_directory(arguments.next(), "repository root")?;
+        let codex_binary = required_file(arguments.next(), "Codex")?;
         if arguments.next().is_some()
             || installer.extension().and_then(|value| value.to_str()) != Some("exe")
         {
@@ -43,6 +51,13 @@ mod windows {
         }
 
         let workspace = AcceptanceWorkspace::new(action_fixture)?;
+        let plugin = install_local_marketplace_plugin(
+            &codex_binary,
+            &repository_root,
+            workspace.path(),
+            &hook_binary,
+            WINDOWS_X86_64,
+        )?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
         let credential_path = workspace
             .path()
@@ -53,21 +68,19 @@ mod windows {
             terminate(&mut app);
             return Err("packaged app did not publish forwarding credentials".to_owned());
         }
-        let hook = Command::new(hook_binary)
-            .args(["--json-argv", PAYLOAD])
-            .env("CODEX_HOME", workspace.path())
-            .output()
-            .map_err(|error| format!("hook forwarder could not start: {error}"))?;
-        if !hook.status.success() || !hook.stdout.is_empty() || !hook.stderr.is_empty() {
+        if let Err(error) = invoke_installed_plugin_hook(&plugin, workspace.path(), PAYLOAD) {
             terminate(&mut app);
-            return Err("hook delivery did not complete silently".to_owned());
+            return Err(error);
         }
         wait_for_clean_exit(&mut app, Duration::from_secs(35))?;
         let process_ids = wait_for_process_ids(workspace.process_ids(), Duration::from_secs(5))?;
         if process_ids.into_iter().any(process_is_alive) {
             return Err("timed-out action left a process tree alive".to_owned());
         }
-        println!("{{\"windowsAcceptance\":\"passed\"}}");
+        println!(
+            "{{\"windowsAcceptance\":\"passed\",\"marketplace\":\"lili-local\",\"target\":\"{}\"}}",
+            WINDOWS_X86_64.triple
+        );
         Ok(())
     }
 
@@ -78,6 +91,18 @@ mod windows {
         path.is_file()
             .then_some(path)
             .ok_or_else(|| format!("{label} path is not a file"))
+    }
+
+    fn required_directory(
+        value: Option<std::ffi::OsString>,
+        label: &str,
+    ) -> Result<PathBuf, String> {
+        let path = value
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("missing {label} path"))?;
+        path.is_dir()
+            .then_some(path)
+            .ok_or_else(|| format!("{label} path is not a directory"))
     }
 
     fn spawn_app(binary: &Path, codex_home: &Path) -> Result<Child, String> {

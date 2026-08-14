@@ -1,3 +1,5 @@
+#[cfg(feature = "acceptance")]
+pub mod acceptance_marketplace;
 mod desktop_acceptance;
 mod desktop_smoke;
 mod diagnostics;
