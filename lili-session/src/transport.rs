@@ -526,32 +526,37 @@ async fn platform_connect(
 
 #[cfg(windows)]
 pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool {
-    use std::{ffi::c_void, mem, ptr};
+    use std::{ffi::c_void, mem, os::windows::io::AsRawHandle, ptr};
 
     use windows_sys::Win32::{
-        Foundation::{GENERIC_ALL, LocalFree},
+        Foundation::LocalFree,
         Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-            Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
-            DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+            Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+            DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, IsWellKnownSid,
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinCreatorOwnerRightsSid,
         },
+        Storage::FileSystem::FILE_ALL_ACCESS,
         System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
     };
 
     let Some(name) = endpoint.named_pipe() else {
         return false;
     };
-    let name = name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let pipe = match fs::OpenOptions::new().read(true).write(true).open(name) {
+        Ok(pipe) => pipe,
+        Err(_error) => {
+            #[cfg(test)]
+            eprintln!("named pipe security check could not open endpoint: {_error}");
+            return false;
+        }
+    };
     let mut owner: PSID = ptr::null_mut();
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let status = unsafe {
-        GetNamedSecurityInfoW(
-            name.as_ptr(),
+        GetSecurityInfo(
+            pipe.as_raw_handle(),
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
@@ -561,6 +566,13 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
             &mut descriptor,
         )
     };
+    #[cfg(test)]
+    eprintln!(
+        "named pipe security query status={status} owner={} dacl={} descriptor={}",
+        !owner.is_null(),
+        !dacl.is_null(),
+        !descriptor.is_null()
+    );
     if status != 0 || owner.is_null() || dacl.is_null() || descriptor.is_null() {
         return false;
     }
@@ -578,19 +590,53 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
         && information.AceCount == 1
         && unsafe { GetAce(dacl, 0, &mut raw_ace) } != 0
         && !raw_ace.is_null();
-    let private = if ace_read {
-        let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
-        let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
-        u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
-            && ace.Mask == GENERIC_ALL
-            && unsafe { EqualSid(owner, sid) } != 0
-    } else {
-        false
-    };
+    #[cfg(test)]
+    eprintln!(
+        "named pipe security ACL read={} aceCount={} aceAvailable={}",
+        acl_read != 0,
+        information.AceCount,
+        !raw_ace.is_null()
+    );
+    let private = ace_read
+        && {
+            let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+            let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
+            let owner_rights = unsafe { IsWellKnownSid(sid, WinCreatorOwnerRightsSid) } != 0;
+            #[cfg(test)]
+            eprintln!(
+                "named pipe security ACL read={} aceCount={} aceType={} mask={:#x} ownerRights={owner_rights}",
+                acl_read != 0,
+                information.AceCount,
+                ace.Header.AceType,
+                ace.Mask
+            );
+            u32::from(ace.Header.AceType) == ACCESS_ALLOWED_ACE_TYPE
+            // CreateNamedPipe maps SDDL `GA` to the file object's concrete full-access mask.
+            && ace.Mask == FILE_ALL_ACCESS
+            // SDDL `OW` is the Owner Rights well-known SID, which represents the
+            // object's owner but is distinct from the owner's account SID.
+            && owner_rights
+        };
     unsafe {
         LocalFree(descriptor);
     }
     private
+}
+
+#[cfg(all(test, windows))]
+#[tokio::test]
+async fn owner_rights_named_pipe_is_private() {
+    let runtime_dir = std::env::temp_dir().join(format!(
+        "lili-forwarding-windows-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&runtime_dir);
+    let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
+
+    assert!(private_forwarding_endpoint_is_live(endpoint.endpoint()));
+
+    drop(endpoint);
+    fs::remove_dir_all(runtime_dir).unwrap();
 }
 
 #[cfg(not(windows))]

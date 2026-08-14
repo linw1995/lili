@@ -77,7 +77,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     .map(StaticAssets::new);
     let (state, state_store, codex_home, saved_window_placement) = load_app_state();
     app.state::<DesktopAcceptanceState>()
-        .configure(codex_home.clone());
+        .configure(codex_home.clone(), state.clone());
     configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
     app.manage(DesktopPersistence {
         state: state.clone(),

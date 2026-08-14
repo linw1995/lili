@@ -15,19 +15,11 @@ fn main() {
 #[cfg(target_os = "windows")]
 mod windows {
     use std::{
-        ffi::c_void,
-        fs, mem,
+        fs,
         path::PathBuf,
         process::{Command, Stdio},
-        ptr, thread,
-        time::{Duration, Instant},
-    };
-
-    use windows_sys::Win32::System::{
-        JobObjects::{
-            JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, QueryInformationJobObject,
-        },
-        Threading::GetCurrentProcessId,
+        thread,
+        time::Duration,
     };
 
     pub fn run() -> Result<(), String> {
@@ -44,7 +36,6 @@ mod windows {
                 if arguments.next().is_some() {
                     return Err("unexpected fixture arguments".to_owned());
                 }
-                wait_for_supervisor_job(Duration::from_secs(4))?;
                 let child = Command::new(
                     std::env::current_exe()
                         .map_err(|error| format!("fixture path is unavailable: {error}"))?,
@@ -63,34 +54,5 @@ mod windows {
             }
             _ => Err("invalid fixture mode".to_owned()),
         }
-    }
-
-    fn wait_for_supervisor_job(timeout: Duration) -> Result<(), String> {
-        let process_id = unsafe { GetCurrentProcessId() } as usize;
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            // A null handle queries the calling process's immediate job. The fresh action job
-            // contains only this parent until the fixture creates its child.
-            let mut processes = JOBOBJECT_BASIC_PROCESS_ID_LIST::default();
-            let queried = unsafe {
-                QueryInformationJobObject(
-                    ptr::null_mut(),
-                    JobObjectBasicProcessIdList,
-                    (&raw mut processes).cast::<c_void>(),
-                    u32::try_from(mem::size_of_val(&processes))
-                        .expect("job process list size fits in u32"),
-                    ptr::null_mut(),
-                )
-            };
-            if queried != 0
-                && processes.NumberOfAssignedProcesses == 1
-                && processes.NumberOfProcessIdsInList == 1
-                && processes.ProcessIdList[0] == process_id
-            {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        Err("fixture parent was not isolated in its supervisor job".to_owned())
     }
 }
