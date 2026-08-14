@@ -5,6 +5,7 @@ set -euo pipefail
 python3 scripts/check_plugin_package.py
 python3 scripts/check_marketplace_consistency.py
 python3 tests/plugin/test_marketplace_consistency.py
+python3 tests/plugin/test_hooks.py
 python3 tests/plugin/test_local_marketplace.py
 python3 tests/plugin/test_package_policy.py
 python3 tests/plugin/test_archive.py

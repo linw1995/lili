@@ -113,22 +113,21 @@ impl SpoolStore {
         let staged_path = self
             .directory
             .join(staged_file_name_from_pending(&pending_name)?);
+        let lock = SpoolLock::acquire(&self.directory)?;
         atomic_write(&staged_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
         let mut staged_guard = TemporaryFileGuard::new(staged_path.clone());
 
-        let retained = {
-            let _lock = SpoolLock::acquire(&self.directory)?;
-            promote_staged_record(&staged_path, &pending_path)?;
-            staged_guard.commit();
-            let mut metrics = self.load_metrics_unlocked()?;
-            let original_metrics = metrics.clone();
-            let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
-            let retained = self.enforce_limits(candidates, &mut metrics)?;
-            self.save_metrics_if_changed(&original_metrics, &metrics)?;
-            retained
-                .iter()
-                .any(|candidate| candidate.path == pending_path)
-        };
+        promote_staged_record(&staged_path, &pending_path)?;
+        staged_guard.commit();
+        let mut metrics = self.load_metrics_unlocked()?;
+        let original_metrics = metrics.clone();
+        let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
+        let retained = self.enforce_limits(candidates, &mut metrics)?;
+        self.save_metrics_if_changed(&original_metrics, &metrics)?;
+        let retained = retained
+            .iter()
+            .any(|candidate| candidate.path == pending_path);
+        drop(lock);
         sync_directory(&self.directory)?;
         if retained {
             Ok(SpoolEnqueueOutcome::Stored)

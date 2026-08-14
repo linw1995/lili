@@ -45,7 +45,7 @@ class PluginHooksTests(unittest.TestCase):
         for event, groups in self.document["hooks"].items():
             with self.subTest(event=event):
                 handler = groups[0]["hooks"][0]
-                self.assertEqual(handler["timeout"], 1)
+                self.assertEqual(handler["timeout"], 2)
                 self.assertIs(handler["async"], False)
                 self.assertEqual(handler["statusMessage"], "Forwarding event to Lili")
         session_end = self.document["hooks"]["SessionEnd"][0]["hooks"][0]

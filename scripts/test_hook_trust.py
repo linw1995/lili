@@ -6,6 +6,7 @@ import selectors
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from test_local_marketplace import (
@@ -48,6 +49,7 @@ class AppServerClient:
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
         self.next_identifier = 1
+        self.notifications: list[dict] = []
         self._send(
             {
                 "id": 0,
@@ -107,6 +109,33 @@ class AppServerClient:
         )
         require(response.get("status") == "ok", "Codex rejected the explicit hook trust write")
 
+    def dispatch_session_start(self) -> dict:
+        response = self.request(
+            "thread/start",
+            {
+                "approvalPolicy": "never",
+                "cwd": str(self.cwd),
+                "ephemeral": True,
+                "sandbox": "read-only",
+            },
+        )
+        thread = response.get("thread")
+        require(isinstance(thread, dict), "thread/start omitted the created thread")
+        thread_id = thread.get("id")
+        require(isinstance(thread_id, str) and thread_id, "thread/start omitted the thread ID")
+        notification = self._notification(
+            "hook/completed",
+            lambda params: params.get("threadId") == thread_id
+            and isinstance(params.get("run"), dict)
+            and params["run"].get("eventName") == "sessionStart",
+        )
+        run = notification["params"]["run"]
+        require(run.get("source") == "plugin", "Codex dispatched SessionStart outside the plugin")
+        require(run.get("handlerType") == "command", "Codex did not dispatch the command hook")
+        require(run.get("executionMode") == "sync", "Codex changed the reviewed hook execution mode")
+        require(run.get("status") == "completed", "Codex did not complete the trusted SessionStart hook")
+        return run
+
     def _send(self, message: dict) -> None:
         require(self.process.stdin is not None, "Codex app-server stdin is closed")
         payload = json.dumps(message, separators=(",", ":")).encode() + b"\n"
@@ -119,21 +148,41 @@ class AppServerClient:
 
     def _response(self, identifier: int) -> dict:
         while True:
-            events = self.selector.select(timeout=10)
-            require(bool(events), "Codex app-server response timed out")
-            require(self.process.stdout is not None, "Codex app-server stdout is closed")
-            line = self.process.stdout.readline(MAX_MESSAGE_BYTES + 1)
-            require(0 < len(line) <= MAX_MESSAGE_BYTES, "Codex app-server response is empty or too large")
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise MarketplaceRoundTripError("Codex app-server returned invalid JSON") from error
+            message = self._message(10)
             if message.get("id") != identifier:
+                if isinstance(message.get("method"), str):
+                    self.notifications.append(message)
                 continue
             require("error" not in message, f"Codex app-server request failed: {message.get('error')}")
             result = message.get("result")
             require(isinstance(result, dict), "Codex app-server response omitted its result")
             return result
+
+    def _notification(self, method: str, predicate) -> dict:
+        deadline = time.monotonic() + 10
+        while True:
+            for index, message in enumerate(self.notifications):
+                params = message.get("params")
+                if message.get("method") == method and isinstance(params, dict) and predicate(params):
+                    return self.notifications.pop(index)
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, f"Codex app-server notification timed out: {method}")
+            message = self._message(remaining)
+            if isinstance(message.get("method"), str):
+                self.notifications.append(message)
+
+    def _message(self, timeout: float) -> dict:
+        events = self.selector.select(timeout=timeout)
+        require(bool(events), "Codex app-server message timed out")
+        require(self.process.stdout is not None, "Codex app-server stdout is closed")
+        line = self.process.stdout.readline(MAX_MESSAGE_BYTES + 1)
+        require(0 < len(line) <= MAX_MESSAGE_BYTES, "Codex app-server message is empty or too large")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise MarketplaceRoundTripError("Codex app-server returned invalid JSON") from error
+        require(isinstance(message, dict), "Codex app-server message root is not an object")
+        return message
 
 
 def hook_map(hooks: list[dict], selector: str, expected_status: str) -> dict[str, dict]:
@@ -160,6 +209,21 @@ def changed_snapshot(source: Path, destination: Path, version: str) -> None:
     for groups in hooks["hooks"].values():
         groups[0]["hooks"][0]["statusMessage"] = "Forwarding updated event to Lili"
     hooks_path.write_text(json.dumps(hooks, indent=2) + "\n", encoding="utf-8")
+
+
+def dispatched_spool_event(codex_home: Path) -> dict:
+    spool = codex_home / "lili" / "spool"
+    pending = sorted(spool.glob("*.pending"))
+    require(len(pending) == 1, "trusted SessionStart did not produce exactly one spooled event")
+    record = load_json(pending[0])
+    event = record.get("event")
+    require(isinstance(event, dict), "spooled SessionStart omitted its normalized event")
+    require(event.get("provider") == "codex", "spooled SessionStart provider drifted")
+    require(event.get("eventType") == "session_started", "spooled SessionStart type drifted")
+    source = event.get("sourceDiscriminator")
+    require(isinstance(source, str) and source.startswith("plugin:"), "spooled SessionStart lost plugin attribution")
+    require(isinstance(event.get("eventId"), str) and event["eventId"], "spooled SessionStart event ID is missing")
+    return event
 
 
 def run_hook_trust_round_trip(
@@ -200,6 +264,8 @@ def run_hook_trust_round_trip(
             client.trust(list(initial.values()))
             trusted = hook_map(client.hooks(), selector, "trusted")
             trusted_hashes = {event: hook["currentHash"] for event, hook in trusted.items()}
+            dispatched_hook = client.dispatch_session_start()
+            dispatched_event = dispatched_spool_event(runner.codex_home)
         finally:
             client.close()
 
@@ -237,10 +303,13 @@ def run_hook_trust_round_trip(
             "observe-untrusted",
             "explicit-trust",
             "observe-trusted",
+            "dispatch-trusted-session-start",
             "change-hook-definition",
             "observe-trust-invalidated",
             "explicit-retrust",
         ],
+        "dispatchedEventId": dispatched_event["eventId"],
+        "dispatchedHookRunId": dispatched_hook["id"],
         "bypassUsed": False,
         "result": "passed",
     }
