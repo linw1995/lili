@@ -80,6 +80,14 @@ in {
     '';
   };
 
+  marketplace-roundtrip = mkWorkspaceApp {
+    name = "marketplace-roundtrip";
+    runtimeInputs = [pkgs.python3];
+    text = ''
+      exec python3 scripts/test_local_marketplace.py "$@"
+    '';
+  };
+
   build-css = mkWorkspaceApp {
     name = "build-css";
     runtimeInputs = [pkgs.nodejs_24];

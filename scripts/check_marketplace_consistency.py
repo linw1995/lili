@@ -98,6 +98,17 @@ def validate_marketplace(workspace_root: Path) -> None:
     compatibility = load_json(marketplace_root / "compatibility.json")
     assets = load_json(marketplace_root / "assets.json")
     package_policy = load_json(marketplace_root / "package-policy.json")
+    local_catalog = load_json(
+        workspace_root
+        / "marketplace"
+        / "local"
+        / ".agents"
+        / "plugins"
+        / "marketplace.json"
+    )
+    local_lifecycle = load_json(
+        workspace_root / "marketplace" / "local" / "lifecycle.json"
+    )
 
     version = manifest["version"]
     review_date = submission["reviewedAt"]
@@ -108,6 +119,27 @@ def validate_marketplace(workspace_root: Path) -> None:
         ("package policy", package_policy),
     ):
         require(document.get("reviewedAt") == review_date, f"{name} review date drifted")
+    require(local_lifecycle.get("reviewedAt") == review_date, "local catalog review date drifted")
+    require(local_lifecycle.get("schemaVersion") == 1, "local catalog lifecycle schema drifted")
+    require(local_lifecycle.get("codexVersion") in compatibility["codex"]["testedVersions"], "local catalog Codex version is unreviewed")
+    require(local_catalog.get("name") == local_lifecycle.get("marketplaceName"), "local catalog name drifted")
+    catalog_plugins = local_catalog.get("plugins")
+    require(isinstance(catalog_plugins, list) and len(catalog_plugins) == 1, "local catalog plugin count drifted")
+    catalog_plugin = catalog_plugins[0]
+    require(catalog_plugin.get("name") == manifest["name"], "local catalog plugin name drifted")
+    require(catalog_plugin.get("source") == {"source": "local", "path": "./plugins/lili"}, "local catalog source drifted")
+    require(local_lifecycle.get("pluginSelector") == "lili@lili-local", "local plugin selector drifted")
+    lifecycle_operations = local_lifecycle.get("operations")
+    require(
+        isinstance(lifecycle_operations, dict)
+        and set(lifecycle_operations) == {"install", "enable", "disable", "update", "rollback", "remove"},
+        "local catalog lifecycle coverage drifted",
+    )
+    require(
+        {operation["command"][-1] for operation in lifecycle_operations.values()}
+        == {"add", "remove"},
+        "local catalog uses an unsupported plugin command",
+    )
 
     release_notes = resolve_marketplace_reference(
         marketplace_root, submission["release"]["releaseNotes"], "release notes"

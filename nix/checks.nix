@@ -19,6 +19,7 @@
     "build-app"
     "plugin-archive"
     "marketplace-check"
+    "marketplace-roundtrip"
     "build-css"
     "format"
     "format-check"

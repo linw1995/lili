@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "codexVersion": "0.147.0",
+  "marketplaceName": "lili-local",
+  "pluginSelector": "lili@lili-local",
+  "archiveDestination": "plugins/lili",
+  "operations": {
+    "install": {
+      "command": [
+        "plugin",
+        "add"
+      ],
+      "result": "installed-and-enabled"
+    },
+    "enable": {
+      "command": [
+        "plugin",
+        "add"
+      ],
+      "precondition": "plugin-is-available-and-not-installed",
+      "result": "installed-and-enabled"
+    },
+    "disable": {
+      "command": [
+        "plugin",
+        "remove"
+      ],
+      "result": "not-installed-and-not-enabled",
+      "note": "Codex 0.147.0 exposes no persistent disabled-installed plugin state."
+    },
+    "update": {
+      "command": [
+        "plugin",
+        "add"
+      ],
+      "precondition": "catalog-version-changed",
+      "result": "new-catalog-version-installed-and-enabled"
+    },
+    "rollback": {
+      "command": [
+        "plugin",
+        "add"
+      ],
+      "precondition": "prior-catalog-snapshot-restored",
+      "result": "prior-version-installed-and-enabled"
+    },
+    "remove": {
+      "command": [
+        "plugin",
+        "remove"
+      ],
+      "result": "not-installed-and-not-enabled"
+    }
+  }
+}

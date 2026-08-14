@@ -37,7 +37,7 @@
 
 ## 6. Marketplace and Packaged Acceptance
 
-- [ ] 6.1 Add a repo-local Marketplace catalog and automated clean-home install, list, enable, disable, update, rollback, and remove round trips using supported plugin commands and the final archive.
+- [x] 6.1 Add a repo-local Marketplace catalog and automated clean-home install, list, enable, disable, update, rollback, and remove round trips using supported plugin commands and the final archive.
 - [ ] 6.2 Verify that untrusted plugin hooks are skipped, explicit trust enables them, hook changes invalidate trust, and no workflow bypasses review.
 - [ ] 6.3 Run the versioned Codex fixture matrix through plugin-attributed hooks and verify normalized delivery, deduplication, bounded offline spooling, recovery, and no model-visible hook output.
 - [ ] 6.4 Extend packaged macOS, Windows, and supported Linux acceptance to install the plugin from the local Marketplace and exercise the declared operating-system and architecture targets against the matching desktop bundle.
