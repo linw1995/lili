@@ -28,6 +28,20 @@ TARGETS = {
     },
 }
 SIGNATURE_KINDS = {"platform-standard", "signed"}
+SIGNATURE_EVIDENCE = {
+    "arm64-apple-darwin": {
+        "verifier": "codesign --verify --strict",
+        "unsignedStatus": "unsigned-allowed",
+    },
+    "x86_64-unknown-linux-gnu": {
+        "verifier": "ELF format and SHA-256 integrity",
+        "unsignedStatus": "not-applicable",
+    },
+    "x86_64-pc-windows-msvc": {
+        "verifier": "Get-AuthenticodeSignature",
+        "unsignedStatus": "unsigned-allowed",
+    },
+}
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
 
@@ -44,12 +58,12 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def load_json(path: Path) -> dict:
+def load_json(path: Path, label: str = "forwarder manifest") -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ArchiveError(f"invalid forwarder manifest: {path}") from error
-    require(isinstance(value, dict), f"forwarder manifest must be an object: {path}")
+        raise ArchiveError(f"invalid {label}: {path}") from error
+    require(isinstance(value, dict), f"{label} must be an object: {path}")
     return value
 
 
@@ -96,13 +110,15 @@ def validate_forwarder(
             "platform",
             "fileName",
             "signatureKind",
+            "signatureVerifier",
+            "signatureStatus",
             "size",
             "sha256",
         },
         f"forwarder manifest fields drifted: {target}",
     )
     expected = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "product": "Lili",
         "component": "lili-hook",
         "version": version,
@@ -117,6 +133,25 @@ def validate_forwarder(
     require(
         manifest["signatureKind"] in SIGNATURE_KINDS,
         f"invalid signature kind: {target}",
+    )
+    signature = SIGNATURE_EVIDENCE[target]
+    require(
+        manifest["signatureVerifier"] == signature["verifier"],
+        f"signature verifier drifted: {target}",
+    )
+    expected_status = (
+        "verified"
+        if manifest["signatureKind"] == "signed"
+        else signature["unsignedStatus"]
+    )
+    require(
+        manifest["signatureStatus"] == expected_status,
+        f"signature verification status drifted: {target}",
+    )
+    require(
+        target != "x86_64-unknown-linux-gnu"
+        or manifest["signatureKind"] == "platform-standard",
+        "Linux forwarder declares an unsupported signing scheme",
     )
 
     contents = binary.read_bytes()
@@ -203,10 +238,16 @@ def write_zip(output: Path, entries: list[dict]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def build_archive(workspace_root: Path, forwarders_root: Path, output: Path) -> dict:
+def build_archive(
+    workspace_root: Path,
+    forwarders_root: Path,
+    output: Path,
+    supply_chain_path: Path,
+) -> dict:
     workspace_root = workspace_root.resolve()
     forwarders_root = forwarders_root.resolve()
     output = output.resolve()
+    supply_chain_path = supply_chain_path.resolve()
     plugin_source = workspace_root / "plugins" / "lili"
     require(plugin_source.is_dir(), "plugin source is missing")
     require(
@@ -217,12 +258,26 @@ def build_archive(workspace_root: Path, forwarders_root: Path, output: Path) -> 
         not output.is_relative_to(plugin_source.resolve()),
         "plugin archive output must be outside the source package",
     )
+    require(supply_chain_path.is_file(), "plugin supply-chain evidence is missing")
     try:
         validate_workspace(workspace_root)
     except PolicyViolation as error:
         raise ArchiveError(f"plugin source violates package policy: {error}") from error
 
     version = workspace_version(workspace_root)
+    supply_chain_contents = supply_chain_path.read_bytes()
+    supply_chain = load_json(supply_chain_path, "plugin supply-chain evidence")
+    require(
+        supply_chain.get("schemaVersion") == 1
+        and supply_chain.get("component") == "plugin"
+        and supply_chain.get("version") == version,
+        "plugin supply-chain identity drifted",
+    )
+    require(
+        supply_chain.get("licensePolicy", {}).get("result") == "passed"
+        and supply_chain.get("vulnerabilityScan", {}).get("vulnerabilityCount") == 0,
+        "plugin supply-chain gates did not pass",
+    )
     forwarders = {
         target: validate_forwarder(forwarders_root, target, version)
         for target in sorted(TARGETS)
@@ -286,6 +341,11 @@ def build_archive(workspace_root: Path, forwarders_root: Path, output: Path) -> 
         "archiveSize": len(archive_contents),
         "archiveSha256": archive_hash,
         "compression": "deflate-9",
+        "supplyChain": {
+            "fileName": supply_chain_path.name,
+            "size": len(supply_chain_contents),
+            "sha256": sha256(supply_chain_contents),
+        },
         "entries": [
             {
                 "path": entry["path"],
@@ -299,6 +359,8 @@ def build_archive(workspace_root: Path, forwarders_root: Path, output: Path) -> 
             {
                 "platform": target,
                 "signatureKind": forwarders[target][1]["signatureKind"],
+                "signatureVerifier": forwarders[target][1]["signatureVerifier"],
+                "signatureStatus": forwarders[target][1]["signatureStatus"],
                 "sha256": forwarders[target][1]["sha256"],
             }
             for target in sorted(forwarders)
@@ -322,6 +384,7 @@ def main() -> int:
     )
     parser.add_argument("--forwarders", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--supply-chain", required=True, type=Path)
     parser.add_argument(
         "--workspace-root",
         type=Path,
@@ -333,6 +396,7 @@ def main() -> int:
             arguments.workspace_root,
             arguments.forwarders,
             arguments.output,
+            arguments.supply_chain,
         )
     except (ArchiveError, OSError, KeyError, TypeError, ValueError) as error:
         print(f"plugin archive build failed: {error}")

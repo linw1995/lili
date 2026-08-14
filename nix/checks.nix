@@ -18,6 +18,8 @@
     "build"
     "build-app"
     "plugin-archive"
+    "plugin-supply-chain"
+    "plugin-inspect"
     "marketplace-check"
     "marketplace-roundtrip"
     "marketplace-trust"

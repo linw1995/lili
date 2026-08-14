@@ -19,6 +19,9 @@ if (!expectedNames.has(platform)) throw new Error(`unsupported forwarder platfor
 if (!["platform-standard", "signed"].includes(signatureKind)) {
   throw new Error(`unsupported signature kind: ${signatureKind}`);
 }
+if (platform === "x86_64-unknown-linux-gnu" && signatureKind === "signed") {
+  throw new Error("Linux forwarders do not declare an unsupported signing scheme");
+}
 if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(version)) {
   throw new Error(`invalid release version: ${version}`);
 }
@@ -47,12 +50,27 @@ if (versionResult.stderr !== "" || versionResult.stdout !== `lili-hook ${version
 }
 
 const contents = await readFile(binary);
+const signatureEvidence =
+  platform === "arm64-apple-darwin"
+    ? {
+        signatureVerifier: "codesign --verify --strict",
+        signatureStatus: signatureKind === "signed" ? "verified" : "unsigned-allowed",
+      }
+    : platform === "x86_64-pc-windows-msvc"
+      ? {
+          signatureVerifier: "Get-AuthenticodeSignature",
+          signatureStatus: signatureKind === "signed" ? "verified" : "unsigned-allowed",
+        }
+      : {
+          signatureVerifier: "ELF format and SHA-256 integrity",
+          signatureStatus: "not-applicable",
+        };
 await mkdir(path.dirname(output), { recursive: true });
 await writeFile(
   output,
   `${JSON.stringify(
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       product: "Lili",
       component: "lili-hook",
       version,
@@ -60,6 +78,7 @@ await writeFile(
       platform,
       fileName: expectedNames.get(platform),
       signatureKind,
+      ...signatureEvidence,
       size: contents.length,
       sha256: createHash("sha256").update(contents).digest("hex"),
     },

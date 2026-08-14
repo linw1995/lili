@@ -64,21 +64,29 @@ Normal development and build applications use locked dependency resolution. `scr
 
 ### Release assembly
 
-Each native release archive contains the desktop and matching hook binary, fallback pet, release Web assets, configuration, build, and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The native assembler also emits `release/forwarders/<target>/` with the exact `lili-hook` binary and a sidecar recording its Cargo-derived version, native `--version` result, SHA-256 digest, size, target, and `signed` or `platform-standard` status.
+Each native release archive contains the desktop and matching hook binary, fallback pet, release Web assets, configuration, build, and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The native assembler also emits `release/forwarders/<target>/` with the exact `lili-hook` binary and a sidecar recording its Cargo-derived version, native `--version` result, SHA-256 digest, size, target, signature kind, verifier, and verification result.
 
-The release workflow collects exactly the three published forwarder targets and assembles `lili-plugin-<version>.zip`. The plugin archive uses sorted paths, a fixed ZIP timestamp, normalized file modes, and DEFLATE level 9 in the locked aggregation environment so identical inputs produce identical bytes across runs while remaining within Marketplace size limits. Its external manifest records every entry digest and forwarder signature status; a sibling SHA-256 file covers the archive itself. The assembler rejects missing or extra targets, version or checksum drift, wrong executable formats, undeclared files, source build outputs, and files containing the development workspace path.
+The release workflow collects exactly the three published forwarder targets and assembles `lili-plugin-<version>.zip`. The plugin archive uses sorted paths, a fixed ZIP timestamp, normalized file modes, and DEFLATE level 9 in the locked aggregation environment so identical inputs produce identical bytes across runs while remaining within Marketplace size limits. Its external manifest records every entry digest, forwarder signature evidence, and the digest of the matching supply-chain report; a sibling SHA-256 file covers the archive itself. The supply-chain report records the non-development dependency closure, SPDX license expressions, registry checksums, the enforced license policy, and the current RustSec scan result including informational warnings. Final inspection rejects checksum or mode drift, missing signing evidence, vulnerabilities, secrets, private fixture markers, development paths, and undeclared network URLs.
 
 To reproduce the aggregation locally, first place the three native forwarder artifacts under one directory using their target names, then run:
 
 ```text
+nix run .#plugin-supply-chain -- \
+  --output release/lili-plugin-0.1.0.supply-chain.json
 nix run .#plugin-archive -- \
   --forwarders /absolute/path/to/forwarders \
-  --output release/lili-plugin-0.1.0.zip
+  --output release/lili-plugin-0.1.0.zip \
+  --supply-chain release/lili-plugin-0.1.0.supply-chain.json
+nix run .#plugin-inspect -- \
+  --archive /absolute/path/to/release/lili-plugin-0.1.0.zip \
+  --manifest /absolute/path/to/release/lili-plugin-0.1.0.manifest.json \
+  --checksum /absolute/path/to/release/lili-plugin-0.1.0.zip.sha256 \
+  --supply-chain /absolute/path/to/release/lili-plugin-0.1.0.supply-chain.json
 ```
 
 `nix run .#license-check` enforces the dependency license allowlist and verifies that `THIRD_PARTY_NOTICES.html` matches the locked workspace graph. Run `scripts/generate-third-party-notices.sh` after an accepted dependency update, review the resulting license texts, and commit the updated artifact with the lockfile change.
 
-Platform signing remains an external trust operation. When Tauri or the native toolchain applies a verifiable identity, the relevant manifest records `signed`; otherwise a standard local bundle or forwarder records `platform-standard`. Set `LILI_REQUIRE_SIGNED=1` in a protected release environment to reject an unsigned macOS application, macOS forwarder, or Windows forwarder.
+Platform signing remains an external trust operation. When Tauri or the native toolchain applies a verifiable identity, the platform build records `signed` only after `codesign --verify --strict` or `Get-AuthenticodeSignature` succeeds; otherwise a standard local bundle or forwarder records `platform-standard` with an explicit `unsigned-allowed` result. Linux records signature verification as not applicable and binds the ELF forwarder by format and SHA-256. Set `LILI_REQUIRE_SIGNED=1` in a protected release environment to reject an unsigned macOS application, macOS forwarder, or Windows forwarder.
 
 ## GitHub CD build
 

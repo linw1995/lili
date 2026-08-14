@@ -72,6 +72,22 @@ in {
     '';
   };
 
+  plugin-supply-chain = mkWorkspaceApp {
+    name = "plugin-supply-chain";
+    runtimeInputs = [pkgs.cargo-audit pkgs.cargo-deny pkgs.python3 toolchain.rustToolchain];
+    text = ''
+      exec python3 scripts/generate_plugin_supply_chain.py "$@"
+    '';
+  };
+
+  plugin-inspect = mkWorkspaceApp {
+    name = "plugin-inspect";
+    runtimeInputs = [pkgs.python3];
+    text = ''
+      exec python3 scripts/inspect_plugin_release.py "$@"
+    '';
+  };
+
   marketplace-check = mkNativeWorkspaceApp {
     name = "marketplace-check";
     runtimeInputs = [pkgs.python3 toolchain.rustToolchain];

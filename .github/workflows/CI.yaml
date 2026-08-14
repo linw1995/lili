@@ -44,6 +44,8 @@ jobs:
       - run: nix run .#test
       - run: nix run .#audit
       - run: nix run .#license-check
+      - name: Generate plugin supply-chain evidence
+        run: nix run .#plugin-supply-chain -- --output target/plugin-supply-chain.json
       - run: nix run .#web-build
       - run: nix run .#fuzz-smoke
       - run: nix run .#e2e
