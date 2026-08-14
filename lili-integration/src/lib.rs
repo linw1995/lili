@@ -5,9 +5,10 @@ mod uninstall;
 
 use std::{
     fs,
-    io::Read,
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -49,7 +50,9 @@ pub const HOOKS_FILE_NAME: &str = "hooks.json";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 128;
 const MAX_PLUGIN_LIST_BYTES: usize = 1024 * 1024;
+const MAX_APP_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
 const CODEX_INSPECTION_TIMEOUT: Duration = Duration::from_millis(750);
+const CODEX_HOOK_TRUST_TIMEOUT: Duration = Duration::from_secs(5);
 const CODEX_INSPECTION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const HOOK_SURFACES: [(&str, CodexIntegrationSurface); 5] = [
     ("SessionStart", CodexIntegrationSurface::SessionStart),
@@ -263,6 +266,163 @@ fn detect_plugin_list(codex_home: &Path) -> Option<Vec<u8>> {
         return None;
     }
     Some(output.stdout)
+}
+
+pub(crate) fn plugin_hooks_are_trusted(codex_home: &Path, plugin_selector: &str) -> bool {
+    let mut child = match Command::new("codex")
+        .args(["app-server", "--stdio"])
+        .env("CODEX_HOME", codex_home)
+        .current_dir(codex_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = Vec::new();
+            match stdout.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) if line.len() <= MAX_APP_SERVER_MESSAGE_BYTES => {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+                Ok(_) | Err(_) => break,
+            }
+        }
+    });
+    let deadline = Instant::now() + CODEX_HOOK_TRUST_TIMEOUT;
+    let trusted = (|| {
+        write_app_server_message(
+            &mut stdin,
+            &serde_json::json!({
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "lili-migration", "version": env!("CARGO_PKG_VERSION")},
+                    "capabilities": {"experimentalApi": true}
+                }
+            }),
+        )?;
+        app_server_response(&receiver, 0, deadline)?;
+        write_app_server_message(
+            &mut stdin,
+            &serde_json::json!({"method": "initialized", "params": {}}),
+        )?;
+        write_app_server_message(
+            &mut stdin,
+            &serde_json::json!({
+                "id": 1,
+                "method": "hooks/list",
+                "params": {"cwds": [codex_home]}
+            }),
+        )?;
+        let response = app_server_response(&receiver, 1, deadline)?;
+        plugin_hook_response_is_trusted(&response, plugin_selector).then_some(())
+    })()
+    .is_some();
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+    trusted
+}
+
+fn write_app_server_message(stdin: &mut impl Write, message: &serde_json::Value) -> Option<()> {
+    let mut payload = serde_json::to_vec(message).ok()?;
+    if payload.len() > MAX_APP_SERVER_MESSAGE_BYTES {
+        return None;
+    }
+    payload.push(b'\n');
+    stdin.write_all(&payload).ok()?;
+    stdin.flush().ok()
+}
+
+fn app_server_response(
+    receiver: &mpsc::Receiver<Vec<u8>>,
+    identifier: u64,
+    deadline: Instant,
+) -> Option<serde_json::Value> {
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        let line = receiver.recv_timeout(remaining).ok()?;
+        let response: serde_json::Value = serde_json::from_slice(&line).ok()?;
+        if response.get("id").and_then(serde_json::Value::as_u64) == Some(identifier) {
+            return response.get("error").is_none().then_some(response);
+        }
+    }
+}
+
+fn plugin_hook_response_is_trusted(response: &serde_json::Value, plugin_selector: &str) -> bool {
+    let Some(workspaces) = response
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let [workspace] = workspaces.as_slice() else {
+        return false;
+    };
+    if !workspace
+        .get("errors")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty)
+        || !workspace
+            .get("warnings")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return false;
+    }
+    let Some(workspace_hooks) = workspace.get("hooks").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let hooks = workspace_hooks
+        .iter()
+        .filter(|hook| {
+            hook.get("pluginId").and_then(serde_json::Value::as_str) == Some(plugin_selector)
+        })
+        .collect::<Vec<_>>();
+    let mut event_names = hooks
+        .iter()
+        .filter_map(|hook| hook.get("eventName"))
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    event_names.sort_unstable();
+    event_names
+        == [
+            "permissionRequest",
+            "sessionEnd",
+            "sessionStart",
+            "stop",
+            "userPromptSubmit",
+        ]
+        && hooks.iter().all(|hook| {
+            hook.get("source").and_then(serde_json::Value::as_str) == Some("plugin")
+                && hook.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+                && hook.get("trustStatus").and_then(serde_json::Value::as_str) == Some("trusted")
+                && hook
+                    .get("currentHash")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|hash| !hash.is_empty())
+        })
 }
 
 struct BoundedCommandOutput {
@@ -782,6 +942,115 @@ notify = ["other-notifier", "secret-argument"]
         assert_eq!(other.availability, CodexPluginAvailability::Installed);
         assert_eq!(other.installed, Some(true));
         assert_eq!(other.plugin_id.as_deref(), Some("lili@marketplace-b"));
+    }
+
+    #[test]
+    fn hook_trust_response_requires_every_selected_hook_to_remain_trusted() {
+        let response = serde_json::json!({
+            "result": {
+                "data": [{
+                    "errors": [],
+                    "warnings": [],
+                    "hooks": [
+                        {
+                            "eventName": "permissionRequest",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "first"
+                        },
+                        {
+                            "eventName": "sessionEnd",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "second"
+                        },
+                        {
+                            "eventName": "sessionStart",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "third"
+                        },
+                        {
+                            "eventName": "stop",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "fourth"
+                        },
+                        {
+                            "eventName": "userPromptSubmit",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "fifth"
+                        },
+                        {
+                            "eventName": "stop",
+                            "source": "plugin",
+                            "pluginId": "other@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "untrusted",
+                            "currentHash": "ignored"
+                        }
+                    ]
+                }]
+            }
+        });
+        assert!(plugin_hook_response_is_trusted(
+            &response,
+            "lili@test-marketplace"
+        ));
+
+        let mut invalidated = response;
+        invalidated["result"]["data"][0]["hooks"][1]["trustStatus"] =
+            serde_json::Value::String("modified".to_owned());
+        assert!(!plugin_hook_response_is_trusted(
+            &invalidated,
+            "lili@test-marketplace"
+        ));
+        assert!(!plugin_hook_response_is_trusted(
+            &invalidated,
+            "missing@test-marketplace"
+        ));
+    }
+
+    #[test]
+    fn app_server_response_is_bounded_to_the_requested_identifier_and_deadline() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(br#"{"method":"notification"}"#.to_vec())
+            .unwrap();
+        sender
+            .send(br#"{"id":1,"result":{"status":"ok"}}"#.to_vec())
+            .unwrap();
+        let response =
+            app_server_response(&receiver, 1, Instant::now() + Duration::from_millis(100)).unwrap();
+        assert_eq!(response["result"]["status"], "ok");
+
+        let (sender, receiver) = mpsc::channel();
+        sender.send(br#"{"id":1,"error":{}}"#.to_vec()).unwrap();
+        assert!(
+            app_server_response(&receiver, 1, Instant::now() + Duration::from_millis(100))
+                .is_none()
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        sender.send(b"not-json".to_vec()).unwrap();
+        assert!(
+            app_server_response(&receiver, 1, Instant::now() + Duration::from_millis(100))
+                .is_none()
+        );
+
+        let (_sender, receiver) = mpsc::channel::<Vec<u8>>();
+        assert!(app_server_response(&receiver, 1, Instant::now()).is_none());
     }
 
     #[cfg(unix)]

@@ -185,8 +185,9 @@
       "expectedResult": {
         "shape": {
           "assessment": {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "state": "cleanup_ready",
+            "verifiedPluginVersion": "0.1.0",
             "blockers": [],
             "cleanupCommand": [
               "lili",

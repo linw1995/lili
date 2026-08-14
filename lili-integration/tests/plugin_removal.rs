@@ -50,6 +50,10 @@ impl PluginLifecycleHost for RemovalHost {
         panic!("plugin removal must not inspect or mutate Lili state")
     }
 
+    fn hooks_trusted(&mut self, _codex_home: &Path, _plugin_selector: &str) -> bool {
+        panic!("plugin removal must not inspect hook trust")
+    }
+
     fn rollback(
         &mut self,
         _codex_home: &Path,

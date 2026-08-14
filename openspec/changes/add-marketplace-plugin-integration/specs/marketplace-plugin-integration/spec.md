@@ -74,6 +74,14 @@ The migration workflow SHALL overlap the plugin and provenance-owned legacy inte
 - **WHEN** the plugin remains untrusted, incompatible, or unable to deliver its verification event
 - **THEN** the migration preserves the legacy integration and reports the failed precondition without partial cleanup
 
+#### Scenario: Plugin trust changes after assessment
+- **WHEN** an installed plugin version or any selected hook trust state changes after a cleanup-ready assessment
+- **THEN** cleanup re-inspects the current hooks, rejects the stale assessment, and preserves the legacy integration
+
+#### Scenario: Real delivery is verified on an unreviewed Codex version
+- **WHEN** a compatible plugin on an unreviewed Codex version has verified real delivery and every selected hook remains trusted at cleanup time
+- **THEN** migration may remove only provenance-owned legacy entries, while unknown Codex versions remain blocked
+
 ### Requirement: Support independent plugin and application lifecycle
 The plugin and desktop application SHALL expose their release and IPC schema versions, SHALL accept only declared compatible version pairs, and SHALL keep installation, update, rollback, removal, and application-data ownership independent.
 

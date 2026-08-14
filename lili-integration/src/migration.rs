@@ -13,10 +13,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    IntegrationInspection, UninstallOutcome, inspect_plugin, preview_uninstall, uninstall,
+    IntegrationInspection, UninstallOutcome, inspect_plugin, plugin_hooks_are_trusted,
+    preview_uninstall, uninstall,
 };
 
-pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 2;
+pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 3;
 pub const PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME: &str = "lili-plugin-migration-assessment.json";
 const MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES: u64 = 64 * 1024;
 
@@ -46,6 +47,7 @@ pub struct PluginMigrationAssessment {
     pub codex_home: PathBuf,
     pub state: PluginMigrationState,
     pub plugin_selector: String,
+    pub verified_plugin_version: Option<String>,
     pub install_command: Vec<String>,
     pub rollback_command: Vec<String>,
     pub cleanup_command: Vec<String>,
@@ -82,7 +84,13 @@ pub fn assess_plugin_migration(
     let plugin_compatible =
         diagnostics.plugin.ipc_compatibility == CodexPluginIpcCompatibility::Supported;
     let plugin_identity_matches = diagnostics.plugin.plugin_id.as_deref() == Some(plugin_selector);
-    let real_delivery = diagnostics.plugin.last_accepted_plugin_event.is_some()
+    let verified_plugin_version = diagnostics
+        .plugin
+        .last_accepted_plugin_event
+        .as_ref()
+        .and_then(|event| event.plugin_version.clone())
+        .filter(|version| diagnostics.plugin.plugin_version.as_ref() == Some(version));
+    let real_delivery = verified_plugin_version.is_some()
         && diagnostics.plugin.trust_state == CodexPluginTrustState::TrustedAtLastDelivery;
     let cleanup_preview = legacy_active.then(|| preview_uninstall(&inspection.codex_home));
 
@@ -90,9 +98,8 @@ pub fn assess_plugin_migration(
     if !selector_valid {
         blockers.push("The plugin selector is invalid.".to_owned());
     }
-    if diagnostics.plugin.codex_support != CodexPluginSupport::Supported {
-        blockers
-            .push("The installed Codex version is not in the reviewed plugin matrix.".to_owned());
+    if let Some(blocker) = codex_support_blocker(diagnostics.plugin.codex_support, real_delivery) {
+        blockers.push(blocker.to_owned());
     }
     if plugin_installed && !plugin_compatible {
         blockers.push("The installed plugin and desktop IPC versions are incompatible.".to_owned());
@@ -167,6 +174,7 @@ pub fn assess_plugin_migration(
         codex_home: inspection.codex_home.clone(),
         state,
         plugin_selector: plugin_selector.to_owned(),
+        verified_plugin_version,
         install_command: vec![
             "codex".to_owned(),
             "plugin".to_owned(),
@@ -193,6 +201,17 @@ pub fn assess_plugin_migration(
     }
 }
 
+fn codex_support_blocker(support: CodexPluginSupport, real_delivery: bool) -> Option<&'static str> {
+    match support {
+        CodexPluginSupport::Supported => None,
+        CodexPluginSupport::Unreviewed if real_delivery => None,
+        CodexPluginSupport::Unreviewed => Some(
+            "The unreviewed Codex version requires a verified real plugin delivery before legacy cleanup.",
+        ),
+        CodexPluginSupport::Unknown => Some("The installed Codex version could not be verified."),
+    }
+}
+
 pub trait PluginLifecycleHost {
     fn install(
         &mut self,
@@ -200,6 +219,9 @@ pub trait PluginLifecycleHost {
         plugin_selector: &str,
     ) -> Result<(), PluginMigrationError>;
     fn inspect(&mut self, codex_home: &Path, plugin_selector: &str) -> IntegrationInspection;
+    fn hooks_trusted(&mut self, _codex_home: &Path, _plugin_selector: &str) -> bool {
+        false
+    }
     fn rollback(
         &mut self,
         codex_home: &Path,
@@ -221,6 +243,10 @@ impl PluginLifecycleHost for CodexPluginLifecycleHost {
 
     fn inspect(&mut self, codex_home: &Path, plugin_selector: &str) -> IntegrationInspection {
         inspect_plugin(codex_home, plugin_selector)
+    }
+
+    fn hooks_trusted(&mut self, codex_home: &Path, plugin_selector: &str) -> bool {
+        plugin_hooks_are_trusted(codex_home, plugin_selector)
     }
 
     fn rollback(
@@ -332,20 +358,31 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
     codex_home: &Path,
     assessment: &PluginMigrationAssessment,
 ) -> Result<UninstallOutcome, PluginMigrationError> {
-    if !assessment.cleanup_allowed() || !assessment.blockers.is_empty() {
+    if assessment.schema_version != PLUGIN_MIGRATION_SCHEMA_VERSION
+        || !assessment.cleanup_allowed()
+        || assessment.codex_home != codex_home
+        || !assessment.blockers.is_empty()
+        || !valid_plugin_selector(&assessment.plugin_selector)
+        || assessment.verified_plugin_version.is_none()
+    {
+        return Err(PluginMigrationError::FailedPrecondition);
+    }
+    if !host.hooks_trusted(codex_home, &assessment.plugin_selector) {
         return Err(PluginMigrationError::FailedPrecondition);
     }
     let current = host.inspect(codex_home, &assessment.plugin_selector);
     let plugin = &current.codex_adapter.plugin;
-    if assessment.schema_version != PLUGIN_MIGRATION_SCHEMA_VERSION
-        || assessment.codex_home != codex_home
-        || current.codex_home != codex_home
-        || !valid_plugin_selector(&assessment.plugin_selector)
-        || plugin.codex_support != CodexPluginSupport::Supported
+    let codex_version_allowed = matches!(
+        plugin.codex_support,
+        CodexPluginSupport::Supported | CodexPluginSupport::Unreviewed
+    );
+    if current.codex_home != codex_home
+        || !codex_version_allowed
         || plugin.availability != CodexPluginAvailability::Installed
         || plugin.plugin_id.as_deref() != Some(assessment.plugin_selector.as_str())
         || plugin.installed != Some(true)
         || plugin.enabled != Some(true)
+        || assessment.verified_plugin_version.as_ref() != plugin.plugin_version.as_ref()
         || plugin.ipc_compatibility != CodexPluginIpcCompatibility::Supported
         || plugin.hook_source != CodexHookSource::Overlap
     {
@@ -600,6 +637,14 @@ mod tests {
         fn inspect(&mut self, codex_home: &Path, _plugin_selector: &str) -> IntegrationInspection {
             assert_eq!(codex_home, self.expected_home);
             self.inspections.pop_front().unwrap()
+        }
+
+        fn hooks_trusted(&mut self, codex_home: &Path, _plugin_selector: &str) -> bool {
+            assert_eq!(codex_home, self.expected_home);
+            self.inspections.front().is_some_and(|inspection| {
+                inspection.codex_adapter.plugin.trust_state
+                    == CodexPluginTrustState::TrustedAtLastDelivery
+            })
         }
 
         fn rollback(

@@ -115,6 +115,13 @@ impl PluginLifecycleHost for InspectionHost {
         self.0.take().expect("cleanup inspection is single-use")
     }
 
+    fn hooks_trusted(&mut self, _codex_home: &Path, _plugin_selector: &str) -> bool {
+        self.0.as_ref().is_some_and(|inspection| {
+            inspection.codex_adapter.plugin.trust_state
+                == CodexPluginTrustState::TrustedAtLastDelivery
+        })
+    }
+
     fn rollback(
         &mut self,
         _codex_home: &Path,
@@ -202,6 +209,62 @@ fn untrusted_plugin_cannot_cleanup_legacy_integration() {
     ));
     assert!(temp.0.join(CONFIG_FILE_NAME).exists());
     assert!(temp.0.join(HOOKS_FILE_NAME).exists());
+}
+
+#[test]
+fn cleanup_revalidates_current_hook_trust_and_plugin_version() {
+    let temp = TempDir::new();
+    temp.install_legacy();
+    let inspection = inspect_with_version(&temp.0, Some(TESTED_CODEX_VERSION.to_owned()));
+    let trusted = plugin_diagnostics(true, DESKTOP_VERSION);
+    let assessment = assess_plugin_migration(
+        &inspection,
+        &trusted,
+        "lili@test-marketplace",
+        &verified_evidence(),
+    );
+    assert_eq!(assessment.state, PluginMigrationState::CleanupReady);
+
+    let mut invalidated = plugin_diagnostics(true, DESKTOP_VERSION);
+    invalidated.plugin.trust_state = CodexPluginTrustState::Unknown;
+    invalidated.plugin.last_accepted_plugin_event = None;
+    assert!(matches!(
+        cleanup_with_diagnostics(&temp, &assessment, invalidated),
+        Err(PluginMigrationError::FailedPrecondition)
+    ));
+
+    let upgraded = plugin_diagnostics(true, "0.1.1");
+    assert!(matches!(
+        cleanup_with_diagnostics(&temp, &assessment, upgraded),
+        Err(PluginMigrationError::FailedPrecondition)
+    ));
+    assert!(temp.0.join(CONFIG_FILE_NAME).exists());
+    assert!(temp.0.join(HOOKS_FILE_NAME).exists());
+}
+
+#[test]
+fn verified_delivery_allows_cleanup_on_an_unreviewed_codex_version() {
+    let temp = TempDir::new();
+    temp.install_legacy();
+    let inspection = inspect_with_version(&temp.0, Some(TESTED_CODEX_VERSION.to_owned()));
+    let mut diagnostics = plugin_diagnostics(true, DESKTOP_VERSION);
+    diagnostics.plugin.codex_support = lili_session::CodexPluginSupport::Unreviewed;
+    let assessment = assess_plugin_migration(
+        &inspection,
+        &diagnostics,
+        "lili@test-marketplace",
+        &verified_evidence(),
+    );
+    assert_eq!(assessment.state, PluginMigrationState::CleanupReady);
+    assert_eq!(
+        assessment.verified_plugin_version.as_deref(),
+        Some(DESKTOP_VERSION)
+    );
+    assert!(
+        cleanup_with_diagnostics(&temp, &assessment, diagnostics)
+            .unwrap()
+            .complete
+    );
 }
 
 #[test]
