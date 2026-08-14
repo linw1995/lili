@@ -42,5 +42,5 @@
 - [x] 6.3 Run the versioned Codex fixture matrix through plugin-attributed hooks and verify normalized delivery, deduplication, bounded offline spooling, recovery, and no model-visible hook output.
 - [x] 6.4 Extend packaged macOS, Windows, and supported Linux acceptance to install the plugin from the local Marketplace and exercise the declared operating-system and architecture targets against the matching desktop bundle.
 - [x] 6.5 Add archive checksums, binary signing verification where applicable, dependency and license inventory, vulnerability scanning, and final-package inspection for secrets, private fixtures, development paths, and undeclared network endpoints.
-- [ ] 6.6 Update the repository OpenSpec check to validate every active change instead of the previously hard-coded change only.
+- [x] 6.6 Update the repository OpenSpec check to validate every active change instead of the previously hard-coded change only.
 - [ ] 6.7 Gate `submission-ready` on strict OpenSpec validation, all automated and packaged acceptance, reachable public URLs, verified matching publisher identity, final reviewer materials, current-rule revalidation, and successful submission portal preflight.

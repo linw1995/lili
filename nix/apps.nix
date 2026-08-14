@@ -202,7 +202,7 @@ in {
     name = "spec-validate";
     runtimeInputs = [pkgs.openspec];
     text = ''
-      exec openspec validate add-session-aware-desktop-pet --strict
+      exec openspec validate --changes --strict --no-interactive
     '';
   };
 

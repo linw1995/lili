@@ -49,7 +49,7 @@ in
         audit = mkApp "audit" "Audit Rust dependencies";
         license-check = mkApp "license-check" "Enforce dependency license policy";
         web-build = mkApp "web-build" "Build the release Web application";
-        spec-validate = mkApp "spec-validate" "Validate the OpenSpec change strictly";
+        spec-validate = mkApp "spec-validate" "Validate every active OpenSpec change strictly";
         workflow-lint = mkApp "workflow-lint" "Lint GitHub Actions workflows";
         codex-matrix = mkApp "codex-matrix" "Verify the supported Codex installation matrix";
         fuzz = mkApp "fuzz" "Run a bounded parser fuzz target";
