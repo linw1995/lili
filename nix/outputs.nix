@@ -36,6 +36,7 @@ in
         plugin-archive = mkApp "plugin-archive" "Build the deterministic universal Lili plugin";
         marketplace-check = mkApp "marketplace-check" "Validate Marketplace materials and runtime boundaries";
         marketplace-roundtrip = mkApp "marketplace-roundtrip" "Test the final plugin archive through a local Marketplace";
+        marketplace-trust = mkApp "marketplace-trust" "Validate plugin hook trust and invalidation";
         build-css = mkApp "build-css" "Build the Lili stylesheet";
         format = mkApp "format" "Format the Lili workspace";
         format-check = mkApp "format-check" "Check workspace formatting";

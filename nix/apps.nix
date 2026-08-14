@@ -88,6 +88,14 @@ in {
     '';
   };
 
+  marketplace-trust = mkWorkspaceApp {
+    name = "marketplace-trust";
+    runtimeInputs = [pkgs.python3];
+    text = ''
+      exec python3 scripts/test_hook_trust.py "$@"
+    '';
+  };
+
   build-css = mkWorkspaceApp {
     name = "build-css";
     runtimeInputs = [pkgs.nodejs_24];

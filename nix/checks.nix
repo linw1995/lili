@@ -20,6 +20,7 @@
     "plugin-archive"
     "marketplace-check"
     "marketplace-roundtrip"
+    "marketplace-trust"
     "build-css"
     "format"
     "format-check"

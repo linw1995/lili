@@ -17,6 +17,7 @@ from test_local_marketplace import (
     extract_archive,
     run_round_trip,
 )
+from test_hook_trust import run_hook_trust_round_trip
 
 
 class LocalMarketplaceRoundTripTests(unittest.TestCase):
@@ -103,6 +104,21 @@ class LocalMarketplaceRoundTripTests(unittest.TestCase):
         self.assertEqual(result["result"], "passed")
         self.assertEqual(result["releaseVersion"], "0.1.0")
         self.assertEqual(result["derivedUpdateVersion"], "0.1.1")
+
+    @unittest.skipUnless(
+        os.environ.get("LILI_RUN_CODEX_MARKETPLACE") == "1",
+        "live Codex Marketplace acceptance is opt-in",
+    )
+    def test_live_hook_trust_round_trip(self) -> None:
+        codex = shutil.which(os.environ.get("LILI_CODEX", "codex"))
+        self.assertIsNotNone(codex, "Codex executable is unavailable")
+        result = run_hook_trust_round_trip(
+            WORKSPACE_ROOT,
+            self.archive.resolve(),
+            Path(codex),
+        )
+        self.assertEqual(result["result"], "passed")
+        self.assertFalse(result["bypassUsed"])
 
 
 if __name__ == "__main__":

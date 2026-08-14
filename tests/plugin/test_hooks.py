@@ -41,12 +41,12 @@ class PluginHooksTests(unittest.TestCase):
                 self.assertEqual(handler["command"].count("${PLUGIN_ROOT}"), 1)
                 self.assertEqual(handler["commandWindows"].count("${PLUGIN_ROOT}"), 1)
 
-    def test_every_event_is_bounded_and_asynchronous(self) -> None:
+    def test_every_event_is_bounded_and_synchronous_on_reviewed_codex(self) -> None:
         for event, groups in self.document["hooks"].items():
             with self.subTest(event=event):
                 handler = groups[0]["hooks"][0]
                 self.assertEqual(handler["timeout"], 1)
-                self.assertIs(handler["async"], True)
+                self.assertIs(handler["async"], False)
                 self.assertEqual(handler["statusMessage"], "Forwarding event to Lili")
         session_end = self.document["hooks"]["SessionEnd"][0]["hooks"][0]
         self.assertLessEqual(session_end["timeout"], 3)
@@ -56,7 +56,7 @@ class PluginHooksTests(unittest.TestCase):
         self.assertNotIn("decision", handler)
         self.assertNotIn("allow", handler)
         self.assertNotIn("deny", handler)
-        self.assertIs(handler["async"], True)
+        self.assertIs(handler["async"], False)
 
 
 if __name__ == "__main__":
