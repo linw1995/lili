@@ -15,7 +15,8 @@ use std::{
 
 use lili_session::{
     CodexAdapterDiagnostics, CodexIntegrationSurface, CodexPluginAvailability,
-    CodexPluginDiagnostics, CodexPluginEvidenceStore, TESTED_CODEX_VERSION,
+    CodexPluginDiagnostics, CodexPluginEvidenceStore, ForwardingCredentialStore,
+    TESTED_CODEX_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -209,12 +210,13 @@ fn inspect_with_evidence(
     let discovered =
         CodexAdapterDiagnostics::with_discovery(codex_version.as_deref(), discovered_surfaces)
             .with_plugin(plugin);
-    let codex_adapter = CodexPluginEvidenceStore::for_codex_home(codex_home)
-        .load()
-        .map_or(discovered.clone(), |mut runtime| {
+    let codex_adapter = match load_authenticated_codex_evidence(codex_home) {
+        Some(mut runtime) => {
             runtime.refresh_discovery(discovered);
             runtime
-        });
+        }
+        None => discovered,
+    };
 
     let mut warnings = Vec::new();
     if codex_version.is_none() {
@@ -254,6 +256,17 @@ fn inspect_with_evidence(
         codex_adapter,
         warnings,
     }
+}
+
+fn load_authenticated_codex_evidence(codex_home: &Path) -> Option<CodexAdapterDiagnostics> {
+    let runtime_dir = codex_home.join("lili").join("runtime");
+    let record = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
+        .load()
+        .ok()?;
+    let credentials = record.credentials().ok()?;
+    CodexPluginEvidenceStore::for_codex_home(codex_home)
+        .load(&credentials)
+        .ok()
 }
 
 pub fn detect_codex_version(codex_home: &Path) -> Option<String> {

@@ -132,6 +132,7 @@ impl NativeIngestionHandle {
 pub struct NativeIngestionActor {
     state: AppState,
     verifier: ForwardingVerifier,
+    evidence_credentials: ForwardingCredentials,
     receiver: mpsc::Receiver<IngestionCommand>,
     snapshot_sender: watch::Sender<ViewSnapshot>,
     diagnostics: IngestionDiagnostics,
@@ -181,7 +182,8 @@ impl NativeIngestionActor {
         let (snapshot_sender, snapshots) = watch::channel(state.snapshot().await);
         let actor = Self {
             state,
-            verifier: ForwardingVerifier::new(credentials),
+            verifier: ForwardingVerifier::new(credentials.clone()),
+            evidence_credentials: credentials,
             receiver,
             snapshot_sender,
             diagnostics: IngestionDiagnostics {
@@ -264,8 +266,10 @@ impl NativeIngestionActor {
     }
 
     async fn reduce_event(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
-        self.diagnostics.codex_adapter.record_accepted_event(&event);
-        let outcome = self.state.apply_session_event(event).await;
+        let outcome = self.state.apply_session_event(event.clone()).await;
+        if outcome != ReductionOutcome::Duplicate {
+            self.diagnostics.codex_adapter.record_accepted_event(&event);
+        }
         match outcome {
             ReductionOutcome::Applied { .. } => {
                 self.diagnostics.accepted_messages =
@@ -287,7 +291,7 @@ impl NativeIngestionActor {
 
     async fn publish_diagnostics(&self) {
         if let Some(store) = &self.codex_evidence_store {
-            let _ = store.save(&self.diagnostics.codex_adapter);
+            let _ = store.save(&self.diagnostics.codex_adapter, &self.evidence_credentials);
         }
         self.state
             .replace_ingestion_diagnostics(self.diagnostics.clone())
@@ -346,7 +350,8 @@ pub enum IngestionError {
 #[cfg(test)]
 mod tests {
     use lili_session::{
-        CodexIntegrationSurface, ProviderCapabilitiesInputV1, ProviderInputV1,
+        CodexIntegrationSurface, CodexPluginAvailability, CodexPluginDiagnostics, DESKTOP_VERSION,
+        ProviderCapabilitiesInputV1, ProviderInputV1, mark_plugin_hook_event,
         normalize_provider_input,
     };
 
@@ -424,6 +429,85 @@ mod tests {
                 .unwrap()
                 .event_id,
             "event-1"
+        );
+
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_plugin_delivery_preserves_prior_accepted_evidence() {
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let plugin = CodexPluginDiagnostics::discovered(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            true,
+        )
+        .with_plugin_id(Some("lili@lili-local"));
+        let diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(plugin);
+        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics(
+            state.clone(),
+            credentials.clone(),
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+            diagnostics,
+        )
+        .await;
+        let task = tokio::spawn(actor.run());
+
+        let mut real_plugin = event();
+        real_plugin.event_id = lili_session::EventId::parse("real-plugin-event").unwrap();
+        real_plugin.source_discriminator = "hook:Stop".to_owned();
+        assert!(mark_plugin_hook_event(&mut real_plugin, "lili@lili-local"));
+        let real_message = credentials.sign(real_plugin, 1_000).unwrap();
+        assert_eq!(
+            handle
+                .ingest(payload(&real_message.to_frame().unwrap()), 1_000)
+                .await
+                .unwrap()
+                .disposition(),
+            ForwardingAckDisposition::Accepted
+        );
+
+        let mut legacy_synthetic = event();
+        legacy_synthetic.event_id = lili_session::EventId::parse("synthetic-event").unwrap();
+        legacy_synthetic.source_discriminator = "hook:Stop".to_owned();
+        let mut plugin_synthetic = legacy_synthetic.clone();
+        assert!(mark_plugin_hook_event(
+            &mut plugin_synthetic,
+            "lili@lili-local"
+        ));
+        for (event, sent_at_ms, expected) in [
+            (legacy_synthetic, 1_001, ForwardingAckDisposition::Accepted),
+            (plugin_synthetic, 1_002, ForwardingAckDisposition::Duplicate),
+        ] {
+            let message = credentials.sign(event, sent_at_ms).unwrap();
+            assert_eq!(
+                handle
+                    .ingest(payload(&message.to_frame().unwrap()), sent_at_ms)
+                    .await
+                    .unwrap()
+                    .disposition(),
+                expected
+            );
+        }
+
+        let diagnostics = state.ingestion_diagnostics().await;
+        assert_eq!(
+            diagnostics
+                .codex_adapter
+                .plugin
+                .last_accepted_plugin_event
+                .as_ref()
+                .map(|event| event.event_id.as_str()),
+            Some("real-plugin-event")
         );
 
         drop(handle);

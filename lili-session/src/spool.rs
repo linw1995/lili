@@ -857,6 +857,36 @@ mod tests {
     }
 
     #[test]
+    fn staged_promotion_is_idempotent_and_rejects_collisions() {
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        store
+            .enqueue(&event("event-1", "turn_completed"), 100)
+            .unwrap();
+        let pending = fs::read_dir(&temp.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.to_string_lossy().ends_with(".pending"))
+            .unwrap();
+        let staged = pending.with_extension("staged");
+
+        promote_staged_record(&staged, &pending).unwrap();
+        fs::write(&staged, b"collision").unwrap();
+        assert!(matches!(
+            promote_staged_record(&staged, &pending),
+            Err(SpoolError::UnsafePath)
+        ));
+
+        fs::remove_file(&staged).unwrap();
+        fs::remove_file(&pending).unwrap();
+        assert!(matches!(
+            promote_staged_record(&staged, &pending),
+            Err(SpoolError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
     fn eviction_preserves_attention_before_terminal_events() {
         let temp = TempDir::new();
         let store = SpoolStore::new(&temp.0, SpoolLimits::new(2, 1024 * 1024, 10_000));

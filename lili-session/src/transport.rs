@@ -5,6 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
@@ -16,6 +17,7 @@ const CREDENTIAL_FILE_NAME: &str = "forwarding.json";
 const MAX_CREDENTIAL_FILE_BYTES: u64 = 16 * 1024;
 const CODEX_EVIDENCE_FILE_NAME: &str = "codex-plugin-evidence.json";
 const MAX_CODEX_EVIDENCE_FILE_BYTES: u64 = 64 * 1024;
+const CODEX_EVIDENCE_SIGNATURE_DOMAIN: &str = "codex-plugin-diagnostics";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -72,6 +74,13 @@ pub struct CodexPluginEvidenceStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthenticatedCodexPluginEvidence {
+    diagnostics: CodexAdapterDiagnostics,
+    authentication: String,
+}
+
 impl CodexPluginEvidenceStore {
     pub fn for_codex_home(codex_home: &Path) -> Self {
         Self {
@@ -79,17 +88,39 @@ impl CodexPluginEvidenceStore {
         }
     }
 
-    pub fn load(&self) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
+    pub fn load(
+        &self,
+        credentials: &ForwardingCredentials,
+    ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
         let payload = read_private_codex_evidence(&self.path)?;
-        serde_json::from_slice(&payload)
-            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)
+        let evidence: AuthenticatedCodexPluginEvidence = serde_json::from_slice(&payload)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let diagnostics_payload = serde_json::to_vec(&evidence.diagnostics)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        credentials
+            .verify_evidence(
+                CODEX_EVIDENCE_SIGNATURE_DOMAIN,
+                &diagnostics_payload,
+                &evidence.authentication,
+            )
+            .map_err(|_| ForwardingTransportError::UnauthenticatedEvidenceFile)?;
+        Ok(evidence.diagnostics)
     }
 
     pub fn save(
         &self,
         diagnostics: &CodexAdapterDiagnostics,
+        credentials: &ForwardingCredentials,
     ) -> Result<(), ForwardingTransportError> {
-        let mut payload = serde_json::to_vec(diagnostics)
+        let diagnostics_payload = serde_json::to_vec(diagnostics)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let authentication = credentials
+            .authenticate_evidence(CODEX_EVIDENCE_SIGNATURE_DOMAIN, &diagnostics_payload)?;
+        let evidence = AuthenticatedCodexPluginEvidence {
+            diagnostics: diagnostics.clone(),
+            authentication,
+        };
+        let mut payload = serde_json::to_vec(&evidence)
             .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
         payload.push(b'\n');
         if payload.len() as u64 > MAX_CODEX_EVIDENCE_FILE_BYTES {
@@ -757,6 +788,8 @@ pub enum ForwardingTransportError {
     EvidenceFileTooLarge,
     #[error("Codex plugin evidence file is malformed")]
     MalformedEvidenceFile,
+    #[error("Codex plugin evidence file could not be authenticated")]
+    UnauthenticatedEvidenceFile,
     #[error("forwarding endpoint is unsafe")]
     UnsafeEndpoint,
     #[error("forwarding endpoint is already in use")]
@@ -894,23 +927,33 @@ mod tests {
 
         let temp = TempDir::new();
         let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let credentials = ForwardingCredentials::generate().unwrap();
         let diagnostics = CodexAdapterDiagnostics::default();
-        store.save(&diagnostics).unwrap();
+        store.save(&diagnostics, &credentials).unwrap();
         let path = temp.0.join("lili").join(CODEX_EVIDENCE_FILE_NAME);
-        assert_eq!(store.load().unwrap(), diagnostics);
+        assert_eq!(store.load(&credentials).unwrap(), diagnostics);
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
 
-        fs::write(&path, b"not-json").unwrap();
+        let mut edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        edited["diagnostics"]["plugin"]["desktopVersion"] = serde_json::json!("9.9.9");
+        fs::write(&path, serde_json::to_vec(&edited).unwrap()).unwrap();
         assert!(matches!(
-            store.load(),
-            Err(ForwardingTransportError::MalformedEvidenceFile)
+            store.load(&credentials),
+            Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
+        ));
+        store.save(&diagnostics, &credentials).unwrap();
+        let unrelated = ForwardingCredentials::generate().unwrap();
+        assert!(matches!(
+            store.load(&unrelated),
+            Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
         ));
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(matches!(
-            store.load(),
+            store.load(&credentials),
             Err(ForwardingTransportError::WrongOwner)
         ));
     }

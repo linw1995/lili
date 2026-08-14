@@ -547,7 +547,10 @@ fn lifecycle_event_id(input: &LifecycleInput, hook: &str) -> Option<String> {
             let tool_input = serde_json::to_vec(input.tool_input.as_ref()?).ok()?;
             update_identity_field(&mut digest, &tool_input);
         }
-        SESSION_START_HOOK | SESSION_END_HOOK => {}
+        SESSION_START_HOOK => {
+            update_optional_identity_field(&mut digest, input.source.as_deref().map(str::trim));
+        }
+        SESSION_END_HOOK => {}
         _ => return None,
     }
 
@@ -888,6 +891,23 @@ mod tests {
             assert_eq!(first.event_id, second.event_id);
             assert_eq!(second.occurred_at_ms, 99);
         }
+    }
+
+    #[test]
+    fn session_start_identity_distinguishes_resume_sources() {
+        let startup = normalize_lifecycle_json(LIFECYCLE_FIXTURES[0].0, 42).unwrap();
+        let mut resumed: serde_json::Value =
+            serde_json::from_slice(LIFECYCLE_FIXTURES[0].0).unwrap();
+        resumed["source"] = serde_json::json!("resume");
+        let resumed = normalize_lifecycle_json(&serde_json::to_vec(&resumed).unwrap(), 99).unwrap();
+
+        assert_ne!(startup.event_id, resumed.event_id);
+        let mut plugin_startup = startup.clone();
+        assert!(mark_plugin_hook_event(
+            &mut plugin_startup,
+            "lili@lili-local"
+        ));
+        assert_eq!(plugin_startup.event_id, startup.event_id);
     }
 
     #[test]
