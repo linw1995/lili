@@ -14,10 +14,7 @@ const EXPECTED_CODEX_VERSION: &str = "0.147.0";
 const MARKETPLACE_NAME: &str = "lili-local";
 const PLUGIN_SELECTOR: &str = "lili@lili-local";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
-#[cfg(not(target_os = "windows"))]
 const HOOK_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "windows")]
-const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]

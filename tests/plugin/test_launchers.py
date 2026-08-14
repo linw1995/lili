@@ -65,8 +65,10 @@ class PluginLauncherContractTests(unittest.TestCase):
             'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
             posix,
         )
+        self.assertIn("$startInfo.FileName = $forwarderPath", windows)
+        self.assertIn("$startInfo.RedirectStandardInput = $true", windows)
         self.assertIn(
-            '& $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
+            "[Console]::OpenStandardInput().CopyTo($process.StandardInput.BaseStream)",
             windows,
         )
 
