@@ -155,7 +155,7 @@ impl SessionReducer {
 
     pub fn reduce(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
         let event_key = (event.provider.clone(), event.event_id.clone());
-        if self.recent_event_set.contains(&event_key) {
+        if self.is_duplicate_in_current_lifecycle(&event, &event_key) {
             return ReductionOutcome::Duplicate;
         }
         self.remember_event(event_key);
@@ -486,12 +486,33 @@ impl SessionReducer {
     }
 
     fn remember_event(&mut self, event: (ProviderId, EventId)) {
-        self.recent_event_set.insert(event.clone());
+        if !self.recent_event_set.insert(event.clone()) {
+            self.recent_event_ids
+                .retain(|remembered| remembered != &event);
+        }
         self.recent_event_ids.push_back(event);
         while self.recent_event_ids.len() > MAX_RECENT_EVENT_IDS {
             if let Some(expired) = self.recent_event_ids.pop_front() {
                 self.recent_event_set.remove(&expired);
             }
+        }
+    }
+
+    fn is_duplicate_in_current_lifecycle(
+        &self,
+        event: &NormalizedSessionEvent,
+        event_key: &(ProviderId, EventId),
+    ) -> bool {
+        if !self.recent_event_set.contains(event_key) {
+            return false;
+        }
+        let session = self
+            .sessions
+            .get(&(event.provider.clone(), event.session_id.clone()));
+        match event.event_type {
+            SessionEventKind::SessionStarted => session.is_some_and(|session| !session.ended),
+            SessionEventKind::SessionEnded => session.is_some_and(|session| session.ended),
+            _ => true,
         }
     }
 
@@ -924,6 +945,50 @@ mod tests {
                 .iter()
                 .all(|notification| notification.state == NotificationState::Resolved)
         );
+    }
+
+    #[test]
+    fn resumed_session_can_end_again_with_the_same_overlap_identity() {
+        let mut reducer = SessionReducer::default();
+        let end = event("event-end", "session_ended", "session-1", None, 10);
+        assert_eq!(
+            reducer.reduce(end.clone()),
+            ReductionOutcome::Applied { revision: 1 }
+        );
+        assert_eq!(reducer.reduce(end.clone()), ReductionOutcome::Duplicate);
+        assert_eq!(
+            reducer.reduce(event(
+                "event-resume",
+                "session_started",
+                "session-1",
+                None,
+                20,
+            )),
+            ReductionOutcome::Applied { revision: 2 }
+        );
+        assert_eq!(
+            reducer.reduce(event(
+                "event-attention",
+                "attention_required",
+                "session-1",
+                Some("turn-1"),
+                21,
+            )),
+            ReductionOutcome::Applied { revision: 3 }
+        );
+
+        let second_end = NormalizedSessionEvent {
+            occurred_at_ms: 30,
+            ..end
+        };
+        assert_eq!(
+            reducer.reduce(second_end.clone()),
+            ReductionOutcome::Applied { revision: 4 }
+        );
+        assert_eq!(reducer.reduce(second_end), ReductionOutcome::Duplicate);
+        let snapshot = reducer.snapshot();
+        assert_eq!(snapshot.sessions[0].phase, SessionPhase::Ended);
+        assert_eq!(snapshot.notifications[0].state, NotificationState::Resolved);
     }
 
     #[test]
