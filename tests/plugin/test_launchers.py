@@ -111,6 +111,50 @@ class PluginLauncherContractTests(unittest.TestCase):
             self.assertEqual(result.stderr, b"")
             self.assertFalse((plugin_root / "should-not-exist").exists())
 
+    def test_posix_launcher_resolves_uname_before_restricting_path(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="lili plugin host utility "
+        ) as temporary_directory:
+            root = Path(temporary_directory)
+            plugin_root = root / "package"
+            launcher = plugin_root / "hooks" / "forward"
+            launcher.parent.mkdir(parents=True)
+            shutil.copy2(POSIX_LAUNCHER, launcher)
+            launcher.chmod(0o755)
+            forwarder = (
+                plugin_root / "bin" / "x86_64-unknown-linux-gnu" / "lili-hook"
+            )
+            forwarder.parent.mkdir(parents=True)
+            forwarder.write_text("#!/bin/sh\n/bin/cat\n", encoding="utf-8")
+            forwarder.chmod(0o755)
+            utility_root = root / "host utilities"
+            utility_root.mkdir()
+            uname = utility_root / "uname"
+            uname.write_text(
+                "#!/bin/sh\n"
+                'case "$1" in\n'
+                "    -s) printf 'Linux\\n' ;;\n"
+                "    -m) printf 'x86_64\\n' ;;\n"
+                "    *) exit 1 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            uname.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = str(utility_root)
+            environment["PLUGIN_ROOT"] = str(plugin_root)
+            payload = b"{}\n"
+            result = subprocess.run(
+                [str(launcher)],
+                input=payload,
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, payload)
+            self.assertEqual(result.stderr, b"")
+
     def test_posix_launcher_fails_closed_without_packaged_target(self) -> None:
         target = SUPPORTED_POSIX_TARGETS.get((platform.system(), platform.machine()))
         if target is None:

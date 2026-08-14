@@ -21,6 +21,27 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def forwarder_fixture(target: str) -> bytes:
+    if target == "arm64-apple-darwin":
+        contents = bytearray(32)
+        contents[:4] = b"\xcf\xfa\xed\xfe"
+        contents[4:8] = (0x0100000C).to_bytes(4, "little")
+        return bytes(contents)
+    if target == "x86_64-unknown-linux-gnu":
+        contents = bytearray(64)
+        contents[:7] = b"\x7fELF\x02\x01\x01"
+        contents[18:20] = (62).to_bytes(2, "little")
+        return bytes(contents)
+    if target == "x86_64-pc-windows-msvc":
+        contents = bytearray(128)
+        contents[:2] = b"MZ"
+        contents[0x3C:0x40] = (64).to_bytes(4, "little")
+        contents[64:68] = b"PE\0\0"
+        contents[68:70] = (0x8664).to_bytes(2, "little")
+        return bytes(contents)
+    raise AssertionError(f"unsupported test target: {target}")
+
+
 def supply_chain_fixture() -> dict:
     return {
         "schemaVersion": 1,
@@ -84,7 +105,7 @@ class PluginArchiveTests(unittest.TestCase):
             target_root = self.forwarders / target
             target_root.mkdir(parents=True)
             binary = target_root / target_policy["fileName"]
-            binary.write_bytes(target_policy["magics"][0] + f"lili-{target}".encode())
+            binary.write_bytes(forwarder_fixture(target))
             binary.chmod(0o755)
             contents = binary.read_bytes()
             (target_root / "manifest.json").write_text(
@@ -206,6 +227,35 @@ class PluginArchiveTests(unittest.TestCase):
                 Path(self.temporary_directory.name) / "tampered.zip",
                 self.supply_chain,
             )
+
+    def test_wrong_forwarder_architecture_is_rejected(self) -> None:
+        wrong_machines = {
+            "arm64-apple-darwin": (4, 8, (0x01000007).to_bytes(4, "little")),
+            "x86_64-unknown-linux-gnu": (18, 20, (183).to_bytes(2, "little")),
+            "x86_64-pc-windows-msvc": (68, 70, (0xAA64).to_bytes(2, "little")),
+        }
+        for target, (start, end, machine) in wrong_machines.items():
+            with self.subTest(target=target):
+                target_root = self.forwarders / target
+                binary = target_root / TARGETS[target]["fileName"]
+                original = binary.read_bytes()
+                contents = bytearray(original)
+                contents[start:end] = machine
+                binary.write_bytes(contents)
+                manifest_path = target_root / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["sha256"] = hashlib.sha256(contents).hexdigest()
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(ArchiveError, "architecture"):
+                    build_archive(
+                        self.root,
+                        self.forwarders,
+                        Path(self.temporary_directory.name) / f"wrong-{target}.zip",
+                        self.supply_chain,
+                    )
+                binary.write_bytes(original)
+                manifest["sha256"] = hashlib.sha256(original).hexdigest()
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     def test_native_manifest_writer_records_reported_version(self) -> None:
         host_target = {

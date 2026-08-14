@@ -16,15 +16,12 @@ from check_plugin_package import PolicyViolation, validate_workspace
 TARGETS = {
     "arm64-apple-darwin": {
         "fileName": "lili-hook",
-        "magics": (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"),
     },
     "x86_64-unknown-linux-gnu": {
         "fileName": "lili-hook",
-        "magics": (b"\x7fELF",),
     },
     "x86_64-pc-windows-msvc": {
         "fileName": "lili-hook.exe",
-        "magics": (b"MZ",),
     },
 }
 SIGNATURE_KINDS = {"platform-standard", "signed"}
@@ -43,6 +40,9 @@ SIGNATURE_EVIDENCE = {
     },
 }
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+MACHO_CPU_TYPE_ARM64 = 0x0100000C
+ELF_MACHINE_X86_64 = 62
+PE_MACHINE_X86_64 = 0x8664
 
 
 class ArchiveError(ValueError):
@@ -70,6 +70,42 @@ def load_json(path: Path, label: str = "forwarder manifest") -> dict:
 def workspace_version(workspace_root: Path) -> str:
     with (workspace_root / "Cargo.toml").open("rb") as cargo_file:
         return tomllib.load(cargo_file)["workspace"]["package"]["version"]
+
+
+def matches_target_architecture(contents: bytes, target: str) -> bool:
+    if target == "arm64-apple-darwin":
+        if len(contents) < 8:
+            return False
+        byte_order = {
+            b"\xcf\xfa\xed\xfe": "little",
+            b"\xfe\xed\xfa\xcf": "big",
+        }.get(contents[:4])
+        return byte_order is not None and int.from_bytes(
+            contents[4:8], byte_order
+        ) == MACHO_CPU_TYPE_ARM64
+
+    if target == "x86_64-unknown-linux-gnu":
+        if len(contents) < 20 or contents[:4] != b"\x7fELF" or contents[4] != 2:
+            return False
+        byte_order = {1: "little", 2: "big"}.get(contents[5])
+        return byte_order is not None and int.from_bytes(
+            contents[18:20], byte_order
+        ) == ELF_MACHINE_X86_64
+
+    if target == "x86_64-pc-windows-msvc":
+        if len(contents) < 0x40 or contents[:2] != b"MZ":
+            return False
+        pe_offset = int.from_bytes(contents[0x3C:0x40], "little")
+        if (
+            pe_offset > len(contents) - 6
+            or contents[pe_offset : pe_offset + 4] != b"PE\0\0"
+        ):
+            return False
+        return int.from_bytes(
+            contents[pe_offset + 4 : pe_offset + 6], "little"
+        ) == PE_MACHINE_X86_64
+
+    return False
 
 
 def validate_forwarder(
@@ -160,8 +196,8 @@ def validate_forwarder(
         manifest["sha256"] == sha256(contents), f"forwarder checksum drifted: {target}"
     )
     require(
-        any(contents.startswith(magic) for magic in target_policy["magics"]),
-        f"forwarder file format does not match target: {target}",
+        matches_target_architecture(contents, target),
+        f"forwarder file format or architecture does not match target: {target}",
     )
     return binary, manifest
 
