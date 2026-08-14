@@ -104,6 +104,8 @@ pub struct LastAcceptedCodexEvent {
 pub struct CodexPluginDiagnostics {
     pub codex_support: CodexPluginSupport,
     pub availability: CodexPluginAvailability,
+    #[serde(default)]
+    pub plugin_id: Option<String>,
     pub installed: Option<bool>,
     pub enabled: Option<bool>,
     pub hook_source: CodexHookSource,
@@ -125,6 +127,7 @@ impl CodexPluginDiagnostics {
         Self {
             codex_support,
             availability: CodexPluginAvailability::Unknown,
+            plugin_id: None,
             installed: None,
             enabled: None,
             hook_source: if legacy_active {
@@ -191,6 +194,7 @@ impl CodexPluginDiagnostics {
         Self {
             codex_support,
             availability,
+            plugin_id: None,
             installed: Some(installed),
             enabled: Some(enabled),
             hook_source,
@@ -201,6 +205,11 @@ impl CodexPluginDiagnostics {
             last_accepted_plugin_event: None,
             remediation,
         }
+    }
+
+    pub fn with_plugin_id(mut self, plugin_id: Option<&str>) -> Self {
+        self.plugin_id = plugin_id.and_then(bounded_plugin_id);
+        self
     }
 
     fn record_plugin_event(&mut self, event: LastAcceptedCodexEvent) {
@@ -220,6 +229,19 @@ impl CodexPluginDiagnostics {
         self.trust_state = CodexPluginTrustState::TrustedAtLastDelivery;
         self.last_accepted_plugin_event = Some(event);
     }
+}
+
+fn bounded_plugin_id(plugin_id: &str) -> Option<String> {
+    if plugin_id.is_empty()
+        || plugin_id.len() > 128
+        || plugin_id
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'@'))
+        || plugin_id.matches('@').count() != 1
+    {
+        return None;
+    }
+    Some(plugin_id.to_owned())
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -322,6 +344,7 @@ struct LifecycleInput {
     last_assistant_message: Option<String>,
     tool_name: Option<String>,
     tool_input: Option<serde_json::Value>,
+    tool_use_id: Option<String>,
 }
 
 pub fn normalize_hook_json(
@@ -407,6 +430,9 @@ pub fn normalize_lifecycle_json(
         .hook_event_name
         .as_deref()
         .ok_or(NormalizationError::MissingField("hook event name"))?;
+    if hook == PERMISSION_REQUEST_HOOK && input.tool_use_id.is_none() {
+        return Err(NormalizationError::MissingField("tool use identity"));
+    }
     let event_id = lifecycle_event_id(&input, hook);
     let (event_type, turn_id, summary) = match hook {
         SESSION_START_HOOK => ("session_started", None, None),
@@ -477,6 +503,7 @@ fn lifecycle_event_id(input: &LifecycleInput, hook: &str) -> Option<String> {
         }
         PERMISSION_REQUEST_HOOK => {
             update_identity_field(&mut digest, input.turn_id.as_deref()?.as_bytes());
+            update_identity_field(&mut digest, input.tool_use_id.as_deref()?.as_bytes());
             update_optional_identity_field(&mut digest, input.tool_name.as_deref());
             let tool_input = serde_json::to_vec(input.tool_input.as_ref()?).ok()?;
             update_identity_field(&mut digest, &tool_input);
@@ -817,13 +844,20 @@ mod tests {
         let first = normalize_lifecycle_json(LIFECYCLE_FIXTURES[2].0, 42).unwrap();
         let mut changed: serde_json::Value =
             serde_json::from_slice(LIFECYCLE_FIXTURES[2].0).unwrap();
-        changed["tool_input"]["command"] = serde_json::json!("cargo check");
+        changed["tool_use_id"] = serde_json::json!("toolu_02");
         let second = normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42).unwrap();
 
         assert_ne!(first.event_id, second.event_id);
         let normalized = serde_json::to_string(&second).unwrap();
-        assert!(!normalized.contains("cargo check"));
+        assert!(!normalized.contains("cargo test"));
         assert!(!normalized.contains("tool_input"));
+        assert!(!normalized.contains("toolu_02"));
+
+        changed.as_object_mut().unwrap().remove("tool_use_id");
+        assert_eq!(
+            normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42),
+            Err(NormalizationError::MissingField("tool use identity"))
+        );
     }
 
     #[test]

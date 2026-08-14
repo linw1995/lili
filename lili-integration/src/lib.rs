@@ -5,8 +5,11 @@ mod uninstall;
 
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use lili_session::{
@@ -23,11 +26,12 @@ pub use install::{
     install_with_verifier, load_plan,
 };
 pub use migration::{
-    CodexPluginLifecycleHost, PLUGIN_MIGRATION_SCHEMA_VERSION, PluginLifecycleHost,
-    PluginMigrationAssessment, PluginMigrationError, PluginMigrationEvidence, PluginMigrationState,
-    PluginRemovalOutcome, assess_plugin_migration, cleanup_legacy_after_verification,
+    CodexPluginLifecycleHost, PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME,
+    PLUGIN_MIGRATION_SCHEMA_VERSION, PluginLifecycleHost, PluginMigrationAssessment,
+    PluginMigrationError, PluginMigrationEvidence, PluginMigrationState, PluginRemovalOutcome,
+    assess_plugin_migration, cleanup_legacy_after_verification,
     cleanup_legacy_after_verification_with_host, install_plugin, install_plugin_with_rollback,
-    remove_plugin, remove_plugin_with_host, rollback_plugin,
+    load_plugin_migration_assessment, remove_plugin, remove_plugin_with_host, rollback_plugin,
 };
 pub use plan::{
     InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, IntegrationOperationKind,
@@ -45,6 +49,8 @@ pub const HOOKS_FILE_NAME: &str = "hooks.json";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 128;
 const MAX_PLUGIN_LIST_BYTES: usize = 1024 * 1024;
+const CODEX_INSPECTION_TIMEOUT: Duration = Duration::from_millis(750);
+const CODEX_INSPECTION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const HOOK_SURFACES: [(&str, CodexIntegrationSurface); 5] = [
     ("SessionStart", CodexIntegrationSurface::SessionStart),
     (
@@ -120,22 +126,34 @@ pub struct IntegrationInspection {
 }
 
 pub fn inspect(codex_home: &Path) -> IntegrationInspection {
-    let codex_version = detect_codex_version();
-    let plugin_list = detect_plugin_list();
-    inspect_with_evidence(codex_home, codex_version, plugin_list.as_deref())
+    let codex_version = detect_codex_version(codex_home);
+    let plugin_list = detect_plugin_list(codex_home);
+    inspect_with_evidence(codex_home, codex_version, plugin_list.as_deref(), None)
+}
+
+pub fn inspect_plugin(codex_home: &Path, plugin_selector: &str) -> IntegrationInspection {
+    let codex_version = detect_codex_version(codex_home);
+    let plugin_list = detect_plugin_list(codex_home);
+    inspect_with_evidence(
+        codex_home,
+        codex_version,
+        plugin_list.as_deref(),
+        Some(plugin_selector),
+    )
 }
 
 pub fn inspect_with_version(
     codex_home: &Path,
     codex_version: Option<String>,
 ) -> IntegrationInspection {
-    inspect_with_evidence(codex_home, codex_version, None)
+    inspect_with_evidence(codex_home, codex_version, None, None)
 }
 
 fn inspect_with_evidence(
     codex_home: &Path,
     codex_version: Option<String>,
     plugin_list: Option<&[u8]>,
+    plugin_selector: Option<&str>,
 ) -> IntegrationInspection {
     let config_path = codex_home.join(CONFIG_FILE_NAME);
     let hooks_path = codex_home.join(HOOKS_FILE_NAME);
@@ -173,10 +191,15 @@ fn inspect_with_evidence(
     let plugin = plugin_list.map_or_else(
         || CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active),
         |output| {
-            parse_plugin_diagnostics(output, codex_version.as_deref(), legacy_active)
-                .unwrap_or_else(|| {
-                    CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active)
-                })
+            parse_plugin_diagnostics(
+                output,
+                codex_version.as_deref(),
+                legacy_active,
+                plugin_selector,
+            )
+            .unwrap_or_else(|| {
+                CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active)
+            })
         },
     );
     let codex_adapter =
@@ -223,20 +246,75 @@ fn inspect_with_evidence(
     }
 }
 
-pub fn detect_codex_version() -> Option<String> {
-    let output = Command::new("codex").arg("--version").output().ok()?;
-    parse_codex_version(output.status.success(), &output.stdout)
+pub fn detect_codex_version(codex_home: &Path) -> Option<String> {
+    let mut command = Command::new("codex");
+    command.arg("--version").env("CODEX_HOME", codex_home);
+    let output = bounded_command_output(&mut command, MAX_VERSION_BYTES)?;
+    parse_codex_version(output.success, &output.stdout)
 }
 
-fn detect_plugin_list() -> Option<Vec<u8>> {
-    let output = Command::new("codex")
+fn detect_plugin_list(codex_home: &Path) -> Option<Vec<u8>> {
+    let mut command = Command::new("codex");
+    command
         .args(["plugin", "list", "--available", "--json"])
-        .output()
-        .ok()?;
-    if !output.status.success() || output.stdout.len() > MAX_PLUGIN_LIST_BYTES {
+        .env("CODEX_HOME", codex_home);
+    let output = bounded_command_output(&mut command, MAX_PLUGIN_LIST_BYTES)?;
+    if !output.success {
         return None;
     }
     Some(output.stdout)
+}
+
+struct BoundedCommandOutput {
+    success: bool,
+    stdout: Vec<u8>,
+}
+
+fn bounded_command_output(command: &mut Command, limit: usize) -> Option<BoundedCommandOutput> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout
+            .by_ref()
+            .take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut output)
+            .ok()?;
+        Some(output)
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = reader.join().ok().flatten()?;
+                if stdout.len() > limit {
+                    return None;
+                }
+                return Some(BoundedCommandOutput {
+                    success: status.success(),
+                    stdout,
+                });
+            }
+            Ok(None) if started.elapsed() < CODEX_INSPECTION_TIMEOUT => {
+                thread::sleep(CODEX_INSPECTION_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,30 +339,45 @@ fn parse_plugin_diagnostics(
     output: &[u8],
     codex_version: Option<&str>,
     legacy_active: bool,
+    plugin_selector: Option<&str>,
 ) -> Option<CodexPluginDiagnostics> {
     if output.len() > MAX_PLUGIN_LIST_BYTES {
         return None;
     }
     let list: PluginListOutput = serde_json::from_slice(output).ok()?;
-    if let Some(plugin) = list.installed.iter().find(|plugin| plugin.is_lili()) {
-        return Some(CodexPluginDiagnostics::discovered(
-            codex_version,
-            CodexPluginAvailability::Installed,
-            true,
-            plugin.enabled?,
-            plugin.version.as_deref(),
-            legacy_active,
-        ));
+    if let Some(plugin) = list
+        .installed
+        .iter()
+        .find(|plugin| plugin.matches(plugin_selector))
+    {
+        return Some(
+            CodexPluginDiagnostics::discovered(
+                codex_version,
+                CodexPluginAvailability::Installed,
+                true,
+                plugin.enabled?,
+                plugin.version.as_deref(),
+                legacy_active,
+            )
+            .with_plugin_id(plugin.plugin_id.as_deref()),
+        );
     }
-    if let Some(plugin) = list.available.iter().find(|plugin| plugin.is_lili()) {
-        return Some(CodexPluginDiagnostics::discovered(
-            codex_version,
-            CodexPluginAvailability::Available,
-            false,
-            false,
-            plugin.version.as_deref(),
-            legacy_active,
-        ));
+    if let Some(plugin) = list
+        .available
+        .iter()
+        .find(|plugin| plugin.matches(plugin_selector))
+    {
+        return Some(
+            CodexPluginDiagnostics::discovered(
+                codex_version,
+                CodexPluginAvailability::Available,
+                false,
+                false,
+                plugin.version.as_deref(),
+                legacy_active,
+            )
+            .with_plugin_id(plugin.plugin_id.as_deref()),
+        );
     }
     Some(CodexPluginDiagnostics::discovered(
         codex_version,
@@ -297,6 +390,13 @@ fn parse_plugin_diagnostics(
 }
 
 impl PluginListRecord {
+    fn matches(&self, plugin_selector: Option<&str>) -> bool {
+        plugin_selector.map_or_else(
+            || self.is_lili(),
+            |selector| self.plugin_id.as_deref() == Some(selector),
+        )
+    }
+
     fn is_lili(&self) -> bool {
         self.name.as_deref() == Some("lili")
             || self
@@ -617,8 +717,9 @@ notify = ["other-notifier", "secret-argument"]
           "available": []
         }"#;
         let diagnostics =
-            parse_plugin_diagnostics(output, Some(TESTED_CODEX_VERSION), true).unwrap();
+            parse_plugin_diagnostics(output, Some(TESTED_CODEX_VERSION), true, None).unwrap();
         assert_eq!(diagnostics.availability, CodexPluginAvailability::Installed);
+        assert_eq!(diagnostics.plugin_id.as_deref(), Some("lili@example"));
         assert_eq!(diagnostics.installed, Some(true));
         assert_eq!(diagnostics.enabled, Some(true));
         assert_eq!(diagnostics.plugin_version.as_deref(), Some("0.1.0"));
@@ -631,14 +732,66 @@ notify = ["other-notifier", "secret-argument"]
 
     #[test]
     fn malformed_or_ambiguous_plugin_state_remains_unknown() {
-        assert!(parse_plugin_diagnostics(b"not-json", None, false).is_none());
+        assert!(parse_plugin_diagnostics(b"not-json", None, false, None).is_none());
         let missing_enabled = br#"{
           "installed": [{"pluginId": "lili@example", "name": "lili", "version": "0.1.0"}],
           "available": []
         }"#;
-        assert!(parse_plugin_diagnostics(missing_enabled, None, false).is_none());
+        assert!(parse_plugin_diagnostics(missing_enabled, None, false, None).is_none());
         assert!(
-            parse_plugin_diagnostics(&vec![b'x'; MAX_PLUGIN_LIST_BYTES + 1], None, false).is_none()
+            parse_plugin_diagnostics(&vec![b'x'; MAX_PLUGIN_LIST_BYTES + 1], None, false, None,)
+                .is_none()
         );
+    }
+
+    #[test]
+    fn plugin_discovery_selects_the_exact_marketplace_identity() {
+        let output = br#"{
+          "installed": [{
+            "pluginId": "lili@marketplace-b",
+            "name": "lili",
+            "version": "0.1.0",
+            "enabled": true
+          }],
+          "available": [{
+            "pluginId": "lili@marketplace-a",
+            "name": "lili",
+            "version": "0.1.0",
+            "enabled": false
+          }]
+        }"#;
+
+        let selected = parse_plugin_diagnostics(
+            output,
+            Some(TESTED_CODEX_VERSION),
+            true,
+            Some("lili@marketplace-a"),
+        )
+        .unwrap();
+        assert_eq!(selected.availability, CodexPluginAvailability::Available);
+        assert_eq!(selected.installed, Some(false));
+        assert_eq!(selected.plugin_id.as_deref(), Some("lili@marketplace-a"));
+
+        let other = parse_plugin_diagnostics(
+            output,
+            Some(TESTED_CODEX_VERSION),
+            true,
+            Some("lili@marketplace-b"),
+        )
+        .unwrap();
+        assert_eq!(other.availability, CodexPluginAvailability::Installed);
+        assert_eq!(other.installed, Some(true));
+        assert_eq!(other.plugin_id.as_deref(), Some("lili@marketplace-b"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_command_output_is_bounded_by_a_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "while :; do :; done"]);
+        let started = Instant::now();
+
+        assert!(bounded_command_output(&mut command, 16).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

@@ -1,4 +1,6 @@
 use std::{
+    fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -10,9 +12,13 @@ use lili_session::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{IntegrationInspection, UninstallOutcome, inspect, preview_uninstall, uninstall};
+use crate::{
+    IntegrationInspection, UninstallOutcome, inspect_plugin, preview_uninstall, uninstall,
+};
 
 pub const PLUGIN_MIGRATION_SCHEMA_VERSION: u16 = 2;
+pub const PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME: &str = "lili-plugin-migration-assessment.json";
+const MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +81,7 @@ pub fn assess_plugin_migration(
     let plugin_enabled = diagnostics.plugin.enabled == Some(true);
     let plugin_compatible =
         diagnostics.plugin.ipc_compatibility == CodexPluginIpcCompatibility::Supported;
+    let plugin_identity_matches = diagnostics.plugin.plugin_id.as_deref() == Some(plugin_selector);
     let real_delivery = diagnostics.plugin.last_accepted_plugin_event.is_some()
         && diagnostics.plugin.trust_state == CodexPluginTrustState::TrustedAtLastDelivery;
     let cleanup_preview = legacy_active.then(|| preview_uninstall(&inspection.codex_home));
@@ -89,6 +96,13 @@ pub fn assess_plugin_migration(
     }
     if plugin_installed && !plugin_compatible {
         blockers.push("The installed plugin and desktop IPC versions are incompatible.".to_owned());
+    }
+    if (plugin_installed || diagnostics.plugin.availability == CodexPluginAvailability::Available)
+        && !plugin_identity_matches
+    {
+        blockers.push(
+            "The discovered plugin does not match the selected Marketplace identity.".to_owned(),
+        );
     }
     if let Some(Err(error)) = cleanup_preview.as_ref() {
         blockers.push(format!(
@@ -139,8 +153,9 @@ pub fn assess_plugin_migration(
                 .to_owned(),
         ],
         PluginMigrationState::CleanupReady => vec![
-            "Remove only provenance-owned legacy entries with `lili integrate uninstall`."
-                .to_owned(),
+            format!(
+                "Save this assessment as `{PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME}`, then run the displayed cleanup command."
+            ),
         ],
         PluginMigrationState::PluginPrimary => vec![
             "Keep plugin and desktop versions within the supported compatibility range.".to_owned(),
@@ -169,7 +184,9 @@ pub fn assess_plugin_migration(
         cleanup_command: vec![
             "lili".to_owned(),
             "integrate".to_owned(),
-            "uninstall".to_owned(),
+            "cleanup".to_owned(),
+            "--assessment".to_owned(),
+            PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME.to_owned(),
         ],
         blockers,
         next_actions,
@@ -177,25 +194,41 @@ pub fn assess_plugin_migration(
 }
 
 pub trait PluginLifecycleHost {
-    fn install(&mut self, plugin_selector: &str) -> Result<(), PluginMigrationError>;
-    fn inspect(&mut self, codex_home: &Path) -> IntegrationInspection;
-    fn rollback(&mut self, plugin_selector: &str) -> Result<(), PluginMigrationError>;
+    fn install(
+        &mut self,
+        codex_home: &Path,
+        plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError>;
+    fn inspect(&mut self, codex_home: &Path, plugin_selector: &str) -> IntegrationInspection;
+    fn rollback(
+        &mut self,
+        codex_home: &Path,
+        plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError>;
 }
 
 #[derive(Default)]
 pub struct CodexPluginLifecycleHost;
 
 impl PluginLifecycleHost for CodexPluginLifecycleHost {
-    fn install(&mut self, plugin_selector: &str) -> Result<(), PluginMigrationError> {
-        run_codex_plugin_command("add", plugin_selector)
+    fn install(
+        &mut self,
+        codex_home: &Path,
+        plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError> {
+        run_codex_plugin_command(codex_home, "add", plugin_selector)
     }
 
-    fn inspect(&mut self, codex_home: &Path) -> IntegrationInspection {
-        inspect(codex_home)
+    fn inspect(&mut self, codex_home: &Path, plugin_selector: &str) -> IntegrationInspection {
+        inspect_plugin(codex_home, plugin_selector)
     }
 
-    fn rollback(&mut self, plugin_selector: &str) -> Result<(), PluginMigrationError> {
-        run_codex_plugin_command("remove", plugin_selector)
+    fn rollback(
+        &mut self,
+        codex_home: &Path,
+        plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError> {
+        run_codex_plugin_command(codex_home, "remove", plugin_selector)
     }
 }
 
@@ -206,34 +239,40 @@ pub fn install_plugin_with_rollback<H: PluginLifecycleHost>(
 ) -> Result<IntegrationInspection, PluginMigrationError> {
     if assessment.schema_version != PLUGIN_MIGRATION_SCHEMA_VERSION
         || assessment.state != PluginMigrationState::InstallReady
+        || assessment.codex_home != codex_home
         || !assessment.blockers.is_empty()
         || !valid_plugin_selector(&assessment.plugin_selector)
     {
         return Err(PluginMigrationError::FailedPrecondition);
     }
-    let before = host.inspect(codex_home);
+    let before = host.inspect(codex_home, &assessment.plugin_selector);
     let plugin = &before.codex_adapter.plugin;
     if plugin.codex_support != CodexPluginSupport::Supported
         || plugin.availability != CodexPluginAvailability::Available
+        || plugin.plugin_id.as_deref() != Some(assessment.plugin_selector.as_str())
         || plugin.installed != Some(false)
     {
         return Err(PluginMigrationError::FailedPrecondition);
     }
-    if host.install(&assessment.plugin_selector).is_err() {
-        host.rollback(&assessment.plugin_selector)
+    if host
+        .install(codex_home, &assessment.plugin_selector)
+        .is_err()
+    {
+        host.rollback(codex_home, &assessment.plugin_selector)
             .map_err(|_| PluginMigrationError::RollbackFailed)?;
         return Err(PluginMigrationError::PluginCommandFailed);
     }
-    let inspection = host.inspect(codex_home);
+    let inspection = host.inspect(codex_home, &assessment.plugin_selector);
     let plugin = &inspection.codex_adapter.plugin;
     let postcondition_met = plugin.availability == CodexPluginAvailability::Installed
         && plugin.installed == Some(true)
         && plugin.enabled == Some(true)
+        && plugin.plugin_id.as_deref() == Some(assessment.plugin_selector.as_str())
         && plugin.ipc_compatibility == CodexPluginIpcCompatibility::Supported;
     if postcondition_met {
         return Ok(inspection);
     }
-    host.rollback(&assessment.plugin_selector)
+    host.rollback(codex_home, &assessment.plugin_selector)
         .map_err(|_| PluginMigrationError::RollbackFailed)?;
     Err(PluginMigrationError::InstallVerificationFailed)
 }
@@ -245,22 +284,29 @@ pub fn install_plugin(
     install_plugin_with_rollback(&mut CodexPluginLifecycleHost, codex_home, assessment)
 }
 
-pub fn rollback_plugin(plugin_selector: &str) -> Result<(), PluginMigrationError> {
-    remove_plugin(plugin_selector).map(|_| ())
+pub fn rollback_plugin(
+    codex_home: &Path,
+    plugin_selector: &str,
+) -> Result<(), PluginMigrationError> {
+    remove_plugin(codex_home, plugin_selector).map(|_| ())
 }
 
-pub fn remove_plugin(plugin_selector: &str) -> Result<PluginRemovalOutcome, PluginMigrationError> {
-    remove_plugin_with_host(&mut CodexPluginLifecycleHost, plugin_selector)
+pub fn remove_plugin(
+    codex_home: &Path,
+    plugin_selector: &str,
+) -> Result<PluginRemovalOutcome, PluginMigrationError> {
+    remove_plugin_with_host(&mut CodexPluginLifecycleHost, codex_home, plugin_selector)
 }
 
 pub fn remove_plugin_with_host<H: PluginLifecycleHost>(
     host: &mut H,
+    codex_home: &Path,
     plugin_selector: &str,
 ) -> Result<PluginRemovalOutcome, PluginMigrationError> {
     if !valid_plugin_selector(plugin_selector) {
         return Err(PluginMigrationError::InvalidSelector);
     }
-    host.rollback(plugin_selector)?;
+    host.rollback(codex_home, plugin_selector)?;
     Ok(PluginRemovalOutcome {
         plugin_selector: plugin_selector.to_owned(),
         legacy_configuration_changed: false,
@@ -289,7 +335,7 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
     if !assessment.cleanup_allowed() || !assessment.blockers.is_empty() {
         return Err(PluginMigrationError::FailedPrecondition);
     }
-    let current = host.inspect(codex_home);
+    let current = host.inspect(codex_home, &assessment.plugin_selector);
     let plugin = &current.codex_adapter.plugin;
     if assessment.schema_version != PLUGIN_MIGRATION_SCHEMA_VERSION
         || assessment.codex_home != codex_home
@@ -297,6 +343,7 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
         || !valid_plugin_selector(&assessment.plugin_selector)
         || plugin.codex_support != CodexPluginSupport::Supported
         || plugin.availability != CodexPluginAvailability::Installed
+        || plugin.plugin_id.as_deref() != Some(assessment.plugin_selector.as_str())
         || plugin.installed != Some(true)
         || plugin.enabled != Some(true)
         || plugin.ipc_compatibility != CodexPluginIpcCompatibility::Supported
@@ -315,6 +362,29 @@ pub fn cleanup_legacy_after_verification_with_host<H: PluginLifecycleHost>(
     Ok(outcome)
 }
 
+pub fn load_plugin_migration_assessment(
+    path: &Path,
+) -> Result<PluginMigrationAssessment, PluginMigrationError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| PluginMigrationError::AssessmentUnreadable)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES
+    {
+        return Err(PluginMigrationError::AssessmentUnreadable);
+    }
+    let mut payload = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(path)
+        .map_err(|_| PluginMigrationError::AssessmentUnreadable)?
+        .take(MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES + 1)
+        .read_to_end(&mut payload)
+        .map_err(|_| PluginMigrationError::AssessmentUnreadable)?;
+    if payload.len() as u64 > MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES {
+        return Err(PluginMigrationError::AssessmentUnreadable);
+    }
+    serde_json::from_slice(&payload).map_err(|_| PluginMigrationError::MalformedAssessment)
+}
+
 fn valid_plugin_selector(selector: &str) -> bool {
     let Some((name, marketplace)) = selector.split_once('@') else {
         return false;
@@ -330,17 +400,11 @@ fn valid_plugin_selector(selector: &str) -> bool {
 }
 
 fn run_codex_plugin_command(
+    codex_home: &Path,
     action: &str,
     plugin_selector: &str,
 ) -> Result<(), PluginMigrationError> {
-    if !valid_plugin_selector(plugin_selector) || !matches!(action, "add" | "remove") {
-        return Err(PluginMigrationError::InvalidSelector);
-    }
-    let status = Command::new("codex")
-        .args(["plugin", action, plugin_selector, "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    let status = codex_plugin_command(codex_home, action, plugin_selector)?
         .status()
         .map_err(|_| PluginMigrationError::PluginCommandFailed)?;
     if status.success() {
@@ -348,6 +412,24 @@ fn run_codex_plugin_command(
     } else {
         Err(PluginMigrationError::PluginCommandFailed)
     }
+}
+
+fn codex_plugin_command(
+    codex_home: &Path,
+    action: &str,
+    plugin_selector: &str,
+) -> Result<Command, PluginMigrationError> {
+    if !valid_plugin_selector(plugin_selector) || !matches!(action, "add" | "remove") {
+        return Err(PluginMigrationError::InvalidSelector);
+    }
+    let mut command = Command::new("codex");
+    command
+        .args(["plugin", action, plugin_selector, "--json"])
+        .env("CODEX_HOME", codex_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
 }
 
 #[derive(Debug, Error)]
@@ -364,6 +446,10 @@ pub enum PluginMigrationError {
     RollbackFailed,
     #[error("legacy cleanup has unresolved conflicts")]
     LegacyCleanupConflict,
+    #[error("plugin migration assessment could not be read safely")]
+    AssessmentUnreadable,
+    #[error("plugin migration assessment is malformed")]
+    MalformedAssessment,
     #[error("legacy cleanup failed: {0}")]
     LegacyCleanup(#[from] crate::UninstallError),
 }
@@ -428,6 +514,7 @@ mod tests {
             Some(DESKTOP_VERSION),
             true,
         )
+        .with_plugin_id(Some("lili@test-marketplace"))
     }
 
     fn accepted_plugin_diagnostics() -> CodexAdapterDiagnostics {
@@ -491,12 +578,18 @@ mod tests {
     struct FakeHost {
         inspections: VecDeque<IntegrationInspection>,
         install_result: Result<(), PluginMigrationError>,
+        expected_home: PathBuf,
         installed: usize,
         rolled_back: usize,
     }
 
     impl PluginLifecycleHost for FakeHost {
-        fn install(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+        fn install(
+            &mut self,
+            codex_home: &Path,
+            _plugin_selector: &str,
+        ) -> Result<(), PluginMigrationError> {
+            assert_eq!(codex_home, self.expected_home);
             self.installed += 1;
             self.install_result
                 .as_ref()
@@ -504,11 +597,17 @@ mod tests {
                 .map_err(|_| PluginMigrationError::PluginCommandFailed)
         }
 
-        fn inspect(&mut self, _codex_home: &Path) -> IntegrationInspection {
+        fn inspect(&mut self, codex_home: &Path, _plugin_selector: &str) -> IntegrationInspection {
+            assert_eq!(codex_home, self.expected_home);
             self.inspections.pop_front().unwrap()
         }
 
-        fn rollback(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+        fn rollback(
+            &mut self,
+            codex_home: &Path,
+            _plugin_selector: &str,
+        ) -> Result<(), PluginMigrationError> {
+            assert_eq!(codex_home, self.expected_home);
             self.rolled_back += 1;
             Ok(())
         }
@@ -535,6 +634,7 @@ mod tests {
         let mut host = FakeHost {
             inspections: VecDeque::from([before, inspection.clone()]),
             install_result: Ok(()),
+            expected_home: temp.0.clone(),
             installed: 0,
             rolled_back: 0,
         };
@@ -566,7 +666,7 @@ mod tests {
         );
         assert_eq!(assessment.state, PluginMigrationState::Blocked);
         assert!(matches!(
-            rollback_plugin("lili;remove@marketplace"),
+            rollback_plugin(&temp.0, "lili;remove@marketplace"),
             Err(PluginMigrationError::InvalidSelector)
         ));
     }
@@ -578,10 +678,11 @@ mod tests {
         let mut host = FakeHost {
             inspections: VecDeque::from([inspection]),
             install_result: Ok(()),
+            expected_home: temp.0.clone(),
             installed: 0,
             rolled_back: 0,
         };
-        let outcome = remove_plugin_with_host(&mut host, "lili@test-marketplace").unwrap();
+        let outcome = remove_plugin_with_host(&mut host, &temp.0, "lili@test-marketplace").unwrap();
         assert_eq!(host.rolled_back, 1);
         assert!(!outcome.legacy_configuration_changed);
         assert!(!outcome.desktop_application_changed);
@@ -607,6 +708,7 @@ mod tests {
         let mut host = FakeHost {
             inspections: VecDeque::from([current]),
             install_result: Ok(()),
+            expected_home: temp.0.clone(),
             installed: 0,
             rolled_back: 0,
         };
@@ -638,6 +740,7 @@ mod tests {
         let mut host = FakeHost {
             inspections: VecDeque::from([current]),
             install_result: Ok(()),
+            expected_home: target.0.clone(),
             installed: 0,
             rolled_back: 0,
         };
@@ -656,7 +759,8 @@ mod tests {
                 false,
                 Some(DESKTOP_VERSION),
                 true,
-            ),
+            )
+            .with_plugin_id(Some("lili@test-marketplace")),
             CodexPluginDiagnostics::discovered(
                 Some(TESTED_CODEX_VERSION),
                 CodexPluginAvailability::Available,
@@ -664,13 +768,15 @@ mod tests {
                 false,
                 Some(DESKTOP_VERSION),
                 true,
-            ),
+            )
+            .with_plugin_id(Some("lili@test-marketplace")),
         ] {
             let mut current = source_inspection.clone();
             current.codex_adapter.plugin = plugin;
             let mut host = FakeHost {
                 inspections: VecDeque::from([current]),
                 install_result: Ok(()),
+                expected_home: source.0.clone(),
                 installed: 0,
                 rolled_back: 0,
             };
@@ -681,5 +787,113 @@ mod tests {
             assert!(source.0.join(crate::CONFIG_FILE_NAME).exists());
             assert!(source.0.join(crate::HOOKS_FILE_NAME).exists());
         }
+    }
+
+    #[test]
+    fn marketplace_identity_mismatch_blocks_assessment_and_cleanup() {
+        let temp = TempDir::new();
+        let inspection = legacy_inspection(&temp);
+        let mut diagnostics = accepted_plugin_diagnostics();
+        diagnostics.plugin.plugin_id = Some("lili@other-marketplace".to_owned());
+        let assessment = assess_plugin_migration(
+            &inspection,
+            &diagnostics,
+            "lili@test-marketplace",
+            &PluginMigrationEvidence {
+                exact_hooks_reviewed_by_user: true,
+                synthetic_delivery_verified: true,
+                overlap_deduplication_verified: true,
+            },
+        );
+        assert_eq!(assessment.state, PluginMigrationState::Blocked);
+        assert!(
+            assessment
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("Marketplace identity"))
+        );
+
+        let mut ready_diagnostics = accepted_plugin_diagnostics();
+        let ready = assess_plugin_migration(
+            &inspection,
+            &ready_diagnostics,
+            "lili@test-marketplace",
+            &PluginMigrationEvidence {
+                exact_hooks_reviewed_by_user: true,
+                synthetic_delivery_verified: true,
+                overlap_deduplication_verified: true,
+            },
+        );
+        ready_diagnostics.plugin.plugin_id = Some("lili@other-marketplace".to_owned());
+        let mut current = inspection.clone();
+        current.codex_adapter = ready_diagnostics;
+        let mut host = FakeHost {
+            inspections: VecDeque::from([current]),
+            install_result: Ok(()),
+            expected_home: temp.0.clone(),
+            installed: 0,
+            rolled_back: 0,
+        };
+        assert!(matches!(
+            cleanup_legacy_after_verification_with_host(&mut host, &temp.0, &ready),
+            Err(PluginMigrationError::FailedPrecondition)
+        ));
+        assert!(temp.0.join(crate::CONFIG_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn cleanup_command_loads_the_exact_bounded_assessment() {
+        let temp = TempDir::new();
+        let inspection = legacy_inspection(&temp);
+        let assessment = assess_plugin_migration(
+            &inspection,
+            &accepted_plugin_diagnostics(),
+            "lili@test-marketplace",
+            &PluginMigrationEvidence {
+                exact_hooks_reviewed_by_user: true,
+                synthetic_delivery_verified: true,
+                overlap_deduplication_verified: true,
+            },
+        );
+        assert_eq!(
+            assessment.cleanup_command,
+            vec![
+                "lili".to_owned(),
+                "integrate".to_owned(),
+                "cleanup".to_owned(),
+                "--assessment".to_owned(),
+                PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME.to_owned(),
+            ]
+        );
+        let path = temp.0.join(PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME);
+        fs::write(&path, serde_json::to_vec(&assessment).unwrap()).unwrap();
+        assert_eq!(load_plugin_migration_assessment(&path).unwrap(), assessment);
+
+        fs::write(
+            &path,
+            vec![b'x'; MAX_PLUGIN_MIGRATION_ASSESSMENT_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(matches!(
+            load_plugin_migration_assessment(&path),
+            Err(PluginMigrationError::AssessmentUnreadable)
+        ));
+    }
+
+    #[test]
+    fn plugin_commands_bind_the_selected_codex_home() {
+        let codex_home = Path::new("/selected/codex-home");
+        let command = codex_plugin_command(codex_home, "add", "lili@test-marketplace").unwrap();
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["plugin", "add", "lili@test-marketplace", "--json"]
+        );
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == "CODEX_HOME")
+                .and_then(|(_, value)| value),
+            Some(codex_home.as_os_str())
+        );
     }
 }

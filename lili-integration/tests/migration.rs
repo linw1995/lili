@@ -67,14 +67,17 @@ fn plugin_diagnostics(legacy_active: bool, version: &str) -> CodexAdapterDiagnos
         Some(TESTED_CODEX_VERSION),
         [CodexIntegrationSurface::Stop],
     )
-    .with_plugin(CodexPluginDiagnostics::discovered(
-        Some(TESTED_CODEX_VERSION),
-        CodexPluginAvailability::Installed,
-        true,
-        true,
-        Some(version),
-        legacy_active,
-    ));
+    .with_plugin(
+        CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(version),
+            legacy_active,
+        )
+        .with_plugin_id(Some("lili@test-marketplace")),
+    );
     diagnostics.plugin.trust_state = CodexPluginTrustState::TrustedAtLastDelivery;
     diagnostics.plugin.last_accepted_plugin_event = Some(LastAcceptedCodexEvent {
         event_id: "plugin-event".to_owned(),
@@ -100,15 +103,23 @@ fn cleanup_with_diagnostics(
 struct InspectionHost(Option<IntegrationInspection>);
 
 impl PluginLifecycleHost for InspectionHost {
-    fn install(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+    fn install(
+        &mut self,
+        _codex_home: &Path,
+        _plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError> {
         unreachable!("cleanup must not install a plugin")
     }
 
-    fn inspect(&mut self, _codex_home: &Path) -> IntegrationInspection {
+    fn inspect(&mut self, _codex_home: &Path, _plugin_selector: &str) -> IntegrationInspection {
         self.0.take().expect("cleanup inspection is single-use")
     }
 
-    fn rollback(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+    fn rollback(
+        &mut self,
+        _codex_home: &Path,
+        _plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError> {
         unreachable!("cleanup must not remove a plugin")
     }
 }
@@ -254,6 +265,32 @@ fn concurrent_legacy_and_plugin_events_deduplicate_per_session() {
         reducer.lock().unwrap().snapshot().notifications.len(),
         SESSION_COUNT
     );
+}
+
+#[test]
+fn repeated_permission_invocations_remain_distinct_during_overlap() {
+    let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+    let mut applied = 0;
+    let mut duplicates = 0;
+    for (index, tool_use_id) in ["toolu_01", "toolu_02"].into_iter().enumerate() {
+        let payload = format!(
+            r#"{{"hook_event_name":"PermissionRequest","session_id":"session-1","turn_id":"turn-1","tool_use_id":"{tool_use_id}","tool_name":"Bash","tool_input":{{"command":"cargo test"}}}}"#
+        );
+        let legacy = normalize_lifecycle_json(payload.as_bytes(), index as u64 + 1).unwrap();
+        let mut plugin = legacy.clone();
+        assert!(mark_plugin_hook_event(&mut plugin));
+        for event in [legacy, plugin] {
+            match reducer.reduce(event) {
+                ReductionOutcome::Applied { .. } => applied += 1,
+                ReductionOutcome::Duplicate => duplicates += 1,
+                ReductionOutcome::IgnoredStale => panic!("unexpected stale event"),
+            }
+        }
+    }
+
+    assert_eq!(applied, 2);
+    assert_eq!(duplicates, 2);
+    assert_eq!(reducer.snapshot().notifications.len(), 2);
 }
 
 #[test]

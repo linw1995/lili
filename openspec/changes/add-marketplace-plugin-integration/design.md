@@ -89,7 +89,7 @@ Alternatives considered:
 
 ### Migrate with overlap and deduplication instead of an event gap
 
-Migration installs and enables the plugin, asks the user to review and trust its hooks, verifies one synthetic and one real lifecycle event, and only then removes Lili-owned direct configuration. During the overlap, existing stable event identities and reducer deduplication ensure one user-visible notification per lifecycle event. Unrelated hooks and notification commands remain untouched.
+Migration installs and enables the plugin, asks the user to review and trust its hooks, verifies one synthetic and one real lifecycle event, and only then removes Lili-owned direct configuration. The migration assessment is saved and passed to `lili integrate cleanup --assessment <path>` so cleanup revalidates the selected Marketplace identity, `CODEX_HOME`, compatibility, overlap, and provenance immediately before mutation. During the overlap, existing stable event identities and reducer deduplication ensure one user-visible notification per lifecycle event. Unrelated hooks and notification commands remain untouched.
 
 Plugin removal is delegated to the Plugin Directory or supported `codex plugin remove` command. Removing the plugin removes only its cached package and enabled state; it does not delete the desktop application, pet packages, action configuration, spool, or legacy configuration. `lili integrate uninstall` continues to remove only provenance-matched legacy entries.
 

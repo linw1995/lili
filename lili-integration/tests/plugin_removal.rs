@@ -38,15 +38,23 @@ struct RemovalHost {
 }
 
 impl PluginLifecycleHost for RemovalHost {
-    fn install(&mut self, _plugin_selector: &str) -> Result<(), PluginMigrationError> {
+    fn install(
+        &mut self,
+        _codex_home: &Path,
+        _plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError> {
         panic!("plugin removal must not install")
     }
 
-    fn inspect(&mut self, _codex_home: &Path) -> IntegrationInspection {
+    fn inspect(&mut self, _codex_home: &Path, _plugin_selector: &str) -> IntegrationInspection {
         panic!("plugin removal must not inspect or mutate Lili state")
     }
 
-    fn rollback(&mut self, plugin_selector: &str) -> Result<(), PluginMigrationError> {
+    fn rollback(
+        &mut self,
+        _codex_home: &Path,
+        plugin_selector: &str,
+    ) -> Result<(), PluginMigrationError> {
         assert_eq!(plugin_selector, "lili@test-marketplace");
         self.remove_calls += 1;
         Ok(())
@@ -102,7 +110,7 @@ fn plugin_removal_preserves_desktop_data_and_all_codex_configuration() {
     let before = paths.map(|relative| (relative, fs::read(temp.0.join(relative)).unwrap()));
 
     let mut host = RemovalHost::default();
-    let outcome = remove_plugin_with_host(&mut host, "lili@test-marketplace").unwrap();
+    let outcome = remove_plugin_with_host(&mut host, &temp.0, "lili@test-marketplace").unwrap();
     assert_eq!(host.remove_calls, 1);
     assert!(!outcome.legacy_configuration_changed);
     assert!(!outcome.desktop_application_changed);
@@ -120,7 +128,7 @@ fn plugin_rollback_does_not_restore_or_create_legacy_configuration() {
     assert_eq!(plan.codex_home, temp.0);
 
     let mut host = RemovalHost::default();
-    remove_plugin_with_host(&mut host, "lili@test-marketplace").unwrap();
+    remove_plugin_with_host(&mut host, &temp.0, "lili@test-marketplace").unwrap();
     assert_eq!(host.remove_calls, 1);
     assert!(!temp.0.join("config.toml").exists());
     assert!(!temp.0.join("hooks.json").exists());

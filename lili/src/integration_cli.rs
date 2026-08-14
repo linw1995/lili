@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 
 use lili_integration::{
-    build_coexistence_install_plan, build_install_plan, inspect, install, load_plan, uninstall,
+    build_coexistence_install_plan, build_install_plan, cleanup_legacy_after_verification, inspect,
+    install, load_plan, load_plugin_migration_assessment, uninstall,
 };
 use lili_pet::resolve_codex_home;
 
@@ -17,6 +18,9 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     if subcommand == Some("uninstall") {
         return Some(run_uninstall(arguments));
     }
+    if subcommand == Some("cleanup") {
+        return Some(run_cleanup(arguments));
+    }
     let legacy_plan = arguments.len() == 3
         && subcommand == Some("plan")
         && arguments
@@ -25,7 +29,7 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     let coexist = arguments.len() == 4 && legacy_plan_arguments(arguments, "--coexist");
     if !(arguments.len() == 2 && subcommand == Some("inspect")) && !legacy_plan && !coexist {
         eprintln!(
-            "usage: lili integrate <inspect|plan --legacy-fallback [--coexist]|install --legacy-fallback --plan <path>|uninstall>"
+            "usage: lili integrate <inspect|plan --legacy-fallback [--coexist]|install --legacy-fallback --plan <path>|cleanup --assessment <path>|uninstall>"
         );
         return Some(2);
     }
@@ -67,6 +71,44 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
         Err(_) => {
             eprintln!("integration inspection could not be written");
             Some(4)
+        }
+    }
+}
+
+fn run_cleanup(arguments: &[OsString]) -> u8 {
+    let [_, _, flag, path] = arguments else {
+        eprintln!("usage: lili integrate cleanup --assessment <path>");
+        return 2;
+    };
+    if flag != "--assessment" {
+        eprintln!("usage: lili integrate cleanup --assessment <path>");
+        return 2;
+    }
+    let assessment = match load_plugin_migration_assessment(std::path::Path::new(path)) {
+        Ok(assessment) => assessment,
+        Err(error) => {
+            eprintln!("plugin migration assessment could not be loaded: {error}");
+            return 3;
+        }
+    };
+    let codex_home = match resolve_codex_home() {
+        Ok(codex_home) => codex_home,
+        Err(error) => {
+            eprintln!("Codex home could not be resolved: {error}");
+            return 3;
+        }
+    };
+    match cleanup_legacy_after_verification(&codex_home, &assessment) {
+        Ok(outcome) => match serde_json::to_writer_pretty(std::io::stdout().lock(), &outcome) {
+            Ok(()) => {
+                println!();
+                0
+            }
+            Err(_) => 4,
+        },
+        Err(error) => {
+            eprintln!("plugin migration cleanup failed: {error}");
+            5
         }
     }
 }
@@ -191,6 +233,31 @@ mod tests {
                 "plan.json".into(),
             ]),
             2
+        );
+    }
+
+    #[test]
+    fn cleanup_command_requires_a_bounded_assessment_file() {
+        assert_eq!(run_cleanup(&[]), 2);
+        assert_eq!(
+            run_cleanup(&[
+                "integrate".into(),
+                "cleanup".into(),
+                "--invalid".into(),
+                "assessment.json".into(),
+            ]),
+            2
+        );
+        assert_eq!(
+            run_cleanup(&[
+                "integrate".into(),
+                "cleanup".into(),
+                "--assessment".into(),
+                std::env::temp_dir()
+                    .join("lili-missing-plugin-assessment.json")
+                    .into_os_string(),
+            ]),
+            3
         );
     }
 }
