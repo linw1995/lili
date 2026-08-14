@@ -124,7 +124,7 @@ fn build_runtime_assessment(
     codex_home: &std::path::Path,
     selector: &str,
 ) -> Result<PluginMigrationAssessment, lili_integration::PluginMigrationError> {
-    let inspection = inspect_plugin(&codex_home, selector);
+    let inspection = inspect_plugin(codex_home, selector);
     let (evidence, synthetic_event_id, credentials) =
         collect_runtime_verification(codex_home, selector, &inspection);
     let assessment =
