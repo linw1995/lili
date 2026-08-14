@@ -114,7 +114,11 @@ impl SpoolStore {
             .directory
             .join(staged_file_name_from_pending(&pending_name)?);
         let lock = SpoolLock::acquire(&self.directory)?;
-        atomic_write(&staged_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
+        atomic_write_with_deferred_parent_sync(
+            &staged_path,
+            &payload,
+            MAX_SPOOL_RECORD_BYTES as u64,
+        )?;
         let mut staged_guard = TemporaryFileGuard::new(staged_path.clone());
 
         promote_staged_record(&staged_path, &pending_path)?;
@@ -602,6 +606,23 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn atomic_write(path: &Path, payload: &[u8], limit: u64) -> Result<(), SpoolError> {
+    atomic_write_inner(path, payload, limit, true)
+}
+
+fn atomic_write_with_deferred_parent_sync(
+    path: &Path,
+    payload: &[u8],
+    limit: u64,
+) -> Result<(), SpoolError> {
+    atomic_write_inner(path, payload, limit, false)
+}
+
+fn atomic_write_inner(
+    path: &Path,
+    payload: &[u8],
+    limit: u64,
+    sync_parent: bool,
+) -> Result<(), SpoolError> {
     if payload.len() as u64 > limit {
         return Err(SpoolError::RecordTooLarge);
     }
@@ -621,7 +642,9 @@ fn atomic_write(path: &Path, payload: &[u8], limit: u64) -> Result<(), SpoolErro
     file.sync_all()?;
     fs::rename(&temporary, path)?;
     guard.commit();
-    sync_directory(directory)?;
+    if sync_parent {
+        sync_directory(directory)?;
+    }
     Ok(())
 }
 
