@@ -118,6 +118,20 @@ jobs:
             --manifest "release/lili-plugin-$VERSION.manifest.json" \
             --checksum "release/lili-plugin-$VERSION.zip.sha256" \
             --supply-chain "release/lili-plugin-$VERSION.supply-chain.json"
+      - name: Install reviewed Codex CLI
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          codex_binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$codex_binary"
+          echo "CODEX_BIN=$PWD/$codex_binary" >> "$GITHUB_ENV"
+      - name: Run release Marketplace lifecycle round trip
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: nix run .#marketplace-roundtrip -- --archive "$PWD/release/lili-plugin-$VERSION.zip" --codex "$CODEX_BIN"
+      - name: Run release Marketplace hook trust round trip
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: nix run .#marketplace-trust -- --archive "$PWD/release/lili-plugin-$VERSION.zip" --codex "$CODEX_BIN"
       - name: Upload universal plugin archive
         uses: actions/upload-artifact@v7
         with:
