@@ -1,7 +1,7 @@
 use lili_session::{
     CodexAdapterDiagnostics, CodexPluginEvidenceStore, ForwardingAck, ForwardingAckDisposition,
-    ForwardingCredentials, ForwardingProtocolError, ForwardingVerifier, NormalizedSessionEvent,
-    ReductionOutcome, SpoolMetrics,
+    ForwardingCredentials, ForwardingProtocolError, ForwardingPurpose, ForwardingVerifier,
+    NormalizedSessionEvent, ReductionOutcome, SessionReducer, SpoolMetrics,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -132,6 +132,7 @@ impl NativeIngestionHandle {
 pub struct NativeIngestionActor {
     state: AppState,
     verifier: ForwardingVerifier,
+    verification_reducer: SessionReducer,
     evidence_credentials: ForwardingCredentials,
     receiver: mpsc::Receiver<IngestionCommand>,
     snapshot_sender: watch::Sender<ViewSnapshot>,
@@ -183,6 +184,7 @@ impl NativeIngestionActor {
         let actor = Self {
             state,
             verifier: ForwardingVerifier::new(credentials.clone()),
+            verification_reducer: SessionReducer::default(),
             evidence_credentials: credentials,
             receiver,
             snapshot_sender,
@@ -255,7 +257,12 @@ impl NativeIngestionActor {
                 return Err(IngestionError::Protocol(error));
             }
         };
-        let outcome = self.reduce_event(verified.event().clone()).await;
+        let outcome = match verified.purpose() {
+            ForwardingPurpose::Event => self.reduce_event(verified.event().clone()).await,
+            ForwardingPurpose::Verification => {
+                self.verification_reducer.reduce(verified.event().clone())
+            }
+        };
         let disposition = match outcome {
             ReductionOutcome::Applied { .. } | ReductionOutcome::IgnoredStale => {
                 ForwardingAckDisposition::Accepted
@@ -475,6 +482,7 @@ mod tests {
                 .disposition(),
             ForwardingAckDisposition::Accepted
         );
+        let snapshot_after_real_event = state.snapshot().await;
 
         let mut legacy_synthetic = event();
         legacy_synthetic.event_id = lili_session::EventId::parse("synthetic-event").unwrap();
@@ -488,7 +496,7 @@ mod tests {
             (legacy_synthetic, 1_001, ForwardingAckDisposition::Accepted),
             (plugin_synthetic, 1_002, ForwardingAckDisposition::Duplicate),
         ] {
-            let message = credentials.sign(event, sent_at_ms).unwrap();
+            let message = credentials.sign_verification(event, sent_at_ms).unwrap();
             assert_eq!(
                 handle
                     .ingest(payload(&message.to_frame().unwrap()), sent_at_ms)
@@ -500,6 +508,9 @@ mod tests {
         }
 
         let diagnostics = state.ingestion_diagnostics().await;
+        assert_eq!(state.snapshot().await, snapshot_after_real_event);
+        assert_eq!(diagnostics.accepted_messages, 1);
+        assert_eq!(diagnostics.duplicate_events, 0);
         assert_eq!(
             diagnostics
                 .codex_adapter

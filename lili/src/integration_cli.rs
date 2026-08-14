@@ -240,10 +240,10 @@ fn verify_synthetic_overlap(
     let Ok(plugin_event) = normalize_provider_input(input(&plugin_source)) else {
         return (false, false, String::new(), None);
     };
-    let Ok(legacy_message) = credentials.sign(legacy_event, now_ms) else {
+    let Ok(legacy_message) = credentials.sign_verification(legacy_event, now_ms) else {
         return (false, false, String::new(), None);
     };
-    let Ok(plugin_message) = credentials.sign(plugin_event, now_ms) else {
+    let Ok(plugin_message) = credentials.sign_verification(plugin_event, now_ms) else {
         return (false, false, String::new(), None);
     };
     let delivered = tauri::async_runtime::block_on(async {
@@ -445,7 +445,9 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use lili_session::{BoundForwardingEndpoint, ForwardingAckDisposition, ForwardingVerifier};
+    use lili_session::{
+        BoundForwardingEndpoint, ForwardingAckDisposition, ForwardingPurpose, ForwardingVerifier,
+    };
 
     use super::*;
 
@@ -576,6 +578,7 @@ mod tests {
                 let mut connection = endpoint.accept().await.unwrap();
                 let payload = connection.read_payload().await.unwrap();
                 let verified = verifier.verify_payload(&payload, unix_time_ms()).unwrap();
+                assert_eq!(verified.purpose(), ForwardingPurpose::Verification);
                 if let Some(first_event_id) = &first_event_id {
                     assert_eq!(verified.event().event_id, *first_event_id);
                 } else {

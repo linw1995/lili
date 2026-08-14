@@ -624,6 +624,8 @@ fn atomic_write(path: &Path, payload: &[u8], limit: u64) -> Result<(), SpoolErro
         options.mode(0o600);
     }
     let mut file = options.open(&temporary)?;
+    #[cfg(windows)]
+    crate::windows_acl::enforce_owner_only(&temporary, false)?;
     file.write_all(payload)?;
     file.sync_all()?;
     fs::rename(&temporary, path)?;
@@ -710,8 +712,8 @@ fn validate_private_metadata(_path: &Path, metadata: &fs::Metadata) -> Result<()
 }
 
 #[cfg(windows)]
-fn validate_private_metadata(path: &Path, metadata: &fs::Metadata) -> Result<(), SpoolError> {
-    crate::windows_acl::enforce_owner_only(path, metadata.is_dir())?;
+fn validate_private_metadata(path: &Path, _metadata: &fs::Metadata) -> Result<(), SpoolError> {
+    crate::windows_acl::validate_owner_only(path)?;
     Ok(())
 }
 

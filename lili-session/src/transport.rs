@@ -200,6 +200,8 @@ impl ForwardingCredentialStore {
             options.mode(0o600);
         }
         let mut file = options.open(&temporary)?;
+        #[cfg(windows)]
+        crate::windows_acl::enforce_owner_only(&temporary, false)?;
         file.write_all(&payload)?;
         file.sync_all()?;
         if fault == TransportFault::BeforeCredentialReplace {
@@ -261,6 +263,8 @@ fn write_private_atomic(
         options.mode(0o600);
     }
     let mut file = options.open(&temporary)?;
+    #[cfg(windows)]
+    crate::windows_acl::enforce_owner_only(&temporary, false)?;
     file.write_all(payload)?;
     file.sync_all()?;
     fs::rename(&temporary, path)?;
@@ -439,7 +443,7 @@ fn validate_private_file(
     path: &Path,
     _metadata: &fs::Metadata,
 ) -> Result<(), ForwardingTransportError> {
-    crate::windows_acl::enforce_owner_only(path, false)?;
+    crate::windows_acl::validate_owner_only(path)?;
     Ok(())
 }
 
