@@ -112,18 +112,10 @@ pub fn assess_plugin_migration(
     let legacy_active = diagnostics.plugin.hook_source == CodexHookSource::Legacy
         || diagnostics.plugin.hook_source == CodexHookSource::Overlap;
     let plugin_installed = diagnostics.plugin.installed == Some(true);
-    let plugin_enabled = diagnostics.plugin.enabled == Some(true);
     let plugin_compatible =
         diagnostics.plugin.ipc_compatibility == CodexPluginIpcCompatibility::Supported;
     let plugin_identity_matches = diagnostics.plugin.plugin_id.as_deref() == Some(plugin_selector);
-    let verified_plugin_event = diagnostics
-        .plugin
-        .last_accepted_plugin_event
-        .as_ref()
-        .filter(|event| {
-            event.plugin_version.is_some()
-                && event.plugin_version.as_ref() == diagnostics.plugin.plugin_version.as_ref()
-        });
+    let verified_plugin_event = verified_plugin_event(diagnostics);
     let verified_plugin_version =
         verified_plugin_event.and_then(|event| event.plugin_version.clone());
     let verified_plugin_event_id = verified_plugin_event.map(|event| event.event_id.clone());
@@ -160,25 +152,13 @@ pub fn assess_plugin_migration(
         blockers.push("Legacy provenance has conflicts that require manual resolution.".to_owned());
     }
 
-    let state = if !blockers.is_empty() {
-        PluginMigrationState::Blocked
-    } else if !plugin_installed {
-        if diagnostics.plugin.availability == CodexPluginAvailability::Available {
-            PluginMigrationState::InstallReady
-        } else {
-            blockers
-                .push("The Lili plugin is not available from a configured Marketplace.".to_owned());
-            PluginMigrationState::Blocked
-        }
-    } else if !plugin_enabled || !evidence.exact_hooks_reviewed_by_user || !real_delivery {
-        PluginMigrationState::AwaitingHookReview
-    } else if !evidence.synthetic_delivery_verified || !evidence.overlap_deduplication_verified {
-        PluginMigrationState::AwaitingVerification
-    } else if legacy_active {
-        PluginMigrationState::CleanupReady
-    } else {
-        PluginMigrationState::PluginPrimary
-    };
+    let state = migration_state(
+        diagnostics,
+        evidence,
+        real_delivery,
+        legacy_active,
+        &mut blockers,
+    );
 
     let next_actions = match state {
         PluginMigrationState::Blocked => vec![
@@ -237,6 +217,52 @@ pub fn assess_plugin_migration(
         blockers,
         next_actions,
     }
+}
+
+fn migration_state(
+    diagnostics: &CodexAdapterDiagnostics,
+    evidence: &PluginMigrationEvidence,
+    real_delivery: bool,
+    legacy_active: bool,
+    blockers: &mut Vec<String>,
+) -> PluginMigrationState {
+    if !blockers.is_empty() {
+        return PluginMigrationState::Blocked;
+    }
+    if diagnostics.plugin.installed != Some(true) {
+        if diagnostics.plugin.availability == CodexPluginAvailability::Available {
+            return PluginMigrationState::InstallReady;
+        }
+        blockers.push("The Lili plugin is not available from a configured Marketplace.".to_owned());
+        return PluginMigrationState::Blocked;
+    }
+    if diagnostics.plugin.enabled != Some(true)
+        || !evidence.exact_hooks_reviewed_by_user
+        || !real_delivery
+    {
+        return PluginMigrationState::AwaitingHookReview;
+    }
+    if !evidence.synthetic_delivery_verified || !evidence.overlap_deduplication_verified {
+        return PluginMigrationState::AwaitingVerification;
+    }
+    if legacy_active {
+        PluginMigrationState::CleanupReady
+    } else {
+        PluginMigrationState::PluginPrimary
+    }
+}
+
+fn verified_plugin_event(
+    diagnostics: &CodexAdapterDiagnostics,
+) -> Option<&lili_session::LastAcceptedCodexEvent> {
+    diagnostics
+        .plugin
+        .last_accepted_plugin_event
+        .as_ref()
+        .filter(|event| {
+            event.plugin_version.is_some()
+                && event.plugin_version.as_ref() == diagnostics.plugin.plugin_version.as_ref()
+        })
 }
 
 fn codex_support_blocker(support: CodexPluginSupport, real_delivery: bool) -> Option<&'static str> {

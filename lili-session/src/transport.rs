@@ -880,6 +880,33 @@ mod tests {
         assert_ne!(first_id, endpoint.credentials().instance_id());
     }
 
+    #[test]
+    fn codex_plugin_evidence_round_trips_through_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let diagnostics = CodexAdapterDiagnostics::default();
+        store.save(&diagnostics).unwrap();
+        let path = temp.0.join("lili").join(CODEX_EVIDENCE_FILE_NAME);
+        assert_eq!(store.load().unwrap(), diagnostics);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::write(&path, b"not-json").unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(ForwardingTransportError::MalformedEvidenceFile)
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(ForwardingTransportError::WrongOwner)
+        ));
+    }
+
     #[tokio::test]
     async fn failure_injection_during_credential_rotation_preserves_previous_record() {
         let temp = TempDir::new();

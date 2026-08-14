@@ -1,9 +1,9 @@
 use std::ffi::OsString;
 
 use lili_integration::{
-    PluginMigrationEvidence, assess_plugin_migration, build_coexistence_install_plan,
-    build_install_plan, cleanup_legacy_after_verification, inspect, inspect_plugin, install,
-    load_plan, load_plugin_migration_assessment, plugin_hooks_are_trusted,
+    PluginMigrationAssessment, PluginMigrationEvidence, assess_plugin_migration,
+    build_coexistence_install_plan, build_install_plan, cleanup_legacy_after_verification, inspect,
+    inspect_plugin, install, load_plan, load_plugin_migration_assessment, plugin_hooks_are_trusted,
     save_plugin_migration_verification, uninstall,
 };
 use lili_pet::resolve_codex_home;
@@ -85,17 +85,9 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
 }
 
 fn run_assess(arguments: &[OsString]) -> u8 {
-    let [_, _, flag, selector] = arguments else {
-        eprintln!("usage: lili integrate assess --plugin <plugin@marketplace>");
-        return 2;
-    };
-    if flag != "--plugin" {
-        eprintln!("usage: lili integrate assess --plugin <plugin@marketplace>");
-        return 2;
-    }
-    let Some(selector) = selector.to_str() else {
-        eprintln!("plugin selector is invalid");
-        return 2;
+    let selector = match assess_selector(arguments) {
+        Ok(selector) => selector,
+        Err(()) => return 2,
     };
     let codex_home = match resolve_codex_home() {
         Ok(codex_home) => codex_home,
@@ -104,49 +96,96 @@ fn run_assess(arguments: &[OsString]) -> u8 {
             return 3;
         }
     };
+    let assessment = match build_runtime_assessment(&codex_home, selector) {
+        Ok(assessment) => assessment,
+        Err(error) => {
+            eprintln!("plugin migration verification failed: {error}");
+            return 5;
+        }
+    };
+    write_assessment(&assessment)
+}
+
+fn assess_selector(arguments: &[OsString]) -> Result<&str, ()> {
+    let [_, _, flag, selector] = arguments else {
+        eprintln!("usage: lili integrate assess --plugin <plugin@marketplace>");
+        return Err(());
+    };
+    if flag != "--plugin" {
+        eprintln!("usage: lili integrate assess --plugin <plugin@marketplace>");
+        return Err(());
+    }
+    selector.to_str().ok_or_else(|| {
+        eprintln!("plugin selector is invalid");
+    })
+}
+
+fn build_runtime_assessment(
+    codex_home: &std::path::Path,
+    selector: &str,
+) -> Result<PluginMigrationAssessment, lili_integration::PluginMigrationError> {
     let inspection = inspect_plugin(&codex_home, selector);
-    let hooks_reviewed = plugin_hooks_are_trusted(&codex_home, selector);
-    let (
-        synthetic_delivery_verified,
-        overlap_deduplication_verified,
-        synthetic_event_id,
-        credentials,
-    ) = if hooks_reviewed
+    let (evidence, synthetic_event_id, credentials) =
+        collect_runtime_verification(codex_home, selector, &inspection);
+    let assessment =
+        assess_plugin_migration(&inspection, &inspection.codex_adapter, selector, &evidence);
+    save_cleanup_verification_if_ready(
+        codex_home,
+        &assessment,
+        credentials.as_ref(),
+        &synthetic_event_id,
+    )?;
+    Ok(assessment)
+}
+
+fn collect_runtime_verification(
+    codex_home: &std::path::Path,
+    selector: &str,
+    inspection: &lili_integration::IntegrationInspection,
+) -> (
+    PluginMigrationEvidence,
+    String,
+    Option<lili_session::ForwardingCredentials>,
+) {
+    let hooks_reviewed = plugin_hooks_are_trusted(codex_home, selector);
+    let (synthetic, overlap, event_id, credentials) = if hooks_reviewed
         && inspection
             .codex_adapter
             .plugin
             .last_accepted_plugin_event
             .is_some()
     {
-        verify_synthetic_overlap(&codex_home)
+        verify_synthetic_overlap(codex_home)
     } else {
         (false, false, String::new(), None)
     };
-    let assessment = assess_plugin_migration(
-        &inspection,
-        &inspection.codex_adapter,
-        selector,
-        &PluginMigrationEvidence {
+    (
+        PluginMigrationEvidence {
             exact_hooks_reviewed_by_user: hooks_reviewed,
-            synthetic_delivery_verified,
-            overlap_deduplication_verified,
+            synthetic_delivery_verified: synthetic,
+            overlap_deduplication_verified: overlap,
         },
-    );
-    if assessment.cleanup_allowed() {
-        let Some(credentials) = credentials.as_ref() else {
-            eprintln!("plugin migration verification could not be authenticated");
-            return 5;
-        };
-        if let Err(error) = save_plugin_migration_verification(
-            &codex_home,
-            &assessment,
-            credentials,
-            &synthetic_event_id,
-        ) {
-            eprintln!("plugin migration verification could not be saved: {error}");
-            return 5;
-        }
+        event_id,
+        credentials,
+    )
+}
+
+fn save_cleanup_verification_if_ready(
+    codex_home: &std::path::Path,
+    assessment: &PluginMigrationAssessment,
+    credentials: Option<&lili_session::ForwardingCredentials>,
+    synthetic_event_id: &str,
+) -> Result<(), lili_integration::PluginMigrationError> {
+    if !assessment.cleanup_allowed() {
+        return Ok(());
     }
+    let credentials =
+        credentials.ok_or(lili_integration::PluginMigrationError::FailedPrecondition)?;
+    save_plugin_migration_verification(codex_home, assessment, credentials, synthetic_event_id)?;
+    Ok(())
+}
+
+fn write_assessment(assessment: &PluginMigrationAssessment) -> u8 {
     match serde_json::to_writer_pretty(std::io::stdout().lock(), &assessment) {
         Ok(()) => {
             println!();
@@ -344,7 +383,36 @@ fn unix_time_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use lili_session::{BoundForwardingEndpoint, ForwardingAckDisposition, ForwardingVerifier};
+
     use super::*;
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "lili-integration-cli-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn install_command_rejects_invalid_arguments_and_missing_plans() {
@@ -418,6 +486,49 @@ mod tests {
                 "lili@test-marketplace".into(),
             ]),
             2
+        );
+    }
+
+    #[test]
+    fn synthetic_overlap_uses_the_authenticated_runtime_and_observes_a_duplicate() {
+        let temp = TempDir::new();
+        let runtime_dir = temp.0.join("lili/runtime");
+        let endpoint = tauri::async_runtime::block_on(async {
+            BoundForwardingEndpoint::bind(&runtime_dir).unwrap()
+        });
+        let credentials = endpoint.credentials();
+        let expected_instance_id = credentials.instance_id().to_owned();
+        let server = tauri::async_runtime::spawn(async move {
+            let mut verifier = ForwardingVerifier::new(credentials);
+            let mut first_event_id = None;
+            for disposition in [
+                ForwardingAckDisposition::Accepted,
+                ForwardingAckDisposition::Duplicate,
+            ] {
+                let mut connection = endpoint.accept().await.unwrap();
+                let payload = connection.read_payload().await.unwrap();
+                let verified = verifier.verify_payload(&payload, unix_time_ms()).unwrap();
+                if let Some(first_event_id) = &first_event_id {
+                    assert_eq!(verified.event().event_id, *first_event_id);
+                } else {
+                    first_event_id = Some(verified.event().event_id.clone());
+                }
+                connection
+                    .write_acknowledgement(&verified.acknowledgement(disposition))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let (synthetic, overlap, event_id, returned_credentials) =
+            verify_synthetic_overlap(&temp.0);
+        tauri::async_runtime::block_on(server).unwrap();
+        assert!(synthetic);
+        assert!(overlap);
+        assert!(event_id.starts_with("lili-migration-verification-"));
+        assert_eq!(
+            returned_credentials.unwrap().instance_id(),
+            expected_instance_id
         );
     }
 }
