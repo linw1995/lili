@@ -1,4 +1,5 @@
 mod install;
+mod migration;
 mod plan;
 mod uninstall;
 
@@ -21,12 +22,20 @@ pub use install::{
     InstallError, InstallOutcome, InstalledFileProvenance, IntegrationProvenance, install,
     install_with_verifier, load_plan,
 };
+pub use migration::{
+    CodexPluginLifecycleHost, PLUGIN_MIGRATION_SCHEMA_VERSION, PluginLifecycleHost,
+    PluginMigrationAssessment, PluginMigrationError, PluginMigrationEvidence, PluginMigrationState,
+    assess_plugin_migration, cleanup_legacy_after_verification, install_plugin,
+    install_plugin_with_rollback, rollback_plugin,
+};
 pub use plan::{
     InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, IntegrationOperationKind,
     PlannedFileAction, PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry,
     build_coexistence_install_plan, build_install_plan,
 };
-pub use uninstall::{UninstallError, UninstallOutcome, uninstall};
+pub use uninstall::{
+    UninstallError, UninstallOutcome, UninstallPreview, preview_uninstall, uninstall,
+};
 
 pub const INTEGRATION_SCHEMA_VERSION: u16 = 1;
 pub const LILI_INTEGRATION_ID: &str = "lili-session-v1";

@@ -118,6 +118,10 @@ cat ./lili-plan.json
 
 The installation may update `${CODEX_HOME}/config.toml` and `${CODEX_HOME}/hooks.json`, creates timestamped backups for changed existing files, and records managed provenance in `${CODEX_HOME}/lili/integration.json`. Permission notifications remain observer-only; Lili never approves or denies a request.
 
+### Migrating from legacy fallback to the plugin
+
+Lili's migration assessment keeps the legacy fallback active while the plugin is installed. It never writes Codex trust state. Review and trust the exact hook definitions in Codex yourself, then verify one synthetic delivery, one real plugin-attributed lifecycle event, empty hook output, and overlap deduplication. Only a `cleanup_ready` assessment permits provenance-aware legacy cleanup. A failed install or post-install compatibility check removes only the newly installed plugin; a failed trust or verification precondition leaves the legacy integration unchanged.
+
 After installation, restart Codex and start a new Session so it reads the updated configuration. A synthetic verification event may appear during installation. If Lili is temporarily stopped, supported events are written to the bounded local spool and consumed on the next start.
 
 ## 5. Configure interaction actions

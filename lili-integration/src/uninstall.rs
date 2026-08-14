@@ -1,6 +1,6 @@
 use std::{fs, path::Path, path::PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use toml_edit::{Array, DocumentMut, value};
 
@@ -21,6 +21,44 @@ pub struct UninstallOutcome {
     pub removed_hook_handlers: usize,
     pub conflicts: Vec<String>,
     pub provenance: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallPreview {
+    pub complete: bool,
+    pub restored_notify: bool,
+    pub removed_hook_handlers: usize,
+    pub conflicts: Vec<String>,
+}
+
+pub fn preview_uninstall(codex_home: &Path) -> Result<UninstallPreview, UninstallError> {
+    let provenance_path = provenance_path(codex_home);
+    let provenance: IntegrationProvenance =
+        serde_json::from_slice(&read_required_bounded(&provenance_path)?)
+            .map_err(|_| UninstallError::InvalidProvenance)?;
+    validate_provenance(codex_home, &provenance)?;
+    let config_path = codex_home.join(CONFIG_FILE_NAME);
+    let hooks_path = codex_home.join(HOOKS_FILE_NAME);
+    reject_symbolic_link(&config_path)?;
+    reject_symbolic_link(&hooks_path)?;
+    let mut conflicts = Vec::new();
+    let (_, restored_notify, config_complete) = plan_config_uninstall(
+        &provenance,
+        read_optional(&config_path)?.as_deref(),
+        &mut conflicts,
+    )?;
+    let (_, removed_hook_handlers, hooks_complete) = plan_hooks_uninstall(
+        &provenance,
+        read_optional(&hooks_path)?.as_deref(),
+        &mut conflicts,
+    )?;
+    Ok(UninstallPreview {
+        complete: config_complete && hooks_complete,
+        restored_notify,
+        removed_hook_handlers,
+        conflicts,
+    })
 }
 
 pub fn uninstall(codex_home: &Path) -> Result<UninstallOutcome, UninstallError> {
