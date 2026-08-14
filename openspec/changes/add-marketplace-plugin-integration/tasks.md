@@ -22,7 +22,7 @@
 ## 4. Integration Status and Migration
 
 - [x] 4.1 Update Lili diagnostics to report supported Codex plugin availability, installed and enabled state, hook source, trust state, plugin version, desktop version, IPC compatibility, last accepted plugin event, and safe remediation.
-- [ ] 4.2 Reclassify `lili integrate plan` and `install` as explicit legacy/fallback operations while preserving inspect, conflict preview, backups, atomicity, coexistence, and provenance-aware uninstall.
+- [x] 4.2 Reclassify `lili integrate plan` and `install` as explicit legacy/fallback operations while preserving inspect, conflict preview, backups, atomicity, coexistence, and provenance-aware uninstall.
 - [ ] 4.3 Implement the install, trust, verify, deduplicated overlap, and legacy-cleanup migration workflow with rollback on any failed precondition.
 - [ ] 4.4 Add migration tests for clean plugin adoption, unrelated hooks and notify commands, untrusted hooks, incompatible versions, concurrent sessions, failed verification, repeated migration, and modified legacy provenance.
 - [ ] 4.5 Ensure supported plugin removal and rollback never delete the desktop application, pet packages, actions, spool, unrelated hooks, or legacy configuration.

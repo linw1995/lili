@@ -22,9 +22,9 @@ pub use install::{
     install_with_verifier, load_plan,
 };
 pub use plan::{
-    InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, PlannedFileAction,
-    PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry, build_coexistence_install_plan,
-    build_install_plan,
+    InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, IntegrationOperationKind,
+    PlannedFileAction, PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry,
+    build_coexistence_install_plan, build_install_plan,
 };
 pub use uninstall::{UninstallError, UninstallOutcome, uninstall};
 

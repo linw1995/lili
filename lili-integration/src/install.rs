@@ -12,8 +12,8 @@ use toml_edit::{Array, DocumentMut, value};
 
 use crate::{
     HOOKS_FILE_NAME, InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan,
-    IntegrationKind, LILI_INTEGRATION_ID, PlannedFileAction, build_coexistence_install_plan,
-    build_install_plan, inspect_with_version, sha256_hex,
+    IntegrationKind, IntegrationOperationKind, LILI_INTEGRATION_ID, PlannedFileAction,
+    build_coexistence_install_plan, build_install_plan, inspect_with_version, sha256_hex,
 };
 
 const PROVENANCE_FILE_NAME: &str = "integration.json";
@@ -152,7 +152,9 @@ where
 }
 
 fn validate_plan(plan: &IntegrationInstallPlan) -> Result<(), InstallError> {
-    if plan.status != InstallPlanStatus::Ready
+    if plan.schema_version != 2
+        || plan.operation_kind != IntegrationOperationKind::LegacyFallback
+        || plan.status != InstallPlanStatus::Ready
         || !plan.codex_home.is_absolute()
         || !plan.hook_binary.is_absolute()
         || plan.config_change.target != plan.codex_home.join(crate::CONFIG_FILE_NAME)
@@ -634,6 +636,13 @@ mod tests {
         let valid_path = temp.0.join("plan.json");
         fs::write(&valid_path, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(load_plan(&valid_path).unwrap(), plan);
+
+        let mut old_schema = plan.clone();
+        old_schema.schema_version = 1;
+        assert!(matches!(
+            install_with_verifier(&old_schema, |_| Ok(())),
+            Err(InstallError::InvalidPlan)
+        ));
 
         assert!(matches!(load_plan(&temp.0), Err(InstallError::InvalidPlan)));
 

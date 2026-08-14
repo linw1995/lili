@@ -17,14 +17,15 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     if subcommand == Some("uninstall") {
         return Some(run_uninstall(arguments));
     }
-    let coexist = arguments.len() == 3
+    let legacy_plan = arguments.len() == 3
         && subcommand == Some("plan")
         && arguments
             .get(2)
-            .is_some_and(|argument| argument == "--coexist");
-    if !(arguments.len() == 2 && matches!(subcommand, Some("inspect" | "plan"))) && !coexist {
+            .is_some_and(|argument| argument == "--legacy-fallback");
+    let coexist = arguments.len() == 4 && legacy_plan_arguments(arguments, "--coexist");
+    if !(arguments.len() == 2 && subcommand == Some("inspect")) && !legacy_plan && !coexist {
         eprintln!(
-            "usage: lili integrate <inspect|plan [--coexist]|install --plan <path>|uninstall>"
+            "usage: lili integrate <inspect|plan --legacy-fallback [--coexist]|install --legacy-fallback --plan <path>|uninstall>"
         );
         return Some(2);
     }
@@ -70,6 +71,15 @@ pub fn try_run(arguments: &[OsString]) -> Option<u8> {
     }
 }
 
+fn legacy_plan_arguments(arguments: &[OsString], final_flag: &str) -> bool {
+    arguments
+        .get(2)
+        .is_some_and(|argument| argument == "--legacy-fallback")
+        && arguments
+            .get(3)
+            .is_some_and(|argument| argument == final_flag)
+}
+
 fn run_uninstall(arguments: &[OsString]) -> u8 {
     if arguments.len() != 2 {
         eprintln!("usage: lili integrate uninstall");
@@ -98,12 +108,12 @@ fn run_uninstall(arguments: &[OsString]) -> u8 {
 }
 
 fn run_install(arguments: &[OsString]) -> u8 {
-    let [_, _, flag, path] = arguments else {
-        eprintln!("usage: lili integrate install --plan <path>");
+    let [_, _, legacy, flag, path] = arguments else {
+        eprintln!("usage: lili integrate install --legacy-fallback --plan <path>");
         return 2;
     };
-    if flag != "--plan" {
-        eprintln!("usage: lili integrate install --plan <path>");
+    if legacy != "--legacy-fallback" || flag != "--plan" {
+        eprintln!("usage: lili integrate install --legacy-fallback --plan <path>");
         return 2;
     }
     let plan = match load_plan(std::path::Path::new(path)) {
@@ -155,6 +165,7 @@ mod tests {
             run_install(&[
                 "integrate".into(),
                 "install".into(),
+                "--legacy-fallback".into(),
                 "--invalid".into(),
                 "plan.json".into(),
             ]),
@@ -164,12 +175,22 @@ mod tests {
             run_install(&[
                 "integrate".into(),
                 "install".into(),
+                "--legacy-fallback".into(),
                 "--plan".into(),
                 std::env::temp_dir()
                     .join("lili-missing-install-plan.json")
                     .into_os_string(),
             ]),
             3
+        );
+        assert_eq!(
+            run_install(&[
+                "integrate".into(),
+                "install".into(),
+                "--plan".into(),
+                "plan.json".into(),
+            ]),
+            2
         );
     }
 }

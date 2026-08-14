@@ -50,17 +50,17 @@ Structured logs and diagnostics exclude raw prompts, complete assistant messages
 
 ## Codex integration changes
 
-Lili provides an inspect, plan, install, and uninstall workflow:
+Lili provides read-only inspection plus an explicit legacy fallback plan, install, and uninstall workflow. The Codex plugin is the primary installation path; direct configuration remains available only when the plugin is unavailable or Marketplace policy prevents its use.
 
 ```text
 lili integrate inspect
-lili integrate plan
-lili integrate plan --coexist
-lili integrate install --plan <plan.json>
+lili integrate plan --legacy-fallback
+lili integrate plan --legacy-fallback --coexist
+lili integrate install --legacy-fallback --plan <plan.json>
 lili integrate uninstall
 ```
 
-The plan is immutable and includes expected file hashes. Installation stops if either target changes after planning.
+The plan is immutable, identifies itself as `legacy_fallback`, and includes expected file hashes. Installation rejects old or differently classified plans and stops if either target changes after planning.
 
 An accepted plan can make these changes:
 
