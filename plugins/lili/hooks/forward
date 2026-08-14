@@ -8,15 +8,19 @@ fail() {
     exit "$2"
 }
 
-uname_path=$(command -v uname 2>/dev/null) \
-    || fail "Lili plugin host utility could not be resolved" 64
-case "$uname_path" in
-    /*) ;;
-    *) fail "Lili plugin host utility path is invalid" 64 ;;
-esac
-
 PATH=/usr/bin:/bin
 export PATH
+
+uname_path=
+for candidate in /usr/bin/uname /bin/uname /run/current-system/sw/bin/uname; do
+    if [ -x "$candidate" ]; then
+        uname_path=$candidate
+        break
+    fi
+done
+if [ -z "$uname_path" ]; then
+    fail "Lili plugin host utility could not be resolved" 64
+fi
 
 case "$0" in
     /*) ;;

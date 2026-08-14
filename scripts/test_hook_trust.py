@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
+import http.server
 import json
 import selectors
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -29,12 +31,163 @@ EXPECTED_EVENTS = {
     "stop",
 }
 MAX_MESSAGE_BYTES = 1024 * 1024
+EXPECTED_NORMALIZED_EVENTS = {
+    "sessionStart": "session_started",
+    "userPromptSubmit": "turn_started",
+    "permissionRequest": "attention_required",
+    "stop": "turn_completed",
+    "sessionEnd": "session_ended",
+}
+
+
+def sse(events: list[dict]) -> bytes:
+    chunks = []
+    for event in events:
+        event_type = event["type"]
+        payload = json.dumps(event, separators=(",", ":"))
+        chunks.append(f"event: {event_type}\ndata: {payload}\n\n")
+    return "".join(chunks).encode()
+
+
+class ResponsesServer:
+    def __init__(self, permission_command: str):
+        function_arguments = json.dumps(
+            {"command": permission_command}, separators=(",", ":")
+        )
+        self.responses = [
+            sse(
+                [
+                    {"type": "response.created", "response": {"id": "resp-1"}},
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "function_call",
+                            "call_id": "lili-permission-request",
+                            "name": "shell_command",
+                            "arguments": function_arguments,
+                        },
+                    },
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-1",
+                            "usage": {
+                                "input_tokens": 0,
+                                "input_tokens_details": None,
+                                "output_tokens": 0,
+                                "output_tokens_details": None,
+                                "total_tokens": 0,
+                            },
+                        },
+                    },
+                ]
+            ),
+            sse(
+                [
+                    {"type": "response.created", "response": {"id": "resp-2"}},
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "id": "msg-1",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "Marketplace hook dispatch completed.",
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-2",
+                            "usage": {
+                                "input_tokens": 0,
+                                "input_tokens_details": None,
+                                "output_tokens": 0,
+                                "output_tokens_details": None,
+                                "total_tokens": 0,
+                            },
+                        },
+                    },
+                ]
+            ),
+        ]
+        self.requests: list[dict] = []
+        self.lock = threading.Lock()
+        owner = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                require(0 < length <= MAX_MESSAGE_BYTES, "Codex model request is invalid")
+                body = self.rfile.read(length)
+                try:
+                    request = json.loads(body)
+                except json.JSONDecodeError as error:
+                    raise MarketplaceRoundTripError(
+                        "Codex model request is not JSON"
+                    ) from error
+                require(isinstance(request, dict), "Codex model request root is invalid")
+                with owner.lock:
+                    index = len(owner.requests)
+                    owner.requests.append(request)
+                require(index < len(owner.responses), "Codex made an unexpected model request")
+                response = owner.responses[index]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(response)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, _format: str, *_arguments) -> None:
+                return
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://{host}:{port}/v1"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, _error_type, _error, _traceback) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
 
 
 class AppServerClient:
     def __init__(self, runner: CodexRunner, cwd: Path):
+        base_url = runner.environment.get("OPENAI_BASE_URL")
+        require(isinstance(base_url, str) and base_url, "acceptance model base URL is missing")
         self.process = subprocess.Popen(
-            [str(runner.executable), "app-server", "--stdio"],
+            [
+                str(runner.executable),
+                "-c",
+                'model_provider="lili_acceptance"',
+                "-c",
+                'model_providers.lili_acceptance.name="Lili Acceptance"',
+                "-c",
+                f"model_providers.lili_acceptance.base_url={json.dumps(base_url)}",
+                "-c",
+                'model_providers.lili_acceptance.wire_api="responses"',
+                "-c",
+                'model_providers.lili_acceptance.env_key="OPENAI_API_KEY"',
+                "-c",
+                "model_providers.lili_acceptance.supports_websockets=false",
+                "app-server",
+                "--stdio",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -74,7 +227,7 @@ class AppServerClient:
             self.process.kill()
             self.process.wait(timeout=5)
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-            if stream is not None:
+            if stream is not None and not stream.closed:
                 stream.close()
 
     def request(self, method: str, params: dict) -> dict:
@@ -109,7 +262,7 @@ class AppServerClient:
         )
         require(response.get("status") == "ok", "Codex rejected the explicit hook trust write")
 
-    def dispatch_session_start(self) -> dict:
+    def start_thread(self) -> str:
         response = self.request(
             "thread/start",
             {
@@ -123,17 +276,93 @@ class AppServerClient:
         require(isinstance(thread, dict), "thread/start omitted the created thread")
         thread_id = thread.get("id")
         require(isinstance(thread_id, str) and thread_id, "thread/start omitted the thread ID")
+        return thread_id
+
+    def dispatch_turn(self, thread_id: str) -> dict[str, dict]:
+        turn_id = self._start_turn(
+            thread_id, "Exercise the Marketplace permission lifecycle hook."
+        )
+
+        runs = {
+            "sessionStart": self._completed_hook(thread_id, "sessionStart", turn_id),
+            "userPromptSubmit": self._completed_hook(
+                thread_id, "userPromptSubmit", turn_id
+            ),
+            "permissionRequest": self._completed_hook(
+                thread_id, "permissionRequest", turn_id
+            ),
+        }
+        self.request(
+            "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
+        )
+        interrupted = self._notification(
+            "turn/completed",
+            lambda params: params.get("threadId") == thread_id
+            and isinstance(params.get("turn"), dict)
+            and params["turn"].get("id") == turn_id,
+            "interrupted permission turn completion",
+        )
+        require(
+            interrupted["params"]["turn"].get("status") == "interrupted",
+            "Codex permission turn did not interrupt cleanly",
+        )
+        stop_turn_id = self._start_turn(
+            thread_id, "Exercise the Marketplace Stop lifecycle hook."
+        )
+        self._completed_hook(thread_id, "userPromptSubmit", stop_turn_id)
+        runs["stop"] = self._completed_hook(thread_id, "stop", stop_turn_id)
+        self._notification(
+            "turn/completed",
+            lambda params: params.get("threadId") == thread_id
+            and isinstance(params.get("turn"), dict)
+            and params["turn"].get("id") == stop_turn_id,
+            "turn completion after Stop",
+        )
+        return runs
+
+    def _start_turn(self, thread_id: str, prompt: str) -> str:
+        response = self.request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": prompt}],
+                "approvalPolicy": "on-request",
+                "sandboxPolicy": {"type": "readOnly"},
+            },
+        )
+        turn = response.get("turn")
+        require(isinstance(turn, dict), "turn/start omitted the created turn")
+        turn_id = turn.get("id")
+        require(isinstance(turn_id, str) and turn_id, "turn/start omitted the turn ID")
+        return turn_id
+
+    def shutdown(self) -> None:
+        require(self.process.stdin is not None, "Codex app-server stdin is closed")
+        self.process.stdin.close()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired as error:
+            raise MarketplaceRoundTripError(
+                "Codex app-server did not shut down after stdin closed"
+            ) from error
+        require(self.process.returncode == 0, "Codex app-server shutdown failed")
+
+    def _completed_hook(
+        self, thread_id: str, event_name: str, turn_id: str | None = None
+    ) -> dict:
         notification = self._notification(
             "hook/completed",
             lambda params: params.get("threadId") == thread_id
+            and (turn_id is None or params.get("turnId") == turn_id)
             and isinstance(params.get("run"), dict)
-            and params["run"].get("eventName") == "sessionStart",
+            and params["run"].get("eventName") == event_name,
+            f"{event_name} hook completion",
         )
         run = notification["params"]["run"]
-        require(run.get("source") == "plugin", "Codex dispatched SessionStart outside the plugin")
-        require(run.get("handlerType") == "command", "Codex did not dispatch the command hook")
-        require(run.get("executionMode") == "sync", "Codex changed the reviewed hook execution mode")
-        require(run.get("status") == "completed", "Codex did not complete the trusted SessionStart hook")
+        require(run.get("source") == "plugin", f"Codex dispatched {event_name} outside the plugin")
+        require(run.get("handlerType") == "command", f"Codex did not dispatch {event_name} as a command")
+        require(run.get("executionMode") == "sync", f"Codex changed {event_name} execution mode")
+        require(run.get("status") == "completed", f"Codex did not complete the trusted {event_name} hook")
         return run
 
     def _send(self, message: dict) -> None:
@@ -158,16 +387,42 @@ class AppServerClient:
             require(isinstance(result, dict), "Codex app-server response omitted its result")
             return result
 
-    def _notification(self, method: str, predicate) -> dict:
+    def _notification(self, method: str, predicate, description: str | None = None) -> dict:
+        return self._matching_message(
+            lambda message: message.get("method") == method
+            and isinstance(message.get("params"), dict)
+            and predicate(message["params"]),
+            description or method,
+        )
+
+    def _matching_message(self, predicate, description: str) -> dict:
         deadline = time.monotonic() + 10
         while True:
             for index, message in enumerate(self.notifications):
-                params = message.get("params")
-                if message.get("method") == method and isinstance(params, dict) and predicate(params):
+                if predicate(message):
                     return self.notifications.pop(index)
             remaining = deadline - time.monotonic()
-            require(remaining > 0, f"Codex app-server notification timed out: {method}")
-            message = self._message(remaining)
+            require(
+                remaining > 0,
+                f"Codex app-server notification timed out: {description}",
+            )
+            try:
+                message = self._message(remaining)
+            except MarketplaceRoundTripError as error:
+                observed = [
+                    message.get("method")
+                    for message in self.notifications[-10:]
+                    if isinstance(message.get("method"), str)
+                ]
+                errors = [
+                    message.get("params")
+                    for message in self.notifications[-10:]
+                    if message.get("method") == "error"
+                ]
+                raise MarketplaceRoundTripError(
+                    f"Codex app-server notification timed out: {description}; "
+                    f"observed={observed}; errors={errors}"
+                ) from error
             if isinstance(message.get("method"), str):
                 self.notifications.append(message)
 
@@ -211,19 +466,48 @@ def changed_snapshot(source: Path, destination: Path, version: str) -> None:
     hooks_path.write_text(json.dumps(hooks, indent=2) + "\n", encoding="utf-8")
 
 
-def dispatched_spool_event(codex_home: Path) -> dict:
+def dispatched_spool_events(codex_home: Path) -> dict[str, list[dict]]:
     spool = codex_home / "lili" / "spool"
     pending = sorted(spool.glob("*.pending"))
-    require(len(pending) == 1, "trusted SessionStart did not produce exactly one spooled event")
-    record = load_json(pending[0])
-    event = record.get("event")
-    require(isinstance(event, dict), "spooled SessionStart omitted its normalized event")
-    require(event.get("provider") == "codex", "spooled SessionStart provider drifted")
-    require(event.get("eventType") == "session_started", "spooled SessionStart type drifted")
-    source = event.get("sourceDiscriminator")
-    require(isinstance(source, str) and source.startswith("plugin:"), "spooled SessionStart lost plugin attribution")
-    require(isinstance(event.get("eventId"), str) and event["eventId"], "spooled SessionStart event ID is missing")
-    return event
+    expected_counts = {
+        **{event_type: 1 for event_type in EXPECTED_NORMALIZED_EVENTS.values()},
+        "turn_started": 2,
+    }
+    require(
+        len(pending) == sum(expected_counts.values()),
+        "trusted hooks produced an unexpected lifecycle event count",
+    )
+    by_type: dict[str, list[dict]] = {}
+    for path in pending:
+        event = load_json(path).get("event")
+        require(isinstance(event, dict), "spooled hook record omitted its normalized event")
+        require(event.get("provider") == "codex", "spooled hook provider drifted")
+        event_type = event.get("eventType")
+        require(isinstance(event_type, str), "spooled hook event type is missing")
+        source = event.get("sourceDiscriminator")
+        require(
+            isinstance(source, str) and source.startswith("plugin:"),
+            f"spooled {event_type} lost plugin attribution",
+        )
+        require(
+            isinstance(event.get("eventId"), str) and event["eventId"],
+            f"spooled {event_type} event ID is missing",
+        )
+        by_type.setdefault(event_type, []).append(event)
+
+    require(
+        set(by_type) == set(EXPECTED_NORMALIZED_EVENTS.values()),
+        "spooled hook event type set drifted",
+    )
+    require(
+        {event_type: len(events) for event_type, events in by_type.items()}
+        == expected_counts,
+        "spooled hook event counts drifted",
+    )
+    return {
+        event_name: by_type[event_type]
+        for event_name, event_type in EXPECTED_NORMALIZED_EVENTS.items()
+    }
 
 
 def run_hook_trust_round_trip(
@@ -258,16 +542,37 @@ def run_hook_trust_round_trip(
         runner.json(["plugin", "marketplace", "add", str(catalog_root)])
         runner.json(["plugin", "add", selector])
 
-        client = AppServerClient(runner, project)
-        try:
-            initial = hook_map(client.hooks(), selector, "untrusted")
-            client.trust(list(initial.values()))
-            trusted = hook_map(client.hooks(), selector, "trusted")
-            trusted_hashes = {event: hook["currentHash"] for event, hook in trusted.items()}
-            dispatched_hook = client.dispatch_session_start()
-            dispatched_event = dispatched_spool_event(runner.codex_home)
-        finally:
-            client.close()
+        permission_target = project / "permission-target"
+        permission_target.write_text(
+            "must remain after interrupted permission turn\n", encoding="utf-8"
+        )
+        permission_command = f"rm -f {permission_target}"
+        with ResponsesServer(permission_command) as responses:
+            runner.environment.update(
+                {
+                    "OPENAI_API_KEY": "lili-marketplace-acceptance",
+                    "OPENAI_BASE_URL": responses.base_url,
+                }
+            )
+            client = AppServerClient(runner, project)
+            try:
+                initial = hook_map(client.hooks(), selector, "untrusted")
+                client.trust(list(initial.values()))
+                trusted = hook_map(client.hooks(), selector, "trusted")
+                trusted_hashes = {
+                    event: hook["currentHash"] for event, hook in trusted.items()
+                }
+                thread_id = client.start_thread()
+                dispatched_runs = client.dispatch_turn(thread_id)
+                client.shutdown()
+            finally:
+                client.close()
+            require(
+                len(responses.requests) == 2,
+                "Codex did not complete the deterministic model round trip",
+            )
+        require(permission_target.is_file(), "permission hook turn mutated the project")
+        dispatched_events = dispatched_spool_events(runner.codex_home)
 
         replace_catalog_plugin(catalog_plugin, changed_root)
         updated = runner.json(["plugin", "add", selector])
@@ -303,13 +608,18 @@ def run_hook_trust_round_trip(
             "observe-untrusted",
             "explicit-trust",
             "observe-trusted",
-            "dispatch-trusted-session-start",
+            "dispatch-every-trusted-hook",
             "change-hook-definition",
             "observe-trust-invalidated",
             "explicit-retrust",
         ],
-        "dispatchedEventId": dispatched_event["eventId"],
-        "dispatchedHookRunId": dispatched_hook["id"],
+        "dispatchedEventIds": {
+            event: [item["eventId"] for item in dispatched_events[event]]
+            for event in sorted(dispatched_events)
+        },
+        "dispatchedHookRunIds": {
+            event: dispatched_runs[event]["id"] for event in sorted(dispatched_runs)
+        },
         "bypassUsed": False,
         "result": "passed",
     }
