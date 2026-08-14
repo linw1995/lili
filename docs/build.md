@@ -84,6 +84,21 @@ nix run .#plugin-inspect -- \
   --supply-chain /absolute/path/to/release/lili-plugin-0.1.0.supply-chain.json
 ```
 
+The archive is not a Marketplace submission candidate merely because assembly and inspection pass. Before portal submission, create a private evidence JSON that follows `marketplace/lili/submission-readiness.json` and binds every gate to the same archive SHA-256 and committed source revision. Evidence must include current timestamps, exact successful automation and packaged-acceptance runs for every declared target, unauthenticated URL checks, the matching verified publisher account, hashes for every reviewer material, a fresh review of every required official rule source, and a successful portal draft and scanner preflight with no unresolved restriction.
+
+Run the final fail-closed gate from the clean source revision named by that evidence:
+
+```text
+nix run .#submission-ready -- \
+  --evidence /absolute/path/to/submission-evidence.json \
+  --archive /absolute/path/to/release/lili-plugin-0.1.0.zip \
+  --manifest /absolute/path/to/release/lili-plugin-0.1.0.manifest.json \
+  --checksum /absolute/path/to/release/lili-plugin-0.1.0.zip.sha256 \
+  --supply-chain /absolute/path/to/release/lili-plugin-0.1.0.supply-chain.json
+```
+
+The command runs strict validation for every active OpenSpec change before validating the evidence and archive. Missing, stale, failed, mismatched, duplicated, or differently bound evidence returns a nonzero status. Portal account identifiers and draft identifiers belong in the private release evidence, not in the public plugin archive.
+
 `nix run .#license-check` enforces the dependency license allowlist and verifies that `THIRD_PARTY_NOTICES.html` matches the locked workspace graph. Run `scripts/generate-third-party-notices.sh` after an accepted dependency update, review the resulting license texts, and commit the updated artifact with the lockfile change.
 
 Platform signing remains an external trust operation. When Tauri or the native toolchain applies a verifiable identity, the platform build records `signed` only after `codesign --verify --strict` or `Get-AuthenticodeSignature` succeeds; otherwise a standard local bundle or forwarder records `platform-standard` with an explicit `unsigned-allowed` result. Linux records signature verification as not applicable and binds the ELF forwarder by format and SHA-256. Set `LILI_REQUIRE_SIGNED=1` in a protected release environment to reject an unsigned macOS application, macOS forwarder, or Windows forwarder.

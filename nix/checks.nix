@@ -20,6 +20,7 @@
     "plugin-archive"
     "plugin-supply-chain"
     "plugin-inspect"
+    "submission-ready"
     "marketplace-check"
     "marketplace-roundtrip"
     "marketplace-trust"

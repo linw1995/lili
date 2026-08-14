@@ -36,6 +36,7 @@ in
         plugin-archive = mkApp "plugin-archive" "Build the deterministic universal Lili plugin";
         plugin-supply-chain = mkApp "plugin-supply-chain" "Generate plugin dependency, license, and vulnerability evidence";
         plugin-inspect = mkApp "plugin-inspect" "Inspect the final plugin release";
+        submission-ready = mkApp "submission-ready" "Require complete Marketplace submission evidence";
         marketplace-check = mkApp "marketplace-check" "Validate Marketplace materials and runtime boundaries";
         marketplace-roundtrip = mkApp "marketplace-roundtrip" "Test the final plugin archive through a local Marketplace";
         marketplace-trust = mkApp "marketplace-trust" "Validate plugin hook trust and invalidation";

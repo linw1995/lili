@@ -33,6 +33,7 @@ Status: In preparation. This checklist records repository evidence and remaining
 - [x] Migration preserves unrelated configuration and rolls back when trust, compatibility, delivery verification, or provenance checks fail.
 - [x] Positive and negative reviewer cases are complete and reproducible from repository fixtures; final-archive execution remains part of packaged acceptance.
 - [x] Automated consistency checks cover the manifest, skill, documentation, policies, submission metadata, release contents, and observed runtime handling.
+- [x] The `submission-ready` gate fails closed unless fresh evidence for every publication gate is bound to one inspected archive and committed source revision.
 - [ ] Clean local Marketplace install, trust, delivery, update, rollback, disable, and removal acceptance passes on every declared host.
 - [ ] Final archive checksums, signing evidence where applicable, dependency and license inventory, vulnerability scan, and secret inspection are complete.
 

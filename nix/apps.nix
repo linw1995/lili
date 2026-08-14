@@ -88,6 +88,15 @@ in {
     '';
   };
 
+  submission-ready = mkWorkspaceApp {
+    name = "submission-ready";
+    runtimeInputs = [pkgs.git pkgs.openspec pkgs.python3];
+    text = ''
+      openspec validate --changes --strict --no-interactive
+      exec python3 scripts/check_submission_ready.py "$@"
+    '';
+  };
+
   marketplace-check = mkNativeWorkspaceApp {
     name = "marketplace-check";
     runtimeInputs = [pkgs.python3 toolchain.rustToolchain];
