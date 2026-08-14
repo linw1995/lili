@@ -40,9 +40,17 @@
   },
   "availability": {
     "selection": "all-portal-supported-countries-and-regions",
-    "additionalExclusions": []
+    "additionalExclusions": [],
+    "instructions": "Use the Marketplace portal's current supported-country selector. Do not add a regional exclusion unless distribution, legal, or support constraints require one."
   },
   "prerequisites": {
+    "instructions": [
+      "Install and start Lili desktop 0.1.0 or later from the published desktop releases.",
+      "Use Codex 0.147.0 or a later version that remains compatible with the declared plugin and hook contracts.",
+      "Install and enable the Lili plugin through a supported Codex plugin workflow.",
+      "Review the packaged hook definitions and explicitly trust them before expecting lifecycle delivery.",
+      "Run the Lili setup diagnostics and resolve any version, trust, or local IPC warning."
+    ],
     "desktopApplication": {
       "required": true,
       "minimumVersion": "0.1.0",
@@ -56,6 +64,11 @@
     "chatgpt": {
       "supportsLifecycleObservation": false
     }
+  },
+  "release": {
+    "version": "0.1.0",
+    "releaseNotes": "./release-notes.md",
+    "complianceChecklist": "./compliance-checklist.md"
   },
   "surfaceCopy": {
     "shared": "Use Lili's setup and diagnostics workflow without accessing credentials or private session storage.",
