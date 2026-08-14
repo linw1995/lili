@@ -46,6 +46,15 @@ pub struct PluginMigrationAssessment {
     pub next_actions: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRemovalOutcome {
+    pub plugin_selector: String,
+    pub legacy_configuration_changed: bool,
+    pub desktop_application_changed: bool,
+    pub application_data_changed: bool,
+}
+
 impl PluginMigrationAssessment {
     pub fn cleanup_allowed(&self) -> bool {
         self.state == PluginMigrationState::CleanupReady
@@ -235,10 +244,27 @@ pub fn install_plugin(
 }
 
 pub fn rollback_plugin(plugin_selector: &str) -> Result<(), PluginMigrationError> {
+    remove_plugin(plugin_selector).map(|_| ())
+}
+
+pub fn remove_plugin(plugin_selector: &str) -> Result<PluginRemovalOutcome, PluginMigrationError> {
+    remove_plugin_with_host(&mut CodexPluginLifecycleHost, plugin_selector)
+}
+
+pub fn remove_plugin_with_host<H: PluginLifecycleHost>(
+    host: &mut H,
+    plugin_selector: &str,
+) -> Result<PluginRemovalOutcome, PluginMigrationError> {
     if !valid_plugin_selector(plugin_selector) {
         return Err(PluginMigrationError::InvalidSelector);
     }
-    CodexPluginLifecycleHost.rollback(plugin_selector)
+    host.rollback(plugin_selector)?;
+    Ok(PluginRemovalOutcome {
+        plugin_selector: plugin_selector.to_owned(),
+        legacy_configuration_changed: false,
+        desktop_application_changed: false,
+        application_data_changed: false,
+    })
 }
 
 pub fn cleanup_legacy_after_verification(
@@ -513,6 +539,23 @@ mod tests {
             rollback_plugin("lili;remove@marketplace"),
             Err(PluginMigrationError::InvalidSelector)
         ));
+    }
+
+    #[test]
+    fn removal_outcome_has_an_explicit_plugin_only_scope() {
+        let temp = TempDir::new();
+        let inspection = inspect_with_version(&temp.0, Some(TESTED_CODEX_VERSION.to_owned()));
+        let mut host = FakeHost {
+            inspections: VecDeque::from([inspection]),
+            install_result: Ok(()),
+            installed: 0,
+            rolled_back: 0,
+        };
+        let outcome = remove_plugin_with_host(&mut host, "lili@test-marketplace").unwrap();
+        assert_eq!(host.rolled_back, 1);
+        assert!(!outcome.legacy_configuration_changed);
+        assert!(!outcome.desktop_application_changed);
+        assert!(!outcome.application_data_changed);
     }
 
     #[test]

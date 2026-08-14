@@ -73,6 +73,8 @@ Existing non-Lili `notify` configuration is a conflict by default. `--coexist` m
 
 `PermissionRequest` is observation-only. The hook returns no approval or denial and Lili never becomes a Codex authorization authority.
 
+Plugin removal and migration rollback invoke only the supported `codex plugin remove <plugin@marketplace> --json` operation. They do not call legacy uninstall and do not remove or edit the desktop application, pet packages, actions, state, spool, unrelated hooks, notification commands, or Lili-owned legacy configuration. Legacy cleanup remains a separate provenance-gated operation after verified migration.
+
 ## Action authority
 
 Actions are opt-in native programs configured in `${CODEX_HOME}/lili/actions.toml`.
