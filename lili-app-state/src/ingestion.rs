@@ -107,6 +107,23 @@ impl NativeIngestionHandle {
             .map_err(|_| IngestionError::Unavailable)
     }
 
+    pub async fn refresh_codex_adapter(
+        &self,
+        diagnostics: CodexAdapterDiagnostics,
+    ) -> Result<IngestionDiagnostics, IngestionError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender
+            .send(IngestionCommand::RefreshCodexAdapter {
+                diagnostics,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| IngestionError::Unavailable)?;
+        response_receiver
+            .await
+            .map_err(|_| IngestionError::Unavailable)
+    }
+
     pub fn subscribe(&self) -> watch::Receiver<ViewSnapshot> {
         self.snapshots.clone()
     }
@@ -190,6 +207,16 @@ impl NativeIngestionActor {
                     self.diagnostics.spool_malformed_drops = metrics.malformed_drops;
                     self.publish_diagnostics().await;
                 }
+                IngestionCommand::RefreshCodexAdapter {
+                    diagnostics,
+                    response,
+                } => {
+                    self.diagnostics
+                        .codex_adapter
+                        .refresh_discovery(diagnostics);
+                    self.publish_diagnostics().await;
+                    let _ = response.send(self.diagnostics.clone());
+                }
             }
         }
     }
@@ -258,6 +285,10 @@ enum IngestionCommand {
         response: oneshot::Sender<Result<ReductionOutcome, IngestionError>>,
     },
     SetSpoolMetrics(SpoolMetrics),
+    RefreshCodexAdapter {
+        diagnostics: CodexAdapterDiagnostics,
+        response: oneshot::Sender<IngestionDiagnostics>,
+    },
 }
 
 fn rejection_category(error: ForwardingProtocolError) -> RejectionCategory {

@@ -27,7 +27,7 @@ use lili_app_state::{
 use lili_core::PetId;
 use lili_integration::{IntegrationKind, inspect};
 use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
-use lili_server::{StaticAssets, build_native_router};
+use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSpoolRecord, ForwardingTransportError, SpoolStore,
 };
@@ -80,7 +80,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     let (state, state_store, codex_home, saved_window_placement) = load_app_state();
     app.state::<DesktopAcceptanceState>()
         .configure(codex_home.clone(), state.clone());
-    configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
+    let native_ingestion =
+        configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
     app.manage(DesktopPersistence {
         state: state.clone(),
         store: state_store.clone(),
@@ -88,8 +89,18 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     app.manage(WindowDragState::default());
     setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
-    let loopback = LoopbackServer::bind(build_native_router(state.clone(), assets))
-        .expect("failed to bind secure loopback transport");
+    let diagnostics_refresh =
+        native_ingestion
+            .zip(codex_home.clone())
+            .map(|(ingestion, codex_home)| {
+                NativeDiagnosticsRefresh::new(ingestion, move || inspect(&codex_home).codex_adapter)
+            });
+    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics(
+        state.clone(),
+        assets,
+        diagnostics_refresh,
+    ))
+    .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();
     let origin = loopback.origin();
@@ -121,16 +132,22 @@ fn configure_desktop_companion_application(_app: &tauri::App) -> tauri::Result<(
     Ok(())
 }
 
-fn configure_native_runtime(enabled: bool, codex_home: Option<&Path>, state: &AppState) {
+fn configure_native_runtime(
+    enabled: bool,
+    codex_home: Option<&Path>,
+    state: &AppState,
+) -> Option<NativeIngestionHandle> {
     if !enabled {
-        return;
+        return None;
     }
-    let Some(codex_home) = codex_home else {
-        return;
-    };
+    let codex_home = codex_home?;
     configure_native_actions(codex_home, state);
-    if start_native_ingestion(codex_home, state.clone()).is_err() {
-        diagnostics::warn("ingestion", "start", "transport_unavailable");
+    match start_native_ingestion(codex_home, state.clone()) {
+        Ok(handle) => Some(handle),
+        Err(_) => {
+            diagnostics::warn("ingestion", "start", "transport_unavailable");
+            None
+        }
     }
 }
 
@@ -340,7 +357,7 @@ fn load_resolved_app_state(codex_home: PathBuf) -> LoadedAppState {
 fn start_native_ingestion(
     codex_home: &Path,
     state: AppState,
-) -> Result<(), ForwardingTransportError> {
+) -> Result<NativeIngestionHandle, ForwardingTransportError> {
     let runtime_dir = codex_home.join("lili").join("runtime");
     let codex_adapter = inspect(codex_home).codex_adapter;
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
@@ -357,8 +374,8 @@ fn start_native_ingestion(
     })?;
     tauri::async_runtime::spawn(actor.run());
     let spool = SpoolStore::for_codex_home(codex_home);
-    tauri::async_runtime::spawn(run_native_services(endpoint, handle, spool));
-    Ok(())
+    tauri::async_runtime::spawn(run_native_services(endpoint, handle.clone(), spool));
+    Ok(handle)
 }
 
 async fn run_native_services(

@@ -284,6 +284,34 @@ impl CodexAdapterDiagnostics {
         self
     }
 
+    pub fn refresh_discovery(&mut self, mut discovered: Self) {
+        for surface in &self.discovered_surfaces {
+            if let Err(index) = discovered.discovered_surfaces.binary_search(surface) {
+                discovered.discovered_surfaces.insert(index, *surface);
+            }
+        }
+        discovered.missing_lifecycle_coverage = missing_coverage(&discovered.discovered_surfaces);
+        discovered.remediation = remediation(
+            discovered.codex_version.as_deref(),
+            &discovered.missing_lifecycle_coverage,
+        );
+        discovered.last_accepted_event = self.last_accepted_event.clone();
+
+        if let Some(accepted) = self.plugin.last_accepted_plugin_event.clone()
+            && discovered.plugin.installed == Some(true)
+            && discovered.plugin.enabled == Some(true)
+            && self
+                .plugin
+                .plugin_id
+                .as_ref()
+                .is_none_or(|plugin_id| discovered.plugin.plugin_id.as_ref() == Some(plugin_id))
+            && accepted.plugin_version.as_ref() == discovered.plugin.plugin_version.as_ref()
+        {
+            discovered.plugin.record_plugin_event(accepted);
+        }
+        *self = discovered;
+    }
+
     pub fn record_accepted_event(&mut self, event: &NormalizedSessionEvent) {
         if event.provider.as_str() != "codex" {
             return;
@@ -967,5 +995,58 @@ mod tests {
                 .and_then(|event| event.plugin_version.as_deref()),
             Some(DESKTOP_VERSION)
         );
+    }
+
+    #[test]
+    fn discovery_refresh_preserves_only_current_plugin_delivery_evidence() {
+        let plugin = CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            false,
+        )
+        .with_plugin_id(Some("lili@lili-local"));
+        let mut diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(plugin.clone());
+        let mut event = normalize_lifecycle_json(LIFECYCLE_FIXTURES[3].0, 42).unwrap();
+        assert!(mark_plugin_hook_event(&mut event));
+        diagnostics.record_accepted_event(&event);
+
+        diagnostics.refresh_discovery(
+            CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
+                .with_plugin(plugin),
+        );
+        assert_eq!(
+            diagnostics.plugin.trust_state,
+            CodexPluginTrustState::TrustedAtLastDelivery
+        );
+        assert_eq!(
+            diagnostics.discovered_surfaces,
+            [CodexIntegrationSurface::Stop]
+        );
+
+        let upgraded = CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some("0.2.0"),
+            false,
+        )
+        .with_plugin_id(Some("lili@lili-local"));
+        diagnostics.refresh_discovery(
+            CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
+                .with_plugin(upgraded),
+        );
+        assert_eq!(
+            diagnostics.plugin.trust_state,
+            CodexPluginTrustState::Unknown
+        );
+        assert!(diagnostics.plugin.last_accepted_plugin_event.is_none());
     }
 }
