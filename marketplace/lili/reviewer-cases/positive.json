@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "release": "0.1.0",
+  "commonPrerequisites": [
+    "Use an isolated Codex home with no credentials or private session data.",
+    "Install and start Lili desktop 0.1.0 or later.",
+    "Use Codex 0.147.0 for the reviewed fixture contract.",
+    "Install the final Lili plugin archive through a supported local Marketplace workflow.",
+    "Perform every enablement and hook-trust action explicitly as the reviewer."
+  ],
+  "cases": [
+    {
+      "id": "positive-setup",
+      "title": "Guide setup from available to installed",
+      "coverage": "setup",
+      "starterPrompt": "Check whether my Lili desktop and Codex versions are compatible.",
+      "fixtureData": {
+        "surface": "codex",
+        "codexVersion": "0.147.0",
+        "desktopVersion": "0.1.0",
+        "desktopRunning": true,
+        "plugin": {
+          "availability": "available",
+          "installed": false,
+          "enabled": false,
+          "version": null,
+          "trustState": "not_applicable"
+        },
+        "legacyIntegration": "absent"
+      },
+      "workflow": [
+        "Ask the starter prompt and provide only the fixture data when requested.",
+        "Confirm that the skill identifies Codex as the active surface and Lili desktop as a separate prerequisite.",
+        "Confirm that the skill reports compatibility from observed versions without inferring installation, enablement, trust, or delivery.",
+        "Confirm that the next action directs the reviewer to an explicit supported plugin install flow and does not perform it."
+      ],
+      "expectedResult": {
+        "shape": {
+          "surface": "codex",
+          "compatibility": "supported",
+          "pluginInstalled": false,
+          "pluginEnabled": false,
+          "hookTrust": "not_applicable",
+          "lifecycleObservation": "not_active",
+          "safeNextAction": "reviewer_installs_plugin_explicitly",
+          "unknownFacts": []
+        },
+        "assertions": [
+          "The response separates observed evidence from requested reviewer actions.",
+          "The response does not claim that the plugin installs the desktop application.",
+          "No file, plugin, trust record, credential, or external state is changed by the skill."
+        ]
+      },
+      "automationEvidence": [
+        "python3 scripts/check_plugin_package.py"
+      ]
+    },
+    {
+      "id": "positive-trusted-delivery",
+      "title": "Deliver one explicitly trusted Codex stop event",
+      "coverage": "trusted_delivery",
+      "starterPrompt": "Explain how to trust Lili hooks and verify local event delivery.",
+      "fixtureData": {
+        "hookPayloadPath": "lili-session/tests/fixtures/codex/0.147.0/stop.json",
+        "pluginRoot": "final extracted plugin archive",
+        "pluginVersion": "0.1.0",
+        "desktopVersion": "0.1.0",
+        "pluginInstalled": true,
+        "pluginEnabled": true,
+        "exactHooksReviewedByUser": true,
+        "exactHooksTrustedByUser": true,
+        "desktopEndpoint": "available"
+      },
+      "workflow": [
+        "Review the exact packaged Stop hook command and hash before explicitly accepting trust.",
+        "Invoke the packaged launcher with PLUGIN_ROOT set to the extracted archive and pipe the fixture into standard input.",
+        "Inspect the Lili diagnostics view after the event is accepted.",
+        "Confirm that the event is attributed to the plugin and presented once."
+      ],
+      "expectedResult": {
+        "shape": {
+          "processExitCode": 0,
+          "stdout": "",
+          "stderr": "",
+          "normalizedEvent": {
+            "provider": "codex",
+            "eventType": "turn_completed",
+            "sourceDiscriminatorPrefix": "plugin:",
+            "schemaVersion": 1
+          },
+          "diagnostics": {
+            "hookSource": "plugin",
+            "trustState": "trusted_at_last_delivery",
+            "ipcCompatibility": "supported",
+            "lastAcceptedPluginEvent": "present"
+          }
+        },
+        "assertions": [
+          "Hook trust is based on explicit reviewer action, not installation or enablement.",
+          "No hook output is visible to the model.",
+          "Diagnostics contain event metadata but not prompt or assistant content."
+        ]
+      },
+      "automationEvidence": [
+        "cargo test -p lili --test plugin_hook packaged_launcher_forwards_concurrent_events_without_visible_output",
+        "cargo test -p lili-session plugin_diagnostics_require_observed_delivery_for_trust"
+      ]
+    },
+    {
+      "id": "positive-offline-recovery",
+      "title": "Spool locally while the desktop is offline and recover once",
+      "coverage": "offline_recovery",
+      "starterPrompt": "Help me diagnose Lili event delivery while the desktop application is restarting.",
+      "fixtureData": {
+        "hookPayloadPath": "lili-session/tests/fixtures/codex/0.147.0/stop.json",
+        "desktopEndpointDuringHook": "unavailable",
+        "desktopEndpointDuringRecovery": "available",
+        "spoolLimits": {
+          "maxRecords": 256,
+          "maxBytes": 4194304,
+          "maxAgeMs": 86400000
+        }
+      },
+      "workflow": [
+        "Stop Lili desktop without changing plugin or trust state.",
+        "Invoke the trusted packaged Stop hook once with the fixture on standard input.",
+        "Confirm that the hook exits within its budget with empty output and creates one owner-local normalized spool record.",
+        "Start Lili desktop and allow its normal startup recovery to claim, ingest, and commit the record.",
+        "Confirm one presentation and an empty pending spool."
+      ],
+      "expectedResult": {
+        "shape": {
+          "offlineHook": {
+            "outcome": "spooled",
+            "processExitCode": 0,
+            "stdout": "",
+            "stderr": "",
+            "pendingRecords": 1
+          },
+          "recovery": {
+            "acceptedRecords": 1,
+            "pendingRecords": 0,
+            "duplicatePresentations": 0
+          }
+        },
+        "assertions": [
+          "The spool contains only the normalized event and no original provider payload.",
+          "Recovery remains local and sends no telemetry or session data to a remote service.",
+          "The committed record is not replayed again."
+        ]
+      },
+      "automationEvidence": [
+        "cargo test -p lili unavailable_endpoint_falls_back_to_one_normalized_spool_record",
+        "cargo test -p lili --test adapter_e2e"
+      ]
+    },
+    {
+      "id": "positive-legacy-migration",
+      "title": "Migrate after trusted overlap verification",
+      "coverage": "migration",
+      "starterPrompt": "Help me migrate from Lili's legacy direct configuration safely.",
+      "fixtureData": {
+        "pluginSelector": "lili@test-marketplace",
+        "codexVersion": "0.147.0",
+        "pluginVersion": "0.1.0",
+        "desktopVersion": "0.1.0",
+        "hookSource": "overlap",
+        "trustState": "trusted_at_last_delivery",
+        "lastAcceptedPluginEvent": "present",
+        "exactHooksReviewedByUser": true,
+        "syntheticDeliveryVerified": true,
+        "overlapDeduplicationVerified": true,
+        "legacyProvenance": "matches",
+        "unrelatedNotifyAndHooks": "present"
+      },
+      "workflow": [
+        "Ask the starter prompt and provide the fixture data as the bounded diagnostics result.",
+        "Confirm the skill keeps legacy delivery active during plugin installation, review, trust, and verification.",
+        "Produce one synthetic event and one real plugin-attributed event while both sources overlap.",
+        "Confirm stable event identity produces one user-visible result.",
+        "Review the provenance-aware cleanup preview, then explicitly run the displayed cleanup command.",
+        "Inspect the resulting configuration and diagnostics."
+      ],
+      "expectedResult": {
+        "shape": {
+          "assessment": {
+            "schemaVersion": 1,
+            "state": "cleanup_ready",
+            "blockers": [],
+            "cleanupCommand": [
+              "lili",
+              "integrate",
+              "uninstall"
+            ]
+          },
+          "afterCleanup": {
+            "hookSource": "plugin",
+            "legacyIntegration": "absent",
+            "pluginInstalled": true,
+            "desktopApplicationChanged": false,
+            "unrelatedConfigurationChanged": false
+          }
+        },
+        "assertions": [
+          "The skill recommends cleanup only after every trust and delivery precondition is observed.",
+          "Cleanup removes only provenance-owned legacy entries.",
+          "The plugin, desktop application, application data, unrelated hooks, and unrelated notify command remain intact."
+        ]
+      },
+      "automationEvidence": [
+        "cargo test -p lili-integration --test migration cleanup_preserves_unrelated_notify_and_hooks",
+        "cargo test -p lili-integration --test migration concurrent_legacy_and_plugin_events_deduplicate_per_session"
+      ]
+    },
+    {
+      "id": "positive-diagnostics",
+      "title": "Report bounded integration diagnostics",
+      "coverage": "diagnostics",
+      "starterPrompt": "Check my Lili plugin status and tell me the smallest safe next action.",
+      "fixtureData": {
+        "surface": "codex",
+        "codexSupport": "supported",
+        "availability": "installed",
+        "installed": true,
+        "enabled": true,
+        "hookSource": "plugin",
+        "trustState": "trusted_at_last_delivery",
+        "pluginVersion": "0.1.0",
+        "desktopVersion": "0.1.0",
+        "ipcCompatibility": "supported",
+        "lastAcceptedPluginEvent": {
+          "eventId": "fixture-event-1",
+          "eventType": "turn_completed",
+          "occurredAtMs": 1723593600000,
+          "surface": "stop",
+          "pluginVersion": "0.1.0"
+        },
+        "legacyIntegration": "absent"
+      },
+      "workflow": [
+        "Ask the starter prompt and provide the fixture as the output of a supported bounded diagnostic source.",
+        "Confirm the skill reports every relevant status field and labels the evidence as observed.",
+        "Confirm the response does not request or expose source paths, event content, credentials, or conversation history."
+      ],
+      "expectedResult": {
+        "shape": {
+          "surface": "codex",
+          "pluginInstalled": true,
+          "pluginEnabled": true,
+          "hookSource": "plugin",
+          "hookTrust": "trusted_at_last_delivery",
+          "pluginVersion": "0.1.0",
+          "desktopVersion": "0.1.0",
+          "ipcCompatibility": "supported",
+          "lastAcceptedPluginEvent": "present",
+          "legacyIntegration": "absent",
+          "safeNextAction": "none"
+        },
+        "assertions": [
+          "The response does not treat the last accepted event as current proof of unchanged hook trust.",
+          "The response exposes only bounded event metadata.",
+          "The response makes no ChatGPT lifecycle or OpenAI endorsement claim."
+        ]
+      },
+      "automationEvidence": [
+        "cargo test -p lili-session plugin_diagnostics_require_observed_delivery_for_trust",
+        "cargo test -p lili-integration plugin_list_reports_only_bounded_lili_status"
+      ]
+    }
+  ]
+}
