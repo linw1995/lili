@@ -21,6 +21,7 @@ const MAX_METRICS_BYTES: u64 = 4 * 1024;
 const LOCK_RETRY_COUNT: usize = 375;
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(2);
 const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
+const STALE_TEMPORARY_WRITE_AGE: Duration = Duration::from_secs(30);
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,14 +114,10 @@ impl SpoolStore {
         let staged_path = self
             .directory
             .join(staged_file_name_from_pending(&pending_name)?);
-        let lock = SpoolLock::acquire(&self.directory)?;
-        atomic_write_with_deferred_parent_sync(
-            &staged_path,
-            &payload,
-            MAX_SPOOL_RECORD_BYTES as u64,
-        )?;
+        atomic_write(&staged_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
         let mut staged_guard = TemporaryFileGuard::new(staged_path.clone());
 
+        let lock = SpoolLock::acquire(&self.directory)?;
         promote_staged_record(&staged_path, &pending_path)?;
         staged_guard.commit();
         let mut metrics = self.load_metrics_unlocked()?;
@@ -141,6 +138,10 @@ impl SpoolStore {
     }
 
     pub fn recover_claims(&self) -> Result<usize, SpoolError> {
+        self.recover_claims_at(SystemTime::now())
+    }
+
+    fn recover_claims_at(&self, now: SystemTime) -> Result<usize, SpoolError> {
         ensure_private_directory(&self.directory)?;
         let _lock = SpoolLock::acquire(&self.directory)?;
         let mut recovered = 0;
@@ -148,7 +149,9 @@ impl SpoolStore {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with(".write-") && name.ends_with(".tmp") {
-                remove_unsafe_record(&entry.path())?;
+                if temporary_write_is_stale(&entry.path(), now)? {
+                    remove_unsafe_record(&entry.path())?;
+                }
                 continue;
             }
             if name.ends_with(STAGED_RECORD_SUFFIX) {
@@ -606,23 +609,6 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn atomic_write(path: &Path, payload: &[u8], limit: u64) -> Result<(), SpoolError> {
-    atomic_write_inner(path, payload, limit, true)
-}
-
-fn atomic_write_with_deferred_parent_sync(
-    path: &Path,
-    payload: &[u8],
-    limit: u64,
-) -> Result<(), SpoolError> {
-    atomic_write_inner(path, payload, limit, false)
-}
-
-fn atomic_write_inner(
-    path: &Path,
-    payload: &[u8],
-    limit: u64,
-    sync_parent: bool,
-) -> Result<(), SpoolError> {
     if payload.len() as u64 > limit {
         return Err(SpoolError::RecordTooLarge);
     }
@@ -642,10 +628,21 @@ fn atomic_write_inner(
     file.sync_all()?;
     fs::rename(&temporary, path)?;
     guard.commit();
-    if sync_parent {
-        sync_directory(directory)?;
-    }
+    sync_directory(directory)?;
     Ok(())
+}
+
+fn temporary_write_is_stale(path: &Path, now: SystemTime) -> Result<bool, SpoolError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(SpoolError::UnsafePath);
+    }
+    validate_private_metadata(&metadata)?;
+    Ok(metadata
+        .modified()
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_some_and(|age| age > STALE_TEMPORARY_WRITE_AGE))
 }
 
 struct TemporaryFileGuard {
@@ -909,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_temporary_write_is_removed_during_recovery() {
+    fn active_temporary_write_is_preserved_during_recovery() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = TempDir::new();
@@ -921,6 +918,25 @@ mod tests {
         fs::write(&temporary, b"partial").unwrap();
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
         store.recover_claims().unwrap();
+        assert!(temporary.exists());
+    }
+
+    #[test]
+    fn stale_temporary_write_is_removed_during_recovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        let temporary = temp.0.join(".write-crashed.tmp");
+        fs::write(&temporary, b"partial").unwrap();
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+        let modified = fs::symlink_metadata(&temporary)
+            .unwrap()
+            .modified()
+            .unwrap();
+        store
+            .recover_claims_at(modified + STALE_TEMPORARY_WRITE_AGE + Duration::from_millis(1))
+            .unwrap();
         assert!(!temporary.exists());
     }
 
