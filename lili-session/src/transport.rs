@@ -207,7 +207,7 @@ impl ForwardingCredentialStore {
         if fault == TransportFault::BeforeCredentialReplace {
             return Err(std::io::Error::other("injected credential replacement failure").into());
         }
-        crate::replace_file(&temporary, &self.path)?;
+        crate::replace_file_atomically(&temporary, &self.path)?;
         guard.commit();
         sync_directory(directory)?;
         Ok(())
@@ -267,7 +267,7 @@ fn write_private_atomic(
     crate::windows_acl::enforce_owner_only(&temporary, false)?;
     file.write_all(payload)?;
     file.sync_all()?;
-    crate::replace_file(&temporary, path)?;
+    crate::replace_file_atomically(&temporary, path)?;
     guard.commit();
     sync_directory(directory)?;
     Ok(())

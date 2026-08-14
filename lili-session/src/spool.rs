@@ -628,7 +628,7 @@ fn atomic_write(path: &Path, payload: &[u8], limit: u64) -> Result<(), SpoolErro
     crate::windows_acl::enforce_owner_only(&temporary, false)?;
     file.write_all(payload)?;
     file.sync_all()?;
-    crate::replace_file(&temporary, path)?;
+    crate::replace_file_atomically(&temporary, path)?;
     guard.commit();
     sync_directory(directory)?;
     Ok(())

@@ -46,7 +46,8 @@ pub use types::{
 
 pub const SESSION_SCHEMA_VERSION: u16 = 1;
 
-pub(crate) fn replace_file(
+#[doc(hidden)]
+pub fn replace_file_atomically(
     source: &std::path::Path,
     destination: &std::path::Path,
 ) -> std::io::Result<()> {

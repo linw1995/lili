@@ -9,6 +9,7 @@ use std::{
 use lili_session::{
     CodexAdapterDiagnostics, CodexHookSource, CodexPluginAvailability, CodexPluginIpcCompatibility,
     CodexPluginSupport, CodexPluginTrustState, ForwardingCredentialStore, ForwardingCredentials,
+    replace_file_atomically,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -674,7 +675,7 @@ fn write_private_verification(path: &Path, payload: &[u8]) -> Result<(), PluginM
     let result = file
         .write_all(payload)
         .and_then(|()| file.sync_all())
-        .and_then(|()| fs::rename(&temporary, path));
+        .and_then(|()| replace_file_atomically(&temporary, path));
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
         return Err(PluginMigrationError::VerificationUnreadable);
@@ -1230,6 +1231,14 @@ mod tests {
             &assessment,
             &endpoint.credentials(),
             "synthetic-event",
+        )
+        .unwrap();
+        assert!(verify_saved_plugin_migration_evidence(&temp.0, &assessment));
+        save_plugin_migration_verification(
+            &temp.0,
+            &assessment,
+            &endpoint.credentials(),
+            "synthetic-event-repeated",
         )
         .unwrap();
         assert!(verify_saved_plugin_migration_evidence(&temp.0, &assessment));
