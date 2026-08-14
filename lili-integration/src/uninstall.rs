@@ -316,7 +316,11 @@ fn matches_hook_provenance(
             .get("commandWindows")
             .and_then(serde_json::Value::as_str)
             == Some(expected_windows_command.as_str())
-        && handler.get("timeout").and_then(serde_json::Value::as_u64) == Some(2)
+        // Provenance predates timeout recording, so accept only the two Lili-generated shapes.
+        && matches!(
+            handler.get("timeout").and_then(serde_json::Value::as_u64),
+            Some(1 | 2)
+        )
         && handler
             .get("statusMessage")
             .and_then(serde_json::Value::as_str)
@@ -538,6 +542,27 @@ mod tests {
             preview.conflicts,
             vec!["Lili hooks changed after installation and were left unchanged"]
         );
+    }
+
+    #[test]
+    fn legacy_one_second_hooks_remain_cleanup_compatible() {
+        let temp = TempDir::new();
+        install_exclusive(&temp, 42);
+        let hooks_path = temp.0.join(HOOKS_FILE_NAME);
+        let mut hooks: serde_json::Value =
+            serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        for groups in hooks["hooks"].as_object_mut().unwrap().values_mut() {
+            for group in groups.as_array_mut().unwrap() {
+                for handler in group["hooks"].as_array_mut().unwrap() {
+                    handler["timeout"] = serde_json::json!(1);
+                }
+            }
+        }
+        fs::write(&hooks_path, serde_json::to_vec_pretty(&hooks).unwrap()).unwrap();
+
+        let preview = preview_uninstall(&temp.0).unwrap();
+        assert!(preview.complete);
+        assert_eq!(preview.removed_hook_handlers, 5);
     }
 
     #[test]
