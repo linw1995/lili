@@ -388,34 +388,37 @@ fn run_install(arguments: &[OsString]) -> u8 {
 }
 
 fn run_plugin_install(path: &std::path::Path) -> u8 {
-    let assessment = match load_plugin_migration_assessment(path) {
-        Ok(assessment) => assessment,
-        Err(error) => {
-            eprintln!("plugin migration assessment could not be loaded: {error}");
-            return 3;
+    match execute_plugin_install(path) {
+        Ok(inspection) => write_json(&inspection),
+        Err((exit_code, diagnostic)) => {
+            eprintln!("{diagnostic}");
+            exit_code
         }
-    };
-    let codex_home = match resolve_codex_home() {
-        Ok(codex_home) => codex_home,
-        Err(error) => {
-            eprintln!("Codex home could not be resolved: {error}");
-            return 3;
+    }
+}
+
+fn execute_plugin_install(
+    path: &std::path::Path,
+) -> Result<lili_integration::IntegrationInspection, (u8, String)> {
+    let assessment = load_plugin_migration_assessment(path).map_err(|error| {
+        (
+            3,
+            format!("plugin migration assessment could not be loaded: {error}"),
+        )
+    })?;
+    let codex_home = resolve_codex_home()
+        .map_err(|error| (3, format!("Codex home could not be resolved: {error}")))?;
+    install_plugin(&codex_home, &assessment)
+        .map_err(|error| (5, format!("plugin migration install failed: {error}")))
+}
+
+fn write_json(value: &impl serde::Serialize) -> u8 {
+    match serde_json::to_writer_pretty(std::io::stdout().lock(), value) {
+        Ok(()) => {
+            println!();
+            0
         }
-    };
-    match install_plugin(&codex_home, &assessment) {
-        Ok(inspection) => {
-            match serde_json::to_writer_pretty(std::io::stdout().lock(), &inspection) {
-                Ok(()) => {
-                    println!();
-                    0
-                }
-                Err(_) => 4,
-            }
-        }
-        Err(error) => {
-            eprintln!("plugin migration install failed: {error}");
-            5
-        }
+        Err(_) => 4,
     }
 }
 

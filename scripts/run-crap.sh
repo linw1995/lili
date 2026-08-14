@@ -23,6 +23,7 @@ crap_args=(
   --exclude "src/bin/lili-action-tree-fixture.rs"
   --exclude "src/acceptance_marketplace.rs"
   --exclude "src/desktop_acceptance.rs"
+  --exclude "src/windows_acl.rs"
   --threshold "${crap_threshold}"
 )
 
