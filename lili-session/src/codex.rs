@@ -304,7 +304,7 @@ impl CodexAdapterDiagnostics {
                 .plugin
                 .plugin_id
                 .as_ref()
-                .is_none_or(|plugin_id| discovered.plugin.plugin_id.as_ref() == Some(plugin_id))
+                .is_some_and(|plugin_id| discovered.plugin.plugin_id.as_ref() == Some(plugin_id))
             && accepted.plugin_version.as_ref() == discovered.plugin.plugin_version.as_ref()
         {
             discovered.plugin.record_plugin_event(accepted);
@@ -1019,7 +1019,7 @@ mod tests {
 
         diagnostics.refresh_discovery(
             CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
-                .with_plugin(plugin),
+                .with_plugin(plugin.clone()),
         );
         assert_eq!(
             diagnostics.plugin.trust_state,
@@ -1029,6 +1029,30 @@ mod tests {
             diagnostics.discovered_surfaces,
             [CodexIntegrationSurface::Stop]
         );
+
+        let identityless_plugin = CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            false,
+        );
+        let mut identityless = CodexAdapterDiagnostics::with_discovery(
+            Some(TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(identityless_plugin);
+        identityless.record_accepted_event(&event);
+        identityless.refresh_discovery(
+            CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
+                .with_plugin(plugin.clone()),
+        );
+        assert_eq!(
+            identityless.plugin.trust_state,
+            CodexPluginTrustState::Unknown
+        );
+        assert!(identityless.plugin.last_accepted_plugin_event.is_none());
 
         let upgraded = CodexPluginDiagnostics::discovered(
             Some(TESTED_CODEX_VERSION),
