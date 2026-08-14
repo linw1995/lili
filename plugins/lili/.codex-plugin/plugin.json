@@ -6,7 +6,7 @@
     "name": "Jade Lin",
     "url": "https://github.com/linw1995"
   },
-  "homepage": "https://github.com/linw1995/lili",
+  "homepage": "https://github.com/linw1995/lili/blob/master/docs/marketplace.md",
   "repository": "https://github.com/linw1995/lili",
   "license": "Apache-2.0",
   "keywords": [
@@ -29,8 +29,8 @@
       "Diagnose Lili desktop integration",
       "Guide safe migration from legacy configuration"
     ],
-    "websiteURL": "https://github.com/linw1995/lili",
-    "supportURL": "https://github.com/linw1995/lili/issues",
+    "websiteURL": "https://github.com/linw1995/lili/blob/master/docs/marketplace.md",
+    "supportURL": "https://github.com/linw1995/lili/blob/master/docs/support.md",
     "privacyPolicyURL": "https://github.com/linw1995/lili/blob/master/docs/privacy-policy.md",
     "termsOfServiceURL": "https://github.com/linw1995/lili/blob/master/docs/terms-of-service.md",
     "defaultPrompt": [

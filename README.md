@@ -20,6 +20,10 @@ Read [Security and operations](docs/security-and-operations.md) before enabling 
 
 The implementation intentionally supports documented `notify` and lifecycle-hook surfaces. It does not read Codex credentials, private databases, rollout logs, process memory, or private desktop and marketplace APIs.
 
+## Plugin and policies
+
+Read the [plugin overview](docs/marketplace.md), [support guide](docs/support.md), [privacy policy](docs/privacy-policy.md), and [terms of service](docs/terms-of-service.md) for the Marketplace surface and its local-data boundaries.
+
 ## License
 
 Lili is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Licenses for distributed Rust dependencies are listed in `THIRD_PARTY_NOTICES.html`.
