@@ -50,6 +50,26 @@ Copy-Item "docs/build.md", "docs/configuration.md", "docs/security-and-operation
 Copy-Item "examples/actions.toml" "$releaseRoot/examples/"
 Copy-Item "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.html" "$releaseRoot/"
 
+$forwarderSignatureKind = "platform-standard"
+$forwarderSignature = Get-AuthenticodeSignature "$buildTarget/release/lili-hook.exe"
+if ($forwarderSignature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+    $forwarderSignatureKind = "signed"
+}
+if ($env:LILI_REQUIRE_SIGNED -eq "1" -and $forwarderSignatureKind -ne "signed") {
+    throw "release signing was required but the hook forwarder is unsigned"
+}
+
+$forwarderRoot = Join-Path $releaseParent "forwarders/$platform"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $forwarderRoot
+New-Item -ItemType Directory -Force $forwarderRoot | Out-Null
+Copy-Item "$buildTarget/release/lili-hook.exe" "$forwarderRoot/lili-hook.exe"
+node scripts/write-forwarder-manifest.mjs `
+    "$forwarderRoot/lili-hook.exe" `
+    "$forwarderRoot/manifest.json" `
+    $version `
+    $platform `
+    $forwarderSignatureKind
+
 node scripts/release-manifest.mjs `
     $releaseRoot `
     $version `
@@ -66,4 +86,6 @@ $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
 @{
     release = $archive
     signatureKind = "platform-standard"
+    forwarder = $forwarderRoot
+    forwarderSignatureKind = $forwarderSignatureKind
 } | ConvertTo-Json -Compress

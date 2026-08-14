@@ -61,6 +61,16 @@ in {
     '';
   };
 
+  plugin-archive = mkWorkspaceApp {
+    name = "plugin-archive";
+    runtimeInputs = [pkgs.git pkgs.python3];
+    text = ''
+      python3 scripts/check-plugin-assets.py
+      python3 scripts/check_plugin_package.py
+      exec python3 scripts/build_plugin_archive.py "$@"
+    '';
+  };
+
   build-css = mkWorkspaceApp {
     name = "build-css";
     runtimeInputs = [pkgs.nodejs_24];

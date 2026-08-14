@@ -33,6 +33,7 @@ in
         dev-web = mkApp "dev-web" "Run the fixture-only Lili web application";
         build = mkApp "build" "Build the complete Lili desktop release";
         build-app = mkApp "build-app" "Build the Lili desktop app bundle";
+        plugin-archive = mkApp "plugin-archive" "Build the deterministic universal Lili plugin";
         build-css = mkApp "build-css" "Build the Lili stylesheet";
         format = mkApp "format" "Format the Lili workspace";
         format-check = mkApp "format-check" "Check workspace formatting";

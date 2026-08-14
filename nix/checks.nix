@@ -17,6 +17,7 @@
     "dev-web"
     "build"
     "build-app"
+    "plugin-archive"
     "build-css"
     "format"
     "format-check"

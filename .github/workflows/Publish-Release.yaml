@@ -77,12 +77,56 @@ jobs:
             release/*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 1
+      - name: Upload plugin forwarder
+        uses: actions/upload-artifact@v7
+        with:
+          name: lili-plugin-input-${{ github.run_id }}-${{ matrix.platform }}
+          path: release/forwarders
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble-plugin:
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: plugin-archive
+      - name: Download native plugin forwarders
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lili-plugin-input-${{ github.run_id }}-*
+          path: target/plugin-forwarders
+          merge-multiple: true
+      - name: Assemble deterministic universal plugin
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          nix run .#plugin-archive -- \
+            --forwarders target/plugin-forwarders \
+            --output "release/lili-plugin-$VERSION.zip"
+      - name: Upload universal plugin archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-prefix }}-plugin
+          path: |
+            release/lili-plugin-${{ needs.validate.outputs.version }}.zip
+            release/lili-plugin-${{ needs.validate.outputs.version }}.zip.sha256
+            release/lili-plugin-${{ needs.validate.outputs.version }}.manifest.json
+          if-no-files-found: error
+          retention-days: 1
 
   publish:
     if: inputs.publish
     needs:
       - validate
       - build
+      - assemble-plugin
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -104,12 +148,18 @@ jobs:
             "lili-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
             "lili-$VERSION-x86_64-pc-windows-msvc.tar.gz"
           )
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
           for archive in "${expected[@]}"; do
             test -f "$archive"
             test -f "$archive.sha256"
             sha256sum -c "$archive.sha256"
           done
+          plugin="lili-plugin-$VERSION.zip"
+          test -f "$plugin"
+          test -f "$plugin.sha256"
+          test -f "lili-plugin-$VERSION.manifest.json"
+          sha256sum -c "$plugin.sha256"
+          unzip -t "$plugin"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

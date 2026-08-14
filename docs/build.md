@@ -64,11 +64,21 @@ Normal development and build applications use locked dependency resolution. `scr
 
 ### Release assembly
 
-The archive contains the desktop and hook binaries, fallback pet, release Web assets, configuration, build, and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The assembler rejects source test fixtures and files that contain the current development workspace path.
+Each native release archive contains the desktop and matching hook binary, fallback pet, release Web assets, configuration, build, and security documentation, action example, project license, reviewed third-party notices, and a SHA-256 file manifest. The native assembler also emits `release/forwarders/<target>/` with the exact `lili-hook` binary and a sidecar recording its Cargo-derived version, native `--version` result, SHA-256 digest, size, target, and `signed` or `platform-standard` status.
+
+The release workflow collects exactly the three published forwarder targets and assembles `lili-plugin-<version>.zip`. The plugin archive uses sorted paths, a fixed ZIP timestamp, normalized file modes, and DEFLATE level 9 in the locked aggregation environment so identical inputs produce identical bytes across runs while remaining within Marketplace size limits. Its external manifest records every entry digest and forwarder signature status; a sibling SHA-256 file covers the archive itself. The assembler rejects missing or extra targets, version or checksum drift, wrong executable formats, undeclared files, source build outputs, and files containing the development workspace path.
+
+To reproduce the aggregation locally, first place the three native forwarder artifacts under one directory using their target names, then run:
+
+```text
+nix run .#plugin-archive -- \
+  --forwarders /absolute/path/to/forwarders \
+  --output release/lili-plugin-0.1.0.zip
+```
 
 `nix run .#license-check` enforces the dependency license allowlist and verifies that `THIRD_PARTY_NOTICES.html` matches the locked workspace graph. Run `scripts/generate-third-party-notices.sh` after an accepted dependency update, review the resulting license texts, and commit the updated artifact with the lockfile change.
 
-Platform signing remains an external trust operation. When Tauri receives a configured signing identity, the manifest records `signed`; otherwise a standard local bundle records `platform-standard`. Set `LILI_REQUIRE_SIGNED=1` in a protected release environment to reject an unsigned macOS archive.
+Platform signing remains an external trust operation. When Tauri or the native toolchain applies a verifiable identity, the relevant manifest records `signed`; otherwise a standard local bundle or forwarder records `platform-standard`. Set `LILI_REQUIRE_SIGNED=1` in a protected release environment to reject an unsigned macOS application, macOS forwarder, or Windows forwarder.
 
 ## GitHub CD build
 
@@ -86,7 +96,7 @@ The workflow builds independently on these GitHub-hosted runners:
 
 The reusable workflow uses a native-runner matrix. macOS and Linux share the repository's composite Nix setup action and call the same `nix run .#build` release assembler used locally. Windows uses a separate composite setup action backed by `nix/windows-toolchain.json` and calls `scripts/build-release.ps1`, which applies the same Codex compatibility, archive-content, manifest, and checksum gates. CI uses those same setup actions rather than maintaining another toolchain installation path.
 
-Each platform job uploads its `.tar.gz` archive and `.sha256` checksum as a one-day workflow artifact. Only after all platform jobs succeed does the `publish` job download the complete set, reject missing or unexpected files, verify every checksum, create the GitHub Release for the existing tag, and attach every archive and checksum. Unlike Coco's intentionally partial multi-architecture container publication, Lili cannot publish a partial desktop release.
+Each platform job uploads its `.tar.gz` archive and `.sha256` checksum plus a separate short-lived forwarder input. Only after all three native jobs succeed does the aggregation job build and upload the universal plugin ZIP, checksum, and manifest. The `publish` job then downloads the complete desktop and plugin set, rejects missing or unexpected files, verifies every checksum and ZIP structure, creates the GitHub Release for the existing tag, and attaches all release artifacts. Unlike Coco's intentionally partial multi-architecture container publication, Lili cannot publish a partial desktop or plugin release.
 
 CD does not rewrite lockfiles or application versions. Prepare a release by updating and reviewing the canonical version and repeated downstream metadata, run the local checks, commit those changes, and then push the matching version tag. The workflow generates release notes from the repository history.
 

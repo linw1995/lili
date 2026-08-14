@@ -31,6 +31,20 @@ fn payload() -> &'static str {
 }
 
 #[test]
+fn version_matches_the_workspace_release() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("lili-hook {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn argv_mode_spools_without_emitting_approval_output() {
     let temp = TempDir::new();
     let output = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
