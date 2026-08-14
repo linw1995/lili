@@ -22,10 +22,9 @@ pub fn configure(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
     let panel_class = panel_class();
     let old_class = native_window.class();
-    assert_eq!(
-        old_class.instance_size(),
-        panel_class.instance_size(),
-        "native panel conversion requires ABI-compatible window classes"
+    assert!(
+        old_class.instance_size() >= panel_class.instance_size(),
+        "native panel conversion requires enough storage for the panel class"
     );
     unsafe {
         objc2::ffi::object_setClass(native_window as *const _ as *mut _, panel_class);
