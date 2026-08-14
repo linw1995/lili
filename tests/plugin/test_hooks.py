@@ -5,6 +5,8 @@ from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 HOOKS_PATH = WORKSPACE_ROOT / "plugins" / "lili" / "hooks" / "hooks.json"
+ACCEPTANCE_SOURCE = WORKSPACE_ROOT / "lili" / "src" / "acceptance_marketplace.rs"
+HOOK_TRUST_SOURCE = WORKSPACE_ROOT / "scripts" / "test_hook_trust.py"
 EXPECTED_EVENTS = {
     "SessionStart",
     "UserPromptSubmit",
@@ -59,6 +61,15 @@ class PluginHooksTests(unittest.TestCase):
         self.assertNotIn("allow", handler)
         self.assertNotIn("deny", handler)
         self.assertIs(handler["async"], False)
+
+    def test_windows_acceptance_dispatches_the_installed_hook_through_codex(self) -> None:
+        acceptance = ACCEPTANCE_SOURCE.read_text(encoding="utf-8")
+        hook_trust = HOOK_TRUST_SOURCE.read_text(encoding="utf-8")
+        self.assertNotIn('Command::new("powershell.exe")', acceptance)
+        self.assertIn('arg("--installed-codex-home")', acceptance)
+        self.assertIn('arg("--installed-plugin-root")', acceptance)
+        self.assertIn('run = client._completed_hook(thread_id, "sessionStart")', hook_trust)
+        self.assertIn('runner.environment["SystemRoot"] = system_root', hook_trust)
 
 
 if __name__ == "__main__":

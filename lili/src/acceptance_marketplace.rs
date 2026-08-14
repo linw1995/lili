@@ -1,12 +1,14 @@
 use std::{
     ffi::OsString,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(not(target_os = "windows"))]
+use std::io::Write;
 
 use serde::Deserialize;
 
@@ -14,7 +16,10 @@ const EXPECTED_CODEX_VERSION: &str = "0.147.0";
 const MARKETPLACE_NAME: &str = "lili-local";
 const PLUGIN_SELECTOR: &str = "lili@lili-local";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(not(target_os = "windows"))]
 const HOOK_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(target_os = "windows")]
+const CODEX_HOOK_DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -216,44 +221,71 @@ pub fn invoke_installed_plugin_hook(
     plugin: &InstalledMarketplacePlugin,
     codex_home: &Path,
     payload: &[u8],
+    codex_binary: &Path,
+    repository_root: &Path,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("powershell.exe");
-        command.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "$input | & (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')",
-        ]);
+    {
+        let _ = payload;
+        let script = repository_root.join("scripts").join("test_hook_trust.py");
+        require_file(&script, "Codex hook dispatch script")?;
+        let mut command = Command::new("python");
         command
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut command = Command::new(plugin.root.join("hooks").join("forward"));
-
-    command
-        .env("PLUGIN_ROOT", &plugin.root)
-        .env("CODEX_HOME", codex_home)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("installed plugin hook could not start: {error}"))?;
-    child
-        .stdin
-        .take()
-        .expect("piped hook stdin is available")
-        .write_all(payload)
-        .map_err(|error| format!("installed plugin hook input failed: {error}"))?;
-    let output = wait_for_output(child, HOOK_TIMEOUT, "installed plugin hook")?;
-    if !output.status.success() || !output.stdout.is_empty() || !output.stderr.is_empty() {
-        return Err("installed plugin hook did not complete silently".to_owned());
+            .arg(script)
+            .arg("--workspace-root")
+            .arg(repository_root)
+            .arg("--codex")
+            .arg(codex_binary)
+            .arg("--installed-codex-home")
+            .arg(codex_home)
+            .arg("--installed-plugin-root")
+            .arg(plugin.root())
+            .arg("--dispatch-cwd")
+            .arg(repository_root);
+        let output = run_command(
+            &mut command,
+            CODEX_HOOK_DISPATCH_TIMEOUT,
+            "Codex Windows hook dispatch",
+        )?;
+        let result: serde_json::Value = parse_json(&output.stdout, "Codex Windows hook dispatch")?;
+        if result.get("result").and_then(serde_json::Value::as_str) != Some("passed")
+            || result
+                .get("bypassUsed")
+                .and_then(serde_json::Value::as_bool)
+                != Some(false)
+            || result.get("event").and_then(serde_json::Value::as_str) != Some("sessionStart")
+        {
+            return Err("Codex Windows hook dispatch contract failed".to_owned());
+        }
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (codex_binary, repository_root);
+        let mut command = Command::new(plugin.root.join("hooks").join("forward"));
+
+        command
+            .env("PLUGIN_ROOT", &plugin.root)
+            .env("CODEX_HOME", codex_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("installed plugin hook could not start: {error}"))?;
+        child
+            .stdin
+            .take()
+            .expect("piped hook stdin is available")
+            .write_all(payload)
+            .map_err(|error| format!("installed plugin hook input failed: {error}"))?;
+        let output = wait_for_output(child, HOOK_TIMEOUT, "installed plugin hook")?;
+        if !output.status.success() || !output.stdout.is_empty() || !output.stderr.is_empty() {
+            return Err("installed plugin hook did not complete silently".to_owned());
+        }
+        Ok(())
+    }
 }
 
 fn run_codex<I, S>(

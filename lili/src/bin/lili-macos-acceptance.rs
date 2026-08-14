@@ -91,7 +91,13 @@ mod macos {
             return Err("packaged app did not publish forwarding credentials".to_owned());
         }
 
-        if let Err(error) = invoke_installed_plugin_hook(&plugin, workspace.path(), PAYLOAD) {
+        if let Err(error) = invoke_installed_plugin_hook(
+            &plugin,
+            workspace.path(),
+            PAYLOAD,
+            &codex_binary,
+            &repository_root,
+        ) {
             terminate(&mut app);
             return Err(error);
         }

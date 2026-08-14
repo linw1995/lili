@@ -97,8 +97,8 @@ class CodexRunner:
             "HOME": str(codex_home.parent / "home"),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         }
-        self.codex_home.mkdir(parents=True)
-        Path(self.environment["HOME"]).mkdir(parents=True)
+        self.codex_home.mkdir(parents=True, exist_ok=True)
+        Path(self.environment["HOME"]).mkdir(parents=True, exist_ok=True)
 
     def verify_version(self) -> None:
         output = self._run(["--version"], json_output=False)

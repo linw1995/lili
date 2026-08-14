@@ -3,7 +3,8 @@
 import argparse
 import http.server
 import json
-import selectors
+import os
+import queue
 import shutil
 import subprocess
 import tempfile
@@ -199,8 +200,9 @@ class AppServerClient:
             and self.process.stderr is not None,
             "Codex app-server pipes are unavailable",
         )
-        self.selector = selectors.DefaultSelector()
-        self.selector.register(self.process.stdout, selectors.EVENT_READ)
+        self.output_messages: queue.Queue[bytes] = queue.Queue(maxsize=1024)
+        self.output_thread = threading.Thread(target=self._read_stdout, daemon=True)
+        self.output_thread.start()
         self.next_identifier = 1
         self.notifications: list[dict] = []
         self._send(
@@ -218,7 +220,6 @@ class AppServerClient:
         self.cwd = cwd
 
     def close(self) -> None:
-        self.selector.close()
         if self.process.poll() is None:
             self.process.terminate()
         try:
@@ -229,6 +230,7 @@ class AppServerClient:
         for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             if stream is not None and not stream.closed:
                 stream.close()
+        self.output_thread.join(timeout=1)
 
     def request(self, method: str, params: dict) -> dict:
         identifier = self.next_identifier
@@ -427,10 +429,10 @@ class AppServerClient:
                 self.notifications.append(message)
 
     def _message(self, timeout: float) -> dict:
-        events = self.selector.select(timeout=timeout)
-        require(bool(events), "Codex app-server message timed out")
-        require(self.process.stdout is not None, "Codex app-server stdout is closed")
-        line = self.process.stdout.readline(MAX_MESSAGE_BYTES + 1)
+        try:
+            line = self.output_messages.get(timeout=timeout)
+        except queue.Empty as error:
+            raise MarketplaceRoundTripError("Codex app-server message timed out") from error
         require(0 < len(line) <= MAX_MESSAGE_BYTES, "Codex app-server message is empty or too large")
         try:
             message = json.loads(line)
@@ -438,6 +440,14 @@ class AppServerClient:
             raise MarketplaceRoundTripError("Codex app-server returned invalid JSON") from error
         require(isinstance(message, dict), "Codex app-server message root is not an object")
         return message
+
+    def _read_stdout(self) -> None:
+        require(self.process.stdout is not None, "Codex app-server stdout is closed")
+        while True:
+            line = self.process.stdout.readline(MAX_MESSAGE_BYTES + 1)
+            self.output_messages.put(line)
+            if not line:
+                return
 
 
 def hook_map(hooks: list[dict], selector: str, expected_status: str) -> dict[str, dict]:
@@ -507,6 +517,57 @@ def dispatched_spool_events(codex_home: Path) -> dict[str, list[dict]]:
     return {
         event_name: by_type[event_type]
         for event_name, event_type in EXPECTED_NORMALIZED_EVENTS.items()
+    }
+
+
+def dispatch_installed_plugin_hook(
+    workspace_root: Path,
+    codex_executable: Path,
+    codex_home: Path,
+    plugin_root: Path,
+    cwd: Path,
+) -> dict:
+    lifecycle = load_json(workspace_root.resolve() / "marketplace" / "local" / "lifecycle.json")
+    selector = lifecycle["pluginSelector"]
+    require(plugin_root.resolve().is_dir(), "installed plugin root is missing")
+    require(cwd.resolve().is_dir(), "hook dispatch working directory is missing")
+    runner = CodexRunner(
+        codex_executable.resolve(),
+        codex_home.resolve(),
+        lifecycle["codexVersion"],
+    )
+    runner.verify_version()
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot")
+        require(isinstance(system_root, str) and system_root, "Windows system root is missing")
+        runner.environment["SystemRoot"] = system_root
+        temporary = codex_home.resolve() / "acceptance-temp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        runner.environment.update({"TEMP": str(temporary), "TMP": str(temporary)})
+    runner.environment.update(
+        {
+            "OPENAI_API_KEY": "lili-windows-hook-dispatch",
+            "OPENAI_BASE_URL": "http://127.0.0.1:9/v1",
+        }
+    )
+    client = AppServerClient(runner, cwd.resolve())
+    try:
+        initial = hook_map(client.hooks(), selector, "untrusted")
+        client.trust(list(initial.values()))
+        hook_map(client.hooks(), selector, "trusted")
+        thread_id = client.start_thread()
+        run = client._completed_hook(thread_id, "sessionStart")
+        client.shutdown()
+    finally:
+        client.close()
+    return {
+        "schemaVersion": 1,
+        "plugin": selector,
+        "pluginRoot": str(plugin_root.resolve()),
+        "event": "sessionStart",
+        "hookRunId": run["id"],
+        "bypassUsed": False,
+        "result": "passed",
     }
 
 
@@ -627,7 +688,11 @@ def run_hook_trust_round_trip(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Lili plugin hook trust with Codex")
-    parser.add_argument("--archive", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--archive", type=Path)
+    source.add_argument("--installed-codex-home", type=Path)
+    parser.add_argument("--installed-plugin-root", type=Path)
+    parser.add_argument("--dispatch-cwd", type=Path)
     parser.add_argument("--codex", default="codex")
     parser.add_argument(
         "--workspace-root",
@@ -636,11 +701,29 @@ def main() -> int:
     )
     arguments = parser.parse_args()
     try:
-        result = run_hook_trust_round_trip(
-            arguments.workspace_root,
-            arguments.archive,
-            resolve_executable(arguments.codex),
-        )
+        codex = resolve_executable(arguments.codex)
+        if arguments.archive is not None:
+            require(
+                arguments.installed_plugin_root is None and arguments.dispatch_cwd is None,
+                "installed dispatch arguments cannot accompany an archive",
+            )
+            result = run_hook_trust_round_trip(
+                arguments.workspace_root,
+                arguments.archive,
+                codex,
+            )
+        else:
+            require(
+                arguments.installed_plugin_root is not None and arguments.dispatch_cwd is not None,
+                "installed dispatch requires plugin root and working directory",
+            )
+            result = dispatch_installed_plugin_hook(
+                arguments.workspace_root,
+                codex,
+                arguments.installed_codex_home,
+                arguments.installed_plugin_root,
+                arguments.dispatch_cwd,
+            )
     except (MarketplaceRoundTripError, OSError, KeyError, TypeError, ValueError) as error:
         print(f"hook trust round trip failed: {error}")
         return 1
