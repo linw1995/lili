@@ -126,7 +126,7 @@ impl NativeIngestionHandle {
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender
             .send(IngestionCommand::RefreshCodexAdapter {
-                diagnostics,
+                diagnostics: Box::new(diagnostics),
                 response: response_sender,
             })
             .await
@@ -249,7 +249,7 @@ impl NativeIngestionActor {
                 } => {
                     self.diagnostics
                         .codex_adapter
-                        .refresh_discovery(diagnostics);
+                        .refresh_discovery(*diagnostics);
                     self.publish_diagnostics().await;
                     let _ = response.send(self.diagnostics.clone());
                 }
@@ -354,7 +354,7 @@ enum IngestionCommand {
     },
     SetSpoolMetrics(SpoolMetrics),
     RefreshCodexAdapter {
-        diagnostics: CodexAdapterDiagnostics,
+        diagnostics: Box<CodexAdapterDiagnostics>,
         response: oneshot::Sender<IngestionDiagnostics>,
     },
 }
@@ -659,6 +659,84 @@ mod tests {
                 .as_ref()
                 .map(|event| event.event_id.as_str()),
             Some("real-plugin-event")
+        );
+
+        drop(handle);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticated_non_default_plugin_delivery_survives_exact_refresh() {
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let default_plugin = CodexPluginDiagnostics::discovered(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            false,
+        )
+        .with_plugin_id(Some("lili@marketplace-a"));
+        let diagnostics = CodexAdapterDiagnostics::with_discovery(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            [CodexIntegrationSurface::Stop],
+        )
+        .with_plugin(default_plugin);
+        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics(
+            state.clone(),
+            credentials.clone(),
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+            diagnostics,
+        )
+        .await;
+        let task = tokio::spawn(actor.run());
+        let mut delivered = event();
+        delivered.source_discriminator = "hook:Stop".to_owned();
+        assert!(mark_plugin_hook_event(&mut delivered, "lili@marketplace-b"));
+        let message = credentials.sign(delivered, 1_000).unwrap();
+
+        handle
+            .ingest(payload(&message.to_frame().unwrap()), 1_000)
+            .await
+            .unwrap();
+        assert!(
+            state
+                .ingestion_diagnostics()
+                .await
+                .codex_adapter
+                .plugin
+                .last_accepted_plugin_event
+                .is_none()
+        );
+
+        let exact_plugin = CodexPluginDiagnostics::discovered(
+            Some(lili_session::TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            false,
+        )
+        .with_plugin_id(Some("lili@marketplace-b"));
+        let refreshed = handle
+            .refresh_codex_adapter(
+                CodexAdapterDiagnostics::with_discovery(
+                    Some(lili_session::TESTED_CODEX_VERSION),
+                    [CodexIntegrationSurface::Stop],
+                )
+                .with_plugin(exact_plugin),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            refreshed
+                .codex_adapter
+                .plugin
+                .last_accepted_plugin_event
+                .as_ref()
+                .and_then(|event| event.plugin_id.as_deref()),
+            Some("lili@marketplace-b")
         );
 
         drop(handle);

@@ -11,6 +11,7 @@ use crate::{
 
 const NOTIFY_EVENT_TYPE: &str = "agent-turn-complete";
 const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 128;
+const MAX_AUTHENTICATED_PLUGIN_EVENTS: usize = 16;
 
 const SESSION_START_HOOK: &str = "SessionStart";
 const USER_PROMPT_SUBMIT_HOOK: &str = "UserPromptSubmit";
@@ -257,6 +258,8 @@ pub struct CodexAdapterDiagnostics {
     pub discovered_surfaces: Vec<CodexIntegrationSurface>,
     pub missing_lifecycle_coverage: Vec<MissingLifecycleCoverage>,
     pub last_accepted_event: Option<LastAcceptedCodexEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authenticated_plugin_events: Vec<LastAcceptedCodexEvent>,
     pub plugin: CodexPluginDiagnostics,
     pub remediation: Vec<String>,
 }
@@ -279,6 +282,7 @@ impl CodexAdapterDiagnostics {
             discovered_surfaces,
             missing_lifecycle_coverage,
             last_accepted_event: None,
+            authenticated_plugin_events: Vec::new(),
             plugin,
             remediation,
         }
@@ -301,17 +305,24 @@ impl CodexAdapterDiagnostics {
             &discovered.missing_lifecycle_coverage,
         );
         discovered.last_accepted_event = self.last_accepted_event.clone();
+        discovered.authenticated_plugin_events = self.authenticated_plugin_events.clone();
+        if let Some(accepted) = self.plugin.last_accepted_plugin_event.clone() {
+            discovered.remember_authenticated_plugin_event(accepted);
+        }
 
-        if let Some(accepted) = self.plugin.last_accepted_plugin_event.clone()
+        if let Some(accepted) = discovered
+            .authenticated_plugin_events
+            .iter()
+            .rev()
+            .find(|accepted| {
+                accepted.plugin_id.as_ref() == discovered.plugin.plugin_id.as_ref()
+                    && accepted.plugin_version.as_ref() == discovered.plugin.plugin_version.as_ref()
+            })
+            .cloned()
             && discovered.plugin.installed == Some(true)
             && discovered.plugin.enabled == Some(true)
-            && self
-                .plugin
-                .plugin_id
-                .as_ref()
-                .is_some_and(|plugin_id| discovered.plugin.plugin_id.as_ref() == Some(plugin_id))
-            && accepted.plugin_id.as_ref() == discovered.plugin.plugin_id.as_ref()
-            && accepted.plugin_version.as_ref() == discovered.plugin.plugin_version.as_ref()
+            && accepted.plugin_id.is_some()
+            && accepted.plugin_version.is_some()
         {
             discovered.plugin.record_plugin_event(accepted);
         }
@@ -360,9 +371,27 @@ impl CodexAdapterDiagnostics {
                 .map(str::to_owned),
         };
         if accepted.plugin_version.is_some() {
+            self.remember_authenticated_plugin_event(accepted.clone());
             self.plugin.record_plugin_event(accepted.clone());
         }
         self.last_accepted_event = Some(accepted);
+    }
+
+    fn remember_authenticated_plugin_event(&mut self, accepted: LastAcceptedCodexEvent) {
+        let Some(plugin_id) = accepted.plugin_id.as_ref() else {
+            return;
+        };
+        if let Some(index) = self
+            .authenticated_plugin_events
+            .iter()
+            .position(|existing| existing.plugin_id.as_ref() == Some(plugin_id))
+        {
+            self.authenticated_plugin_events.remove(index);
+        }
+        self.authenticated_plugin_events.push(accepted);
+        if self.authenticated_plugin_events.len() > MAX_AUTHENTICATED_PLUGIN_EVENTS {
+            self.authenticated_plugin_events.remove(0);
+        }
     }
 }
 
@@ -1104,15 +1133,27 @@ mod tests {
         )
         .with_plugin(identityless_plugin);
         identityless.record_accepted_event(&event);
+        assert_eq!(
+            identityless.plugin.trust_state,
+            CodexPluginTrustState::Unknown
+        );
+        assert!(identityless.plugin.last_accepted_plugin_event.is_none());
         identityless.refresh_discovery(
             CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
                 .with_plugin(plugin.clone()),
         );
         assert_eq!(
             identityless.plugin.trust_state,
-            CodexPluginTrustState::Unknown
+            CodexPluginTrustState::TrustedAtLastDelivery
         );
-        assert!(identityless.plugin.last_accepted_plugin_event.is_none());
+        assert_eq!(
+            identityless
+                .plugin
+                .last_accepted_plugin_event
+                .as_ref()
+                .and_then(|event| event.plugin_id.as_deref()),
+            Some("lili@lili-local")
+        );
 
         let upgraded = CodexPluginDiagnostics::discovered(
             Some(TESTED_CODEX_VERSION),
@@ -1135,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_delivery_evidence_cannot_cross_marketplace_identity() {
+    fn plugin_delivery_evidence_is_retained_without_crossing_marketplace_identity() {
         let plugin = CodexPluginDiagnostics::discovered(
             Some(TESTED_CODEX_VERSION),
             CodexPluginAvailability::Installed,
@@ -1160,5 +1201,40 @@ mod tests {
             CodexPluginTrustState::Unknown
         );
         assert!(diagnostics.plugin.last_accepted_plugin_event.is_none());
+        assert_eq!(
+            diagnostics
+                .authenticated_plugin_events
+                .iter()
+                .filter_map(|event| event.plugin_id.as_deref())
+                .collect::<Vec<_>>(),
+            ["lili@marketplace-b"]
+        );
+
+        let exact_plugin = CodexPluginDiagnostics::discovered(
+            Some(TESTED_CODEX_VERSION),
+            CodexPluginAvailability::Installed,
+            true,
+            true,
+            Some(DESKTOP_VERSION),
+            false,
+        )
+        .with_plugin_id(Some("lili@marketplace-b"));
+        diagnostics.refresh_discovery(
+            CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), [])
+                .with_plugin(exact_plugin),
+        );
+
+        assert_eq!(
+            diagnostics.plugin.trust_state,
+            CodexPluginTrustState::TrustedAtLastDelivery
+        );
+        assert_eq!(
+            diagnostics
+                .plugin
+                .last_accepted_plugin_event
+                .as_ref()
+                .and_then(|event| event.plugin_id.as_deref()),
+            Some("lili@marketplace-b")
+        );
     }
 }
