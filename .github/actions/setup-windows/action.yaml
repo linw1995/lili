@@ -1,6 +1,12 @@
 name: Set up Windows build tools
 description: Install the Windows toolchain versions pinned by the repository
 
+inputs:
+  cache-key-name:
+    description: Stable cache partition for the calling job
+    required: false
+    default: ${{ github.job }}
+
 runs:
   using: composite
   steps:
@@ -18,17 +24,33 @@ runs:
       with:
         node-version: ${{ steps.versions.outputs.node }}
         package-manager-cache: false
-    - name: Install pinned Rust build tools
+    - name: Install pinned Rust toolchain
       shell: pwsh
       env:
         RUST_VERSION: ${{ steps.versions.outputs.rust }}
-        TAURI_VERSION: ${{ steps.versions.outputs.tauri }}
-        TRUNK_VERSION: ${{ steps.versions.outputs.trunk }}
-        WASM_BINDGEN_VERSION: ${{ steps.versions.outputs.wasmBindgen }}
       run: |
         rustup toolchain install $env:RUST_VERSION --profile minimal --component clippy,rustfmt
         rustup target add wasm32-unknown-unknown --toolchain $env:RUST_VERSION
         rustup default $env:RUST_VERSION
-        cargo install tauri-cli --version $env:TAURI_VERSION --locked
-        cargo install trunk --version $env:TRUNK_VERSION --locked
-        cargo install wasm-bindgen-cli --version $env:WASM_BINDGEN_VERSION --locked
+    - name: Restore Windows Cargo caches
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'nix/windows-toolchain.json', '.github/actions/setup-windows/action.yaml') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name }}-
+    - name: Install pinned Cargo build tools
+      shell: pwsh
+      env:
+        TAURI_VERSION: ${{ steps.versions.outputs.tauri }}
+        TRUNK_VERSION: ${{ steps.versions.outputs.trunk }}
+        WASM_BINDGEN_VERSION: ${{ steps.versions.outputs.wasmBindgen }}
+      run: |
+        $installRoot = Join-Path $env:GITHUB_WORKSPACE "target/windows-cargo-tools"
+        cargo install --root $installRoot tauri-cli --version $env:TAURI_VERSION --locked
+        cargo install --root $installRoot trunk --version $env:TRUNK_VERSION --locked
+        cargo install --root $installRoot wasm-bindgen-cli --version $env:WASM_BINDGEN_VERSION --locked
+        (Join-Path $installRoot "bin") | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
