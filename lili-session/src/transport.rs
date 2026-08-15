@@ -212,15 +212,6 @@ impl ForwardingCredentialStore {
         sync_directory(directory)?;
         Ok(())
     }
-
-    fn remove_if_instance(&self, instance_id: &str) {
-        let Ok(record) = self.load() else {
-            return;
-        };
-        if record.instance_id() == instance_id {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
 }
 
 fn read_private_codex_evidence(path: &Path) -> Result<Vec<u8>, ForwardingTransportError> {
@@ -281,26 +272,30 @@ pub struct BoundForwardingEndpoint {
 
 impl BoundForwardingEndpoint {
     pub fn bind(runtime_dir: &Path) -> Result<Self, ForwardingTransportError> {
-        Self::bind_inner(runtime_dir, TransportFault::None, |_| Ok(()))
+        Self::bind_inner(runtime_dir, TransportFault::None, |_| Ok(()), || Ok(()))
     }
 
-    pub fn bind_with_credentials_pre_publish<F>(
+    pub fn bind_with_credentials_rotation<F, R>(
         runtime_dir: &Path,
         pre_publish: F,
+        rollback: R,
     ) -> Result<Self, ForwardingTransportError>
     where
         F: FnOnce(&ForwardingCredentials) -> Result<(), ForwardingTransportError>,
+        R: FnOnce() -> Result<(), ForwardingTransportError>,
     {
-        Self::bind_inner(runtime_dir, TransportFault::None, pre_publish)
+        Self::bind_inner(runtime_dir, TransportFault::None, pre_publish, rollback)
     }
 
-    fn bind_inner<F>(
+    fn bind_inner<F, R>(
         runtime_dir: &Path,
         fault: TransportFault,
         pre_publish: F,
+        rollback: R,
     ) -> Result<Self, ForwardingTransportError>
     where
         F: FnOnce(&ForwardingCredentials) -> Result<(), ForwardingTransportError>,
+        R: FnOnce() -> Result<(), ForwardingTransportError>,
     {
         ensure_private_runtime_dir(runtime_dir)?;
         let credentials = ForwardingCredentials::generate()?;
@@ -311,7 +306,10 @@ impl BoundForwardingEndpoint {
         let credential_store = ForwardingCredentialStore::for_runtime_dir(runtime_dir);
         let record = ForwardingCredentialRecord::new(&credentials, listener.endpoint().clone());
         pre_publish(&credentials)?;
-        credential_store.save_inner(&record, fault)?;
+        if let Err(error) = credential_store.save_inner(&record, fault) {
+            rollback()?;
+            return Err(error);
+        }
         Ok(Self {
             listener,
             credentials,
@@ -324,7 +322,7 @@ impl BoundForwardingEndpoint {
         runtime_dir: &Path,
         fault: TransportFault,
     ) -> Result<Self, ForwardingTransportError> {
-        Self::bind_inner(runtime_dir, fault, |_| Ok(()))
+        Self::bind_inner(runtime_dir, fault, |_| Ok(()), || Ok(()))
     }
 
     pub fn credentials(&self) -> ForwardingCredentials {
@@ -341,13 +339,6 @@ impl BoundForwardingEndpoint {
 
     pub async fn accept(&self) -> Result<ForwardingConnection, ForwardingTransportError> {
         self.listener.accept().await
-    }
-}
-
-impl Drop for BoundForwardingEndpoint {
-    fn drop(&mut self) {
-        self.credential_store
-            .remove_if_instance(self.credentials.instance_id());
     }
 }
 
@@ -926,7 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_record_rotates_and_is_removed_on_shutdown() {
+    async fn credential_record_rotates_and_is_retained_on_shutdown() {
         let temp = TempDir::new();
         let store = ForwardingCredentialStore::for_runtime_dir(&temp.0);
         let first_id = {
@@ -935,7 +926,7 @@ mod tests {
             assert_eq!(id, endpoint.credentials().instance_id());
             id
         };
-        assert!(!store.path().exists());
+        assert_eq!(store.load().unwrap().instance_id(), first_id);
         let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
         assert_ne!(first_id, endpoint.credentials().instance_id());
     }
@@ -958,7 +949,7 @@ mod tests {
             .save(&diagnostics, &previous_credentials)
             .unwrap();
 
-        let endpoint = BoundForwardingEndpoint::bind_with_credentials_pre_publish(
+        let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
             &runtime_dir,
             |credentials| {
                 assert_eq!(
@@ -967,6 +958,7 @@ mod tests {
                 );
                 evidence_store.save(&diagnostics, credentials)
             },
+            || evidence_store.save(&diagnostics, &previous_credentials),
         )
         .unwrap();
 
@@ -976,6 +968,37 @@ mod tests {
             endpoint.credentials().instance_id()
         );
         assert_eq!(evidence_store.load(&published).unwrap(), diagnostics);
+    }
+
+    #[tokio::test]
+    async fn failed_credential_publication_restores_previous_evidence() {
+        let temp = TempDir::new();
+        let runtime_dir = temp.0.join("runtime");
+        let bootstrap = BoundForwardingEndpoint::bind(&temp.0.join("bootstrap")).unwrap();
+        let previous_credentials = bootstrap.credentials();
+        let credential_store = ForwardingCredentialStore::for_runtime_dir(&runtime_dir);
+        let previous_record =
+            ForwardingCredentialRecord::new(&previous_credentials, bootstrap.endpoint().clone());
+        credential_store
+            .save_inner(&previous_record, TransportFault::None)
+            .unwrap();
+        let evidence_store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let diagnostics = CodexAdapterDiagnostics::default();
+        evidence_store
+            .save(&diagnostics, &previous_credentials)
+            .unwrap();
+
+        let result = BoundForwardingEndpoint::bind_inner(
+            &runtime_dir,
+            TransportFault::BeforeCredentialReplace,
+            |credentials| evidence_store.save(&diagnostics, credentials),
+            || evidence_store.save(&diagnostics, &previous_credentials),
+        );
+
+        assert!(result.is_err());
+        let retained = credential_store.load().unwrap().credentials().unwrap();
+        assert_eq!(retained.instance_id(), previous_credentials.instance_id());
+        assert_eq!(evidence_store.load(&retained).unwrap(), diagnostics);
     }
 
     #[test]

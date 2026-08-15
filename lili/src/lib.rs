@@ -31,7 +31,7 @@ use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
 use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
-    ForwardingTransportError, SpoolStore,
+    ForwardingCredentialStore, ForwardingTransportError, SpoolStore,
 };
 use loopback::LoopbackServer;
 use tauri::{
@@ -363,12 +363,20 @@ fn start_native_ingestion(
     state: AppState,
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
     let runtime_dir = codex_home.join("lili").join("runtime");
+    let previous_credentials = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
+        .load()
+        .ok()
+        .and_then(|record| record.credentials().ok());
     let codex_adapter = inspect(codex_home).codex_adapter;
     let evidence_store = CodexPluginEvidenceStore::for_codex_home(codex_home);
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
-        let endpoint = BoundForwardingEndpoint::bind_with_credentials_pre_publish(
+        let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
             &runtime_dir,
             |credentials| evidence_store.save(&codex_adapter, credentials),
+            || match &previous_credentials {
+                Some(credentials) => evidence_store.save(&codex_adapter, credentials),
+                None => Ok(()),
+            },
         )?;
         let credentials = endpoint.credentials();
         let (handle, actor) = NativeIngestionActor::channel_with_diagnostics_and_evidence_store(
