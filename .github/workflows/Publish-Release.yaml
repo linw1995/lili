@@ -61,6 +61,8 @@ jobs:
           cache-key-name: release-${{ matrix.platform }}
       - if: matrix.toolchain == 'windows'
         uses: ./.github/actions/setup-windows
+        with:
+          cache-key-name: release-${{ matrix.platform }}
       - name: Build Unix release archive
         if: matrix.toolchain == 'nix'
         run: nix run .#build
