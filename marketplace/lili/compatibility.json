@@ -1,0 +1,258 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "versionSources": {
+    "plugin": "Cargo.toml#workspace.package.version",
+    "desktop": "Cargo.toml#workspace.package.version",
+    "forwarder": "Cargo.toml#workspace.package.version",
+    "normalizedEvent": "lili-session/src/lib.rs#SESSION_SCHEMA_VERSION",
+    "forwardingProtocol": "lili-session/src/forwarding.rs#FORWARDING_PROTOCOL_VERSION",
+    "legacyProvenance": "lili-integration/src/lib.rs#INTEGRATION_SCHEMA_VERSION"
+  },
+  "compatibilityPolicy": {
+    "pluginVersionRange": ">=0.1.0,<0.2.0",
+    "desktopVersionRange": ">=0.1.0,<0.2.0",
+    "packagedForwarderMustEqualPluginVersion": true,
+    "normalizedEventSchema": 1,
+    "forwardingProtocol": 1,
+    "legacyProvenanceSchema": 1,
+    "unknownProtocolPolicy": "reject-and-report",
+    "unknownSemanticVersionPolicy": "diagnose-and-preserve-current-integration"
+  },
+  "codex": {
+    "testedVersions": [
+      "0.147.0"
+    ],
+    "unreviewedVersionPolicy": "allow-inspection-but-block-legacy-cleanup-until-real-delivery-is-verified"
+  },
+  "matrix": [
+    {
+      "plugin": ">=0.1.0,<0.2.0",
+      "desktop": ">=0.1.0,<0.2.0",
+      "forwarder": "equals-plugin",
+      "normalizedEventSchema": 1,
+      "forwardingProtocol": 1,
+      "status": "supported"
+    },
+    {
+      "plugin": "outside-supported-range",
+      "desktop": "any",
+      "forwarder": "any",
+      "normalizedEventSchema": "any",
+      "forwardingProtocol": "any",
+      "status": "unsupported"
+    },
+    {
+      "plugin": "any",
+      "desktop": "outside-supported-range",
+      "forwarder": "any",
+      "normalizedEventSchema": "any",
+      "forwardingProtocol": "any",
+      "status": "unsupported"
+    },
+    {
+      "plugin": "supported-range",
+      "desktop": "supported-range",
+      "forwarder": "not-equal-plugin",
+      "normalizedEventSchema": "any",
+      "forwardingProtocol": "any",
+      "status": "tampered-or-invalid-package"
+    },
+    {
+      "plugin": "supported-range",
+      "desktop": "supported-range",
+      "forwarder": "equals-plugin",
+      "normalizedEventSchema": "not-1",
+      "forwardingProtocol": "any",
+      "status": "unsupported"
+    },
+    {
+      "plugin": "supported-range",
+      "desktop": "supported-range",
+      "forwarder": "equals-plugin",
+      "normalizedEventSchema": 1,
+      "forwardingProtocol": "not-1",
+      "status": "unsupported"
+    }
+  ],
+  "states": [
+    {
+      "id": "legacy-only",
+      "pluginInstalled": false,
+      "pluginEnabled": false,
+      "hooksTrusted": false,
+      "pluginDeliveryVerified": false,
+      "legacyIntegrationActive": true,
+      "primaryIntegration": "legacy"
+    },
+    {
+      "id": "plugin-installed-untrusted",
+      "pluginInstalled": true,
+      "pluginEnabled": true,
+      "hooksTrusted": false,
+      "pluginDeliveryVerified": false,
+      "legacyIntegrationActive": true,
+      "primaryIntegration": "legacy"
+    },
+    {
+      "id": "overlap-unverified",
+      "pluginInstalled": true,
+      "pluginEnabled": true,
+      "hooksTrusted": true,
+      "pluginDeliveryVerified": false,
+      "legacyIntegrationActive": true,
+      "primaryIntegration": "legacy"
+    },
+    {
+      "id": "overlap-verified",
+      "pluginInstalled": true,
+      "pluginEnabled": true,
+      "hooksTrusted": true,
+      "pluginDeliveryVerified": true,
+      "legacyIntegrationActive": true,
+      "primaryIntegration": "plugin"
+    },
+    {
+      "id": "plugin-primary",
+      "pluginInstalled": true,
+      "pluginEnabled": true,
+      "hooksTrusted": true,
+      "pluginDeliveryVerified": true,
+      "legacyIntegrationActive": false,
+      "primaryIntegration": "plugin"
+    },
+    {
+      "id": "plugin-upgrade-pending-trust",
+      "pluginInstalled": true,
+      "pluginEnabled": true,
+      "hooksTrusted": false,
+      "pluginDeliveryVerified": false,
+      "legacyIntegrationActive": false,
+      "primaryIntegration": "none",
+      "rollbackCandidate": "previous-plugin-version"
+    },
+    {
+      "id": "plugin-removed",
+      "pluginInstalled": false,
+      "pluginEnabled": false,
+      "hooksTrusted": false,
+      "pluginDeliveryVerified": false,
+      "legacyIntegrationActive": false,
+      "primaryIntegration": "none"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "legacy-only",
+      "to": "plugin-installed-untrusted",
+      "action": "install-and-enable-compatible-plugin",
+      "guards": [
+        "plugin-app-ipc-compatible",
+        "legacy-provenance-readable"
+      ]
+    },
+    {
+      "from": "plugin-installed-untrusted",
+      "to": "overlap-unverified",
+      "action": "user-trusts-exact-hook-definition",
+      "guards": [
+        "no-trust-bypass",
+        "all-hook-hashes-reviewed"
+      ]
+    },
+    {
+      "from": "overlap-unverified",
+      "to": "overlap-verified",
+      "action": "verify-synthetic-and-real-event-delivery",
+      "guards": [
+        "tested-or-explicitly-revalidated-codex-version",
+        "deduplication-verified",
+        "no-model-visible-hook-output"
+      ]
+    },
+    {
+      "from": "overlap-verified",
+      "to": "plugin-primary",
+      "action": "remove-provenance-owned-legacy-entries",
+      "guards": [
+        "current-legacy-content-matches-provenance",
+        "unrelated-notify-and-hooks-preserved",
+        "post-cleanup-delivery-verified"
+      ]
+    },
+    {
+      "from": "plugin-installed-untrusted",
+      "to": "legacy-only",
+      "action": "rollback-before-trust",
+      "guards": [
+        "disable-or-remove-plugin-only"
+      ]
+    },
+    {
+      "from": "overlap-unverified",
+      "to": "legacy-only",
+      "action": "rollback-after-failed-verification",
+      "guards": [
+        "disable-or-remove-plugin-only",
+        "legacy-integration-left-intact"
+      ]
+    },
+    {
+      "from": "plugin-primary",
+      "to": "plugin-upgrade-pending-trust",
+      "action": "install-compatible-plugin-update",
+      "guards": [
+        "previous-plugin-package-retained-for-rollback",
+        "changed-hooks-require-new-trust"
+      ]
+    },
+    {
+      "from": "plugin-upgrade-pending-trust",
+      "to": "plugin-primary",
+      "action": "trust-and-verify-new-plugin-version",
+      "guards": [
+        "plugin-app-ipc-compatible",
+        "real-delivery-verified"
+      ]
+    },
+    {
+      "from": "plugin-upgrade-pending-trust",
+      "to": "plugin-primary",
+      "action": "rollback-to-previous-plugin-version",
+      "guards": [
+        "previous-package-integrity-valid",
+        "previous-hook-trust-still-valid-or-reviewed",
+        "previous-version-delivery-verified"
+      ]
+    },
+    {
+      "from": "plugin-primary",
+      "to": "plugin-removed",
+      "action": "remove-plugin",
+      "guards": [
+        "do-not-restore-legacy-implicitly",
+        "do-not-delete-desktop-or-user-data"
+      ]
+    },
+    {
+      "from": "plugin-removed",
+      "to": "legacy-only",
+      "action": "explicit-legacy-fallback-plan-and-install",
+      "guards": [
+        "marketplace-unavailable-or-codex-plugin-unsupported",
+        "plan-reviewed-by-user",
+        "synthetic-delivery-verified"
+      ]
+    }
+  ],
+  "invariants": [
+    "Legacy integration is never removed before trusted plugin delivery is verified.",
+    "Rollback before legacy cleanup changes only plugin state.",
+    "Plugin removal never deletes the desktop application, pet packages, actions, spool data, or legacy configuration.",
+    "Legacy cleanup removes only entries that still match Lili provenance.",
+    "Unrelated hooks and notify commands survive migration and rollback.",
+    "PermissionRequest remains observation-only in every state.",
+    "Unsupported or unknown protocol versions fail closed and produce a local diagnostic.",
+    "Public-directory readiness is independent from local Marketplace compatibility."
+  ]
+}

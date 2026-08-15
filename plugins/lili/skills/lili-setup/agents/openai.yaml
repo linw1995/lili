@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lili Setup"
+  short_description: "Diagnose and set up local Lili integration"
+  default_prompt: "Use $lili-setup to check my local Lili setup and explain safe next steps."

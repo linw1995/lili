@@ -61,6 +61,66 @@ in {
     '';
   };
 
+  plugin-archive = mkWorkspaceApp {
+    name = "plugin-archive";
+    runtimeInputs = [pkgs.git pkgs.python3];
+    text = ''
+      python3 scripts/check-plugin-assets.py
+      python3 scripts/check_plugin_package.py
+      python3 scripts/check_marketplace_consistency.py
+      exec python3 scripts/build_plugin_archive.py "$@"
+    '';
+  };
+
+  plugin-supply-chain = mkWorkspaceApp {
+    name = "plugin-supply-chain";
+    runtimeInputs = [pkgs.cargo-audit pkgs.cargo-deny pkgs.python3 toolchain.rustToolchain];
+    text = ''
+      exec python3 scripts/generate_plugin_supply_chain.py "$@"
+    '';
+  };
+
+  plugin-inspect = mkWorkspaceApp {
+    name = "plugin-inspect";
+    runtimeInputs = [pkgs.python3];
+    text = ''
+      exec python3 scripts/inspect_plugin_release.py "$@"
+    '';
+  };
+
+  submission-ready = mkWorkspaceApp {
+    name = "submission-ready";
+    runtimeInputs = [pkgs.git pkgs.openspec pkgs.python3];
+    text = ''
+      openspec validate --changes --strict --no-interactive
+      exec python3 scripts/check_submission_ready.py "$@"
+    '';
+  };
+
+  marketplace-check = mkNativeWorkspaceApp {
+    name = "marketplace-check";
+    runtimeInputs = [pkgs.python3 toolchain.rustToolchain];
+    text = ''
+      exec bash scripts/check-marketplace.sh "$@"
+    '';
+  };
+
+  marketplace-roundtrip = mkWorkspaceApp {
+    name = "marketplace-roundtrip";
+    runtimeInputs = [pkgs.python3];
+    text = ''
+      exec python3 scripts/test_local_marketplace.py "$@"
+    '';
+  };
+
+  marketplace-trust = mkWorkspaceApp {
+    name = "marketplace-trust";
+    runtimeInputs = [pkgs.python3];
+    text = ''
+      exec python3 scripts/test_hook_trust.py "$@"
+    '';
+  };
+
   build-css = mkWorkspaceApp {
     name = "build-css";
     runtimeInputs = [pkgs.nodejs_24];
@@ -151,7 +211,7 @@ in {
     name = "spec-validate";
     runtimeInputs = [pkgs.openspec];
     text = ''
-      exec openspec validate add-session-aware-desktop-pet --strict
+      exec openspec validate --changes --strict --no-interactive
     '';
   };
 
@@ -237,9 +297,17 @@ in {
       then ''
         cargo tauri build --bundles app -- --locked
         cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-macos-acceptance
+        codex_binary="''${CODEX_BIN:-}"
+        if [[ -z "$codex_binary" ]]; then
+          codex_binary="$(command -v codex)"
+        fi
+        test -f "$codex_binary"
         exec target/release/lili-macos-acceptance \
           target/release/bundle/macos/Lili.app/Contents/MacOS/lili \
-          target/release/lili-hook
+          target/release/lili-hook \
+          target/release/bundle/macos/Lili.app \
+          "$PWD" \
+          "$codex_binary"
       ''
       else ''
         echo "macOS acceptance requires macOS" >&2
@@ -258,7 +326,12 @@ in {
         cargo build --locked --release --package lili --features acceptance --bin lili-hook --bin lili-linux-acceptance
         bundle="$(find target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
         test -n "$bundle"
-        acceptance=(target/release/lili-linux-acceptance target/release/lili target/release/lili-hook "$bundle")
+        codex_binary="''${CODEX_BIN:-}"
+        if [[ -z "$codex_binary" ]]; then
+          codex_binary="$(command -v codex)"
+        fi
+        test -f "$codex_binary"
+        acceptance=(target/release/lili-linux-acceptance target/release/lili target/release/lili-hook "$bundle" "$PWD" "$codex_binary")
         if [[ "''${LILI_ACCEPTANCE_HEADLESS:-}" == "1" ]]; then
           exec xvfb-run -a "''${acceptance[@]}"
         fi

@@ -44,12 +44,21 @@ jobs:
       - run: nix run .#test
       - run: nix run .#audit
       - run: nix run .#license-check
+      - name: Generate plugin supply-chain evidence
+        run: nix run .#plugin-supply-chain -- --output target/plugin-supply-chain.json
+      - name: Upload plugin supply-chain evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: lili-plugin-supply-chain
+          path: target/plugin-supply-chain.json
+          if-no-files-found: error
       - run: nix run .#web-build
       - run: nix run .#fuzz-smoke
       - run: nix run .#e2e
       - run: nix run .#spec-validate
       - run: nix run .#workflow-lint
       - run: nix run .#codex-matrix
+      - run: nix run .#marketplace-check
 
   coverage:
     runs-on: ubuntu-latest
@@ -96,14 +105,36 @@ jobs:
           path: target/coverage/result/crap.md
 
   linux-desktop:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-nix
         with:
           cache-key-name: linux-desktop
+      - name: Install reviewed Codex CLI
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          codex_binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$codex_binary"
+          echo "CODEX_BIN=$PWD/$codex_binary" >> "$GITHUB_ENV"
       - name: Run Linux desktop acceptance
         run: LILI_ACCEPTANCE_HEADLESS=1 nix run .#linux-acceptance
+      - name: Stage Linux plugin forwarder
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          root="target/plugin-forwarder/x86_64-unknown-linux-gnu"
+          mkdir -p "$root"
+          cp target/release/lili-hook "$root/lili-hook"
+          node scripts/write-forwarder-manifest.mjs \
+            "$root/lili-hook" "$root/manifest.json" "$version" \
+            x86_64-unknown-linux-gnu platform-standard
+      - name: Upload Linux plugin forwarder
+        uses: actions/upload-artifact@v7
+        with:
+          name: lili-plugin-forwarder-linux
+          path: target/plugin-forwarder
+          if-no-files-found: error
 
   macos-desktop:
     runs-on: macos-latest
@@ -112,14 +143,100 @@ jobs:
       - uses: ./.github/actions/setup-nix
         with:
           cache-key-name: macos-desktop
+      - name: Install reviewed Codex CLI
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          codex_binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$codex_binary"
+          echo "CODEX_BIN=$PWD/$codex_binary" >> "$GITHUB_ENV"
       - name: Run macOS desktop acceptance
         run: nix run .#macos-acceptance
+      - name: Stage macOS plugin forwarder
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          root="target/plugin-forwarder/arm64-apple-darwin"
+          mkdir -p "$root"
+          cp target/release/lili-hook "$root/lili-hook"
+          node scripts/write-forwarder-manifest.mjs \
+            "$root/lili-hook" "$root/manifest.json" "$version" \
+            arm64-apple-darwin platform-standard
+      - name: Upload macOS plugin forwarder
+        uses: actions/upload-artifact@v7
+        with:
+          name: lili-plugin-forwarder-macos
+          path: target/plugin-forwarder
+          if-no-files-found: error
 
   windows-desktop:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-windows
+      - name: Install reviewed Codex CLI
+        shell: pwsh
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          $codexBinary = Get-ChildItem -Path "target/codex-cli/node_modules/@openai" -Filter "codex.exe" -Recurse | Select-Object -First 1
+          if ($null -eq $codexBinary) { throw "Codex binary was not installed" }
+          "CODEX_BIN=$($codexBinary.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run Windows desktop acceptance
         shell: pwsh
         run: ./scripts/windows-acceptance.ps1
+      - name: Stage Windows plugin forwarder
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $root = "target/plugin-forwarder/x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          Copy-Item "target/release/lili-hook.exe" "$root/lili-hook.exe"
+          node scripts/write-forwarder-manifest.mjs `
+            "$root/lili-hook.exe" "$root/manifest.json" $version `
+            x86_64-pc-windows-msvc platform-standard
+      - name: Upload Windows plugin forwarder
+        uses: actions/upload-artifact@v7
+        with:
+          name: lili-plugin-forwarder-windows
+          path: target/plugin-forwarder
+          if-no-files-found: error
+
+  marketplace-acceptance:
+    if: ${{ github.event_name != 'pull_request' }}
+    needs:
+      - quality
+      - linux-desktop
+      - macos-desktop
+      - windows-desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: marketplace-acceptance
+      - name: Download native plugin forwarders
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lili-plugin-forwarder-*
+          path: target/plugin-forwarders
+          merge-multiple: true
+      - name: Download plugin supply-chain evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: lili-plugin-supply-chain
+          path: target
+      - name: Install reviewed Codex CLI
+        run: |
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          codex_binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$codex_binary"
+          echo "CODEX_BIN=$PWD/$codex_binary" >> "$GITHUB_ENV"
+      - name: Assemble final plugin archive
+        run: |
+          nix run .#plugin-archive -- \
+            --forwarders target/plugin-forwarders \
+            --output target/lili-plugin.zip \
+            --supply-chain target/plugin-supply-chain.json
+      - name: Run local Marketplace lifecycle round trip
+        run: nix run .#marketplace-roundtrip -- --archive "$PWD/target/lili-plugin.zip" --codex "$CODEX_BIN"
+      - name: Run Marketplace hook trust round trip
+        run: nix run .#marketplace-trust -- --archive "$PWD/target/lili-plugin.zip" --codex "$CODEX_BIN"

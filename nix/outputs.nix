@@ -33,6 +33,13 @@ in
         dev-web = mkApp "dev-web" "Run the fixture-only Lili web application";
         build = mkApp "build" "Build the complete Lili desktop release";
         build-app = mkApp "build-app" "Build the Lili desktop app bundle";
+        plugin-archive = mkApp "plugin-archive" "Build the deterministic universal Lili plugin";
+        plugin-supply-chain = mkApp "plugin-supply-chain" "Generate plugin dependency, license, and vulnerability evidence";
+        plugin-inspect = mkApp "plugin-inspect" "Inspect the final plugin release";
+        submission-ready = mkApp "submission-ready" "Require complete Marketplace submission evidence";
+        marketplace-check = mkApp "marketplace-check" "Validate Marketplace materials and runtime boundaries";
+        marketplace-roundtrip = mkApp "marketplace-roundtrip" "Test the final plugin archive through a local Marketplace";
+        marketplace-trust = mkApp "marketplace-trust" "Validate plugin hook trust and invalidation";
         build-css = mkApp "build-css" "Build the Lili stylesheet";
         format = mkApp "format" "Format the Lili workspace";
         format-check = mkApp "format-check" "Check workspace formatting";
@@ -43,7 +50,7 @@ in
         audit = mkApp "audit" "Audit Rust dependencies";
         license-check = mkApp "license-check" "Enforce dependency license policy";
         web-build = mkApp "web-build" "Build the release Web application";
-        spec-validate = mkApp "spec-validate" "Validate the OpenSpec change strictly";
+        spec-validate = mkApp "spec-validate" "Validate every active OpenSpec change strictly";
         workflow-lint = mkApp "workflow-lint" "Lint GitHub Actions workflows";
         codex-matrix = mkApp "codex-matrix" "Verify the supported Codex installation matrix";
         fuzz = mkApp "fuzz" "Run a bounded parser fuzz target";

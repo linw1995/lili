@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-14",
+  "identity": {
+    "packageName": "lili",
+    "displayName": "Lili",
+    "versionSource": "Cargo.toml#workspace.package.version",
+    "initialVersion": "0.1.0",
+    "description": "Local desktop companion for supported Codex session lifecycle events."
+  },
+  "publisher": {
+    "author": {
+      "name": "Jade Lin",
+      "url": "https://github.com/linw1995"
+    },
+    "developerName": "Jade Lin",
+    "verifiedIdentityRequired": true,
+    "verifiedIdentityMustMatchDeveloperName": true,
+    "homepage": "https://github.com/linw1995/lili/blob/master/docs/marketplace.md",
+    "repository": "https://github.com/linw1995/lili",
+    "supportURL": "https://github.com/linw1995/lili/blob/master/docs/support.md",
+    "privacyPolicyURL": "https://github.com/linw1995/lili/blob/master/docs/privacy-policy.md",
+    "termsOfServiceURL": "https://github.com/linw1995/lili/blob/master/docs/terms-of-service.md",
+    "license": "Apache-2.0"
+  },
+  "listing": {
+    "category": "Productivity",
+    "capabilities": [
+      "Set up local Codex lifecycle observation",
+      "Diagnose Lili desktop integration",
+      "Guide safe migration from legacy configuration"
+    ],
+    "shortDescription": "Set up Lili for Codex",
+    "longDescription": "Set up and diagnose Lili, a separately installed local desktop companion for Codex. In Codex, trusted plugin hooks can forward supported lifecycle events to the local Lili application. In ChatGPT, the plugin provides setup, compatibility, migration, and troubleshooting guidance only; ChatGPT lifecycle observation is not supported. The plugin does not install the desktop application, approve permissions, expose an MCP server, or transfer session data to a remote service.",
+    "starterPrompts": [
+      "Check whether my Lili desktop and Codex versions are compatible.",
+      "Explain how to trust Lili hooks and verify local event delivery.",
+      "Help me migrate from Lili's legacy direct configuration safely."
+    ]
+  },
+  "availability": {
+    "selection": "all-portal-supported-countries-and-regions",
+    "additionalExclusions": [],
+    "instructions": "Use the Marketplace portal's current supported-country selector. Do not add a regional exclusion unless distribution, legal, or support constraints require one."
+  },
+  "prerequisites": {
+    "instructions": [
+      "Install and start Lili desktop 0.1.0 or later from the published desktop releases.",
+      "Use Codex 0.147.0 or a later version that remains compatible with the declared plugin and hook contracts.",
+      "Install and enable the Lili plugin through a supported Codex plugin workflow.",
+      "Review the packaged hook definitions and explicitly trust them before expecting lifecycle delivery.",
+      "Run the Lili setup diagnostics and resolve any version, trust, or local IPC warning."
+    ],
+    "desktopApplication": {
+      "required": true,
+      "minimumVersion": "0.1.0",
+      "bundledWithPlugin": false,
+      "distributionURL": "https://github.com/linw1995/lili/releases"
+    },
+    "codex": {
+      "requiredForLifecycleObservation": true,
+      "minimumReviewedVersion": "0.147.0"
+    },
+    "chatgpt": {
+      "supportsLifecycleObservation": false
+    }
+  },
+  "release": {
+    "version": "0.1.0",
+    "releaseNotes": "./release-notes.md",
+    "complianceChecklist": "./compliance-checklist.md"
+  },
+  "surfaceCopy": {
+    "shared": "Use Lili's setup and diagnostics workflow without accessing credentials or private session storage.",
+    "codex": "After you install the separate Lili desktop application and explicitly trust the plugin hooks, supported Codex lifecycle events can be forwarded locally to Lili.",
+    "chatgpt": "Use setup, compatibility, migration, and troubleshooting guidance. Automatic ChatGPT lifecycle observation is not supported."
+  },
+  "prohibitedClaims": [
+    "OpenAI Verified",
+    "official OpenAI plugin",
+    "endorsed by OpenAI",
+    "approved by OpenAI",
+    "guaranteed Marketplace approval",
+    "identical behavior in ChatGPT and Codex",
+    "ChatGPT lifecycle notifications",
+    "installs the Lili desktop application",
+    "automatically trusts hooks",
+    "approves or denies permission requests",
+    "uploads or synchronizes conversation data",
+    "stores no local data"
+  ]
+}

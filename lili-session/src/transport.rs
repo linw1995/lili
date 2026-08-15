@@ -5,15 +5,19 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
-    ForwardingAck, ForwardingCredentialRecord, ForwardingCredentials, ForwardingMessage,
-    ForwardingProtocolError, MAX_FORWARDING_FRAME_BYTES, PlatformEndpoint,
+    CodexAdapterDiagnostics, ForwardingAck, ForwardingCredentialRecord, ForwardingCredentials,
+    ForwardingMessage, ForwardingProtocolError, MAX_FORWARDING_FRAME_BYTES, PlatformEndpoint,
 };
 
 const CREDENTIAL_FILE_NAME: &str = "forwarding.json";
 const MAX_CREDENTIAL_FILE_BYTES: u64 = 16 * 1024;
+const CODEX_EVIDENCE_FILE_NAME: &str = "codex-plugin-evidence.json";
+const MAX_CODEX_EVIDENCE_FILE_BYTES: u64 = 64 * 1024;
+const CODEX_EVIDENCE_SIGNATURE_DOMAIN: &str = "codex-plugin-diagnostics";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -65,6 +69,67 @@ pub struct ForwardingCredentialStore {
     path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexPluginEvidenceStore {
+    path: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthenticatedCodexPluginEvidence {
+    diagnostics: CodexAdapterDiagnostics,
+    authentication: String,
+}
+
+impl CodexPluginEvidenceStore {
+    pub fn for_codex_home(codex_home: &Path) -> Self {
+        Self {
+            path: codex_home.join("lili").join(CODEX_EVIDENCE_FILE_NAME),
+        }
+    }
+
+    pub fn load(
+        &self,
+        credentials: &ForwardingCredentials,
+    ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
+        let payload = read_private_codex_evidence(&self.path)?;
+        let evidence: AuthenticatedCodexPluginEvidence = serde_json::from_slice(&payload)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let diagnostics_payload = serde_json::to_vec(&evidence.diagnostics)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        credentials
+            .verify_evidence(
+                CODEX_EVIDENCE_SIGNATURE_DOMAIN,
+                &diagnostics_payload,
+                &evidence.authentication,
+            )
+            .map_err(|_| ForwardingTransportError::UnauthenticatedEvidenceFile)?;
+        Ok(evidence.diagnostics)
+    }
+
+    pub fn save(
+        &self,
+        diagnostics: &CodexAdapterDiagnostics,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let diagnostics_payload = serde_json::to_vec(diagnostics)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let authentication = credentials
+            .authenticate_evidence(CODEX_EVIDENCE_SIGNATURE_DOMAIN, &diagnostics_payload)?;
+        let evidence = AuthenticatedCodexPluginEvidence {
+            diagnostics: diagnostics.clone(),
+            authentication,
+        };
+        let mut payload = serde_json::to_vec(&evidence)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        payload.push(b'\n');
+        if payload.len() as u64 > MAX_CODEX_EVIDENCE_FILE_BYTES {
+            return Err(ForwardingTransportError::EvidenceFileTooLarge);
+        }
+        write_private_atomic(&self.path, ".codex-evidence", &payload)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransportFault {
     None,
@@ -88,7 +153,7 @@ impl ForwardingCredentialStore {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(ForwardingTransportError::UnsafeCredentialFile);
         }
-        validate_private_file(&metadata)?;
+        validate_private_file(&self.path, &metadata)?;
         if metadata.len() > MAX_CREDENTIAL_FILE_BYTES {
             return Err(ForwardingTransportError::CredentialFileTooLarge);
         }
@@ -135,25 +200,68 @@ impl ForwardingCredentialStore {
             options.mode(0o600);
         }
         let mut file = options.open(&temporary)?;
+        #[cfg(windows)]
+        crate::windows_acl::enforce_owner_only(&temporary, false)?;
         file.write_all(&payload)?;
         file.sync_all()?;
         if fault == TransportFault::BeforeCredentialReplace {
             return Err(std::io::Error::other("injected credential replacement failure").into());
         }
-        fs::rename(&temporary, &self.path)?;
+        crate::replace_file_atomically(&temporary, &self.path)?;
         guard.commit();
         sync_directory(directory)?;
         Ok(())
     }
+}
 
-    fn remove_if_instance(&self, instance_id: &str) {
-        let Ok(record) = self.load() else {
-            return;
-        };
-        if record.instance_id() == instance_id {
-            let _ = fs::remove_file(&self.path);
-        }
+fn read_private_codex_evidence(path: &Path) -> Result<Vec<u8>, ForwardingTransportError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(ForwardingTransportError::UnsafeEvidenceFile);
     }
+    validate_private_file(path, &metadata)?;
+    if metadata.len() > MAX_CODEX_EVIDENCE_FILE_BYTES {
+        return Err(ForwardingTransportError::EvidenceFileTooLarge);
+    }
+    let mut payload = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)?
+        .take(MAX_CODEX_EVIDENCE_FILE_BYTES + 1)
+        .read_to_end(&mut payload)?;
+    if payload.len() as u64 > MAX_CODEX_EVIDENCE_FILE_BYTES {
+        return Err(ForwardingTransportError::EvidenceFileTooLarge);
+    }
+    Ok(payload)
+}
+
+fn write_private_atomic(
+    path: &Path,
+    temporary_prefix: &str,
+    payload: &[u8],
+) -> Result<(), ForwardingTransportError> {
+    let directory = path.parent().expect("private file path must have a parent");
+    ensure_private_runtime_dir(directory)?;
+    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(
+        "{temporary_prefix}-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let mut guard = TemporaryFileGuard::new(temporary.clone());
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    #[cfg(windows)]
+    crate::windows_acl::enforce_owner_only(&temporary, false)?;
+    file.write_all(payload)?;
+    file.sync_all()?;
+    crate::replace_file_atomically(&temporary, path)?;
+    guard.commit();
+    sync_directory(directory)?;
+    Ok(())
 }
 
 pub struct BoundForwardingEndpoint {
@@ -164,13 +272,31 @@ pub struct BoundForwardingEndpoint {
 
 impl BoundForwardingEndpoint {
     pub fn bind(runtime_dir: &Path) -> Result<Self, ForwardingTransportError> {
-        Self::bind_inner(runtime_dir, TransportFault::None)
+        Self::bind_inner(runtime_dir, TransportFault::None, |_| Ok(()), || Ok(()))
     }
 
-    fn bind_inner(
+    pub fn bind_with_credentials_rotation<F, R>(
+        runtime_dir: &Path,
+        pre_publish: F,
+        rollback: R,
+    ) -> Result<Self, ForwardingTransportError>
+    where
+        F: FnOnce(&ForwardingCredentials) -> Result<(), ForwardingTransportError>,
+        R: FnOnce() -> Result<(), ForwardingTransportError>,
+    {
+        Self::bind_inner(runtime_dir, TransportFault::None, pre_publish, rollback)
+    }
+
+    fn bind_inner<F, R>(
         runtime_dir: &Path,
         fault: TransportFault,
-    ) -> Result<Self, ForwardingTransportError> {
+        pre_publish: F,
+        rollback: R,
+    ) -> Result<Self, ForwardingTransportError>
+    where
+        F: FnOnce(&ForwardingCredentials) -> Result<(), ForwardingTransportError>,
+        R: FnOnce() -> Result<(), ForwardingTransportError>,
+    {
         ensure_private_runtime_dir(runtime_dir)?;
         let credentials = ForwardingCredentials::generate()?;
         let listener = PlatformListener::bind(runtime_dir, credentials.instance_id())?;
@@ -179,7 +305,11 @@ impl BoundForwardingEndpoint {
         }
         let credential_store = ForwardingCredentialStore::for_runtime_dir(runtime_dir);
         let record = ForwardingCredentialRecord::new(&credentials, listener.endpoint().clone());
-        credential_store.save_inner(&record, fault)?;
+        pre_publish(&credentials)?;
+        if let Err(error) = credential_store.save_inner(&record, fault) {
+            rollback()?;
+            return Err(error);
+        }
         Ok(Self {
             listener,
             credentials,
@@ -192,7 +322,7 @@ impl BoundForwardingEndpoint {
         runtime_dir: &Path,
         fault: TransportFault,
     ) -> Result<Self, ForwardingTransportError> {
-        Self::bind_inner(runtime_dir, fault)
+        Self::bind_inner(runtime_dir, fault, |_| Ok(()), || Ok(()))
     }
 
     pub fn credentials(&self) -> ForwardingCredentials {
@@ -209,13 +339,6 @@ impl BoundForwardingEndpoint {
 
     pub async fn accept(&self) -> Result<ForwardingConnection, ForwardingTransportError> {
         self.listener.accept().await
-    }
-}
-
-impl Drop for BoundForwardingEndpoint {
-    fn drop(&mut self) {
-        self.credential_store
-            .remove_if_instance(self.credentials.instance_id());
     }
 }
 
@@ -297,16 +420,20 @@ fn configure_private_directory(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn configure_private_directory(
-    _directory: &Path,
+    directory: &Path,
     _metadata: &fs::Metadata,
 ) -> Result<(), ForwardingTransportError> {
+    crate::windows_acl::enforce_owner_only(directory, true)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn validate_private_file(metadata: &fs::Metadata) -> Result<(), ForwardingTransportError> {
+fn validate_private_file(
+    _path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), ForwardingTransportError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     if metadata.uid() != rustix::process::geteuid().as_raw()
@@ -317,8 +444,12 @@ fn validate_private_file(metadata: &fs::Metadata) -> Result<(), ForwardingTransp
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_private_file(_metadata: &fs::Metadata) -> Result<(), ForwardingTransportError> {
+#[cfg(windows)]
+fn validate_private_file(
+    path: &Path,
+    _metadata: &fs::Metadata,
+) -> Result<(), ForwardingTransportError> {
+    crate::windows_acl::validate_owner_only(path)?;
     Ok(())
 }
 
@@ -661,6 +792,14 @@ pub enum ForwardingTransportError {
     CredentialFileTooLarge,
     #[error("forwarding credential file is malformed")]
     MalformedCredentialFile,
+    #[error("Codex plugin evidence file is unsafe")]
+    UnsafeEvidenceFile,
+    #[error("Codex plugin evidence file exceeds 64 KiB")]
+    EvidenceFileTooLarge,
+    #[error("Codex plugin evidence file is malformed")]
+    MalformedEvidenceFile,
+    #[error("Codex plugin evidence file could not be authenticated")]
+    UnauthenticatedEvidenceFile,
     #[error("forwarding endpoint is unsafe")]
     UnsafeEndpoint,
     #[error("forwarding endpoint is already in use")]
@@ -778,7 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_record_rotates_and_is_removed_on_shutdown() {
+    async fn credential_record_rotates_and_is_retained_on_shutdown() {
         let temp = TempDir::new();
         let store = ForwardingCredentialStore::for_runtime_dir(&temp.0);
         let first_id = {
@@ -787,9 +926,116 @@ mod tests {
             assert_eq!(id, endpoint.credentials().instance_id());
             id
         };
-        assert!(!store.path().exists());
+        assert_eq!(store.load().unwrap().instance_id(), first_id);
         let endpoint = BoundForwardingEndpoint::bind(&temp.0).unwrap();
         assert_ne!(first_id, endpoint.credentials().instance_id());
+    }
+
+    #[tokio::test]
+    async fn credential_rotation_persists_evidence_before_publishing_the_record() {
+        let temp = TempDir::new();
+        let runtime_dir = temp.0.join("runtime");
+        let bootstrap = BoundForwardingEndpoint::bind(&temp.0.join("bootstrap")).unwrap();
+        let previous_credentials = bootstrap.credentials();
+        let credential_store = ForwardingCredentialStore::for_runtime_dir(&runtime_dir);
+        let previous_record =
+            ForwardingCredentialRecord::new(&previous_credentials, bootstrap.endpoint().clone());
+        credential_store
+            .save_inner(&previous_record, TransportFault::None)
+            .unwrap();
+        let evidence_store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let diagnostics = CodexAdapterDiagnostics::default();
+        evidence_store
+            .save(&diagnostics, &previous_credentials)
+            .unwrap();
+
+        let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
+            &runtime_dir,
+            |credentials| {
+                assert_eq!(
+                    credential_store.load().unwrap().instance_id(),
+                    previous_credentials.instance_id()
+                );
+                evidence_store.save(&diagnostics, credentials)
+            },
+            || evidence_store.save(&diagnostics, &previous_credentials),
+        )
+        .unwrap();
+
+        let published = credential_store.load().unwrap().credentials().unwrap();
+        assert_eq!(
+            published.instance_id(),
+            endpoint.credentials().instance_id()
+        );
+        assert_eq!(evidence_store.load(&published).unwrap(), diagnostics);
+    }
+
+    #[tokio::test]
+    async fn failed_credential_publication_restores_previous_evidence() {
+        let temp = TempDir::new();
+        let runtime_dir = temp.0.join("runtime");
+        let bootstrap = BoundForwardingEndpoint::bind(&temp.0.join("bootstrap")).unwrap();
+        let previous_credentials = bootstrap.credentials();
+        let credential_store = ForwardingCredentialStore::for_runtime_dir(&runtime_dir);
+        let previous_record =
+            ForwardingCredentialRecord::new(&previous_credentials, bootstrap.endpoint().clone());
+        credential_store
+            .save_inner(&previous_record, TransportFault::None)
+            .unwrap();
+        let evidence_store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let diagnostics = CodexAdapterDiagnostics::default();
+        evidence_store
+            .save(&diagnostics, &previous_credentials)
+            .unwrap();
+
+        let result = BoundForwardingEndpoint::bind_inner(
+            &runtime_dir,
+            TransportFault::BeforeCredentialReplace,
+            |credentials| evidence_store.save(&diagnostics, credentials),
+            || evidence_store.save(&diagnostics, &previous_credentials),
+        );
+
+        assert!(result.is_err());
+        let retained = credential_store.load().unwrap().credentials().unwrap();
+        assert_eq!(retained.instance_id(), previous_credentials.instance_id());
+        assert_eq!(evidence_store.load(&retained).unwrap(), diagnostics);
+    }
+
+    #[test]
+    fn codex_plugin_evidence_round_trips_through_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let diagnostics = CodexAdapterDiagnostics::default();
+        store.save(&diagnostics, &credentials).unwrap();
+        let path = temp.0.join("lili").join(CODEX_EVIDENCE_FILE_NAME);
+        assert_eq!(store.load(&credentials).unwrap(), diagnostics);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let mut edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        edited["diagnostics"]["plugin"]["desktopVersion"] = serde_json::json!("9.9.9");
+        fs::write(&path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        assert!(matches!(
+            store.load(&credentials),
+            Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
+        ));
+        store.save(&diagnostics, &credentials).unwrap();
+        let unrelated = ForwardingCredentials::generate().unwrap();
+        assert!(matches!(
+            store.load(&unrelated),
+            Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            store.load(&credentials),
+            Err(ForwardingTransportError::WrongOwner)
+        ));
     }
 
     #[tokio::test]

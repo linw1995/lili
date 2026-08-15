@@ -85,9 +85,11 @@ The atlas must be a transparent PNG or WebP image with exact dimensions `1536x22
 
 Restart Lili after adding or replacing a package. Select an installed package from the tray menu under **Pet**. Invalid packages are skipped and reported under **Diagnostics**; the embedded Lili package remains available.
 
-## 4. Enable Session notifications
+## 4. Enable legacy fallback Session notifications
 
 Run integration commands with the release `bin/lili`, not the executable inside the desktop bundle. This ensures the planned hook path names the matching sibling `bin/lili-hook`.
+
+The Codex plugin is the primary installation path. Use the direct-configuration workflow below only as an explicit legacy fallback when the Lili plugin is unavailable or current policy prevents Marketplace installation. Do not remove a working legacy integration until trusted plugin delivery has been verified.
 
 Start Lili, then inspect the current Codex configuration:
 
@@ -98,9 +100,9 @@ Start Lili, then inspect the current Codex configuration:
 Generate a plan and review the complete JSON before applying it:
 
 ```text
-"$LILI_RELEASE/bin/lili" integrate plan > ./lili-plan.json
+"$LILI_RELEASE/bin/lili" integrate plan --legacy-fallback > ./lili-plan.json
 cat ./lili-plan.json
-"$LILI_RELEASE/bin/lili" integrate install --plan ./lili-plan.json
+"$LILI_RELEASE/bin/lili" integrate install --legacy-fallback --plan ./lili-plan.json
 "$LILI_RELEASE/bin/lili" integrate inspect
 ```
 
@@ -109,12 +111,16 @@ Only install a plan whose `status` is `ready`. The plan shows the exact target f
 An existing non-Lili `notify` command produces `status: "conflict"`. If both commands are required, create a coexistence plan explicitly and review the preserved command before installation:
 
 ```text
-"$LILI_RELEASE/bin/lili" integrate plan --coexist > ./lili-plan.json
+"$LILI_RELEASE/bin/lili" integrate plan --legacy-fallback --coexist > ./lili-plan.json
 cat ./lili-plan.json
-"$LILI_RELEASE/bin/lili" integrate install --plan ./lili-plan.json
+"$LILI_RELEASE/bin/lili" integrate install --legacy-fallback --plan ./lili-plan.json
 ```
 
 The installation may update `${CODEX_HOME}/config.toml` and `${CODEX_HOME}/hooks.json`, creates timestamped backups for changed existing files, and records managed provenance in `${CODEX_HOME}/lili/integration.json`. Permission notifications remain observer-only; Lili never approves or denies a request.
+
+### Migrating from legacy fallback to the plugin
+
+Lili's migration assessment keeps the legacy fallback active while the plugin is installed. It never writes Codex trust state. Review and trust the exact hook definitions in Codex yourself, then produce one real plugin-attributed lifecycle event and run `lili integrate assess --plugin <plugin@marketplace> > lili-plugin-migration-assessment.json`. The command verifies current hook trust, performs authenticated synthetic delivery and cross-source deduplication, and saves a separate runtime-authenticated verification receipt. Only its unedited `cleanup_ready` assessment permits provenance-aware cleanup. Cleanup verifies the receipt and assessment digest, starts a fresh Codex hook inspection, and requires every selected plugin hook to remain enabled and trusted, the installed plugin version and real event identity to match the authenticated evidence, and the selected Marketplace identity and `CODEX_HOME` to remain unchanged. A failed install or post-install compatibility check removes only the newly installed plugin; a failed trust or verification precondition leaves the legacy integration unchanged. An unreviewed Codex version may proceed to cleanup only after the same real-delivery and current-trust requirements are satisfied; an unknown version remains blocked.
 
 After installation, restart Codex and start a new Session so it reads the updated configuration. A synthetic verification event may appear during installation. If Lili is temporarily stopped, supported events are written to the bounded local spool and consumed on the next start.
 

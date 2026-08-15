@@ -39,6 +39,12 @@ pub enum IntegrationInstallMode {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum IntegrationOperationKind {
+    LegacyFallback,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PlannedFileAction {
     Create,
     Update,
@@ -78,6 +84,7 @@ pub struct PlannedFileChange {
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationInstallPlan {
     pub schema_version: u16,
+    pub operation_kind: IntegrationOperationKind,
     pub mode: IntegrationInstallMode,
     pub status: InstallPlanStatus,
     pub codex_home: PathBuf,
@@ -192,7 +199,8 @@ fn build_plan(
     .to_string();
 
     IntegrationInstallPlan {
-        schema_version: 1,
+        schema_version: 2,
+        operation_kind: IntegrationOperationKind::LegacyFallback,
         mode,
         status,
         codex_home: inspection.codex_home.clone(),
@@ -268,7 +276,7 @@ fn planned_hook(
         handler_type: "command".to_owned(),
         command: format!("{} {suffix}", quote_posix(hook_binary)),
         command_windows: format!("{} {suffix}", quote_windows(hook_binary)),
-        timeout_seconds: 1,
+        timeout_seconds: 2,
         integration_id: LILI_INTEGRATION_ID.to_owned(),
     }
 }
@@ -360,6 +368,11 @@ mod tests {
         let first = build_install_plan(&inspection, &hook_binary, 42);
         let second = build_install_plan(&inspection, &hook_binary, 42);
         assert_eq!(first, second);
+        assert_eq!(first.schema_version, 2);
+        assert_eq!(
+            first.operation_kind,
+            IntegrationOperationKind::LegacyFallback
+        );
         assert_eq!(first.status, InstallPlanStatus::Ready);
         assert_eq!(first.config_change.action, PlannedFileAction::Create);
         assert_eq!(first.hooks_change.action, PlannedFileAction::Create);

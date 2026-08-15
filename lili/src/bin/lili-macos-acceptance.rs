@@ -22,7 +22,13 @@ mod macos {
         time::{Duration, Instant},
     };
 
-    const PAYLOAD: &str = r#"{"version":1,"provider":"codex","type":"attention_required","eventId":"macos-acceptance-event","sessionId":"macos-acceptance-session","turnId":"macos-acceptance-turn","occurredAtMs":1800000000000,"project":{"label":"Acceptance"},"summary":"Interaction required"}"#;
+    use lili_lib::acceptance_marketplace::{
+        MACOS_ARM64, install_local_marketplace_plugin, invoke_installed_plugin_hook,
+    };
+
+    const PAYLOAD: &[u8] = include_bytes!(
+        "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
+    );
 
     pub fn run() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
@@ -34,12 +40,46 @@ mod macos {
             .next()
             .map(PathBuf::from)
             .ok_or_else(|| "missing hook binary path".to_owned())?;
-        if arguments.next().is_some() || !app_binary.is_file() || !hook_binary.is_file() {
+        let app_bundle = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing packaged app bundle path".to_owned())?;
+        let repository_root = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing repository root path".to_owned())?;
+        let codex_binary = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing Codex binary path".to_owned())?;
+        if arguments.next().is_some()
+            || !app_binary.is_file()
+            || !hook_binary.is_file()
+            || !app_bundle.is_dir()
+            || app_bundle.extension().and_then(|value| value.to_str()) != Some("app")
+            || !repository_root.is_dir()
+            || !codex_binary.is_file()
+            || !app_binary
+                .canonicalize()
+                .map_err(|error| format!("packaged app binary could not be resolved: {error}"))?
+                .starts_with(
+                    app_bundle
+                        .canonicalize()
+                        .map_err(|error| format!("app bundle could not be resolved: {error}"))?,
+                )
+        {
             return Err("acceptance binary paths are invalid".to_owned());
         }
 
         let workspace = AcceptanceWorkspace::new()?;
         workspace.write_action_config()?;
+        let plugin = install_local_marketplace_plugin(
+            &codex_binary,
+            &repository_root,
+            workspace.path(),
+            &hook_binary,
+            MACOS_ARM64,
+        )?;
         let mut app = spawn_app(&app_binary, workspace.path())?;
         let credential_path = workspace
             .path()
@@ -51,21 +91,25 @@ mod macos {
             return Err("packaged app did not publish forwarding credentials".to_owned());
         }
 
-        let hook = Command::new(hook_binary)
-            .args(["--json-argv", PAYLOAD])
-            .env("CODEX_HOME", workspace.path())
-            .output()
-            .map_err(|error| format!("hook forwarder could not start: {error}"))?;
-        if !hook.status.success() || !hook.stdout.is_empty() || !hook.stderr.is_empty() {
+        if let Err(error) = invoke_installed_plugin_hook(
+            &plugin,
+            workspace.path(),
+            PAYLOAD,
+            &codex_binary,
+            &repository_root,
+        ) {
             terminate(&mut app);
-            return Err("hook delivery did not complete silently".to_owned());
+            return Err(error);
         }
 
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match app.try_wait() {
                 Ok(Some(status)) if status.success() => {
-                    println!("{{\"macosAcceptance\":\"passed\"}}");
+                    println!(
+                        "{{\"macosAcceptance\":\"passed\",\"marketplace\":\"lili-local\",\"target\":\"{}\"}}",
+                        MACOS_ARM64.triple
+                    );
                     return Ok(());
                 }
                 Ok(Some(status)) => {

@@ -59,13 +59,15 @@ fn inspect_cli_reports_safe_effective_configuration() {
 fn plan_cli_reports_exact_changes_without_mutating_configuration() {
     let temp = TempDir::new();
     let output = Command::new(env!("CARGO_BIN_EXE_lili"))
-        .args(["integrate", "plan"])
+        .args(["integrate", "plan", "--legacy-fallback"])
         .env("CODEX_HOME", &temp.0)
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(plan["status"], "ready");
+    assert_eq!(plan["schemaVersion"], 2);
+    assert_eq!(plan["operationKind"], "legacy_fallback");
     assert_eq!(plan["configChange"]["action"], "create");
     assert_eq!(plan["hooksChange"]["action"], "create");
     assert_eq!(plan["hookAdditions"].as_array().unwrap().len(), 5);
@@ -86,7 +88,7 @@ fn coexistence_plan_requires_explicit_mode_and_preserves_argv() {
     )
     .unwrap();
     let default = Command::new(env!("CARGO_BIN_EXE_lili"))
-        .args(["integrate", "plan"])
+        .args(["integrate", "plan", "--legacy-fallback"])
         .env("CODEX_HOME", &temp.0)
         .output()
         .unwrap();
@@ -94,7 +96,7 @@ fn coexistence_plan_requires_explicit_mode_and_preserves_argv() {
     assert_eq!(default["status"], "conflict");
 
     let coexist = Command::new(env!("CARGO_BIN_EXE_lili"))
-        .args(["integrate", "plan", "--coexist"])
+        .args(["integrate", "plan", "--legacy-fallback", "--coexist"])
         .env("CODEX_HOME", &temp.0)
         .output()
         .unwrap();
@@ -107,6 +109,21 @@ fn coexistence_plan_requires_explicit_mode_and_preserves_argv() {
         coexist["previousNotifyArgv"],
         serde_json::json!(["existing", "--channel", "pet"])
     );
+}
+
+#[test]
+fn plan_cli_requires_explicit_legacy_fallback_classification() {
+    let temp = TempDir::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_lili"))
+        .args(["integrate", "plan"])
+        .env("CODEX_HOME", &temp.0)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--legacy-fallback"));
+    assert!(!temp.0.join("config.toml").exists());
+    assert!(!temp.0.join("hooks.json").exists());
 }
 
 #[test]

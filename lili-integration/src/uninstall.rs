@@ -1,6 +1,6 @@
 use std::{fs, path::Path, path::PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use toml_edit::{Array, DocumentMut, value};
 
@@ -21,6 +21,44 @@ pub struct UninstallOutcome {
     pub removed_hook_handlers: usize,
     pub conflicts: Vec<String>,
     pub provenance: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallPreview {
+    pub complete: bool,
+    pub restored_notify: bool,
+    pub removed_hook_handlers: usize,
+    pub conflicts: Vec<String>,
+}
+
+pub fn preview_uninstall(codex_home: &Path) -> Result<UninstallPreview, UninstallError> {
+    let provenance_path = provenance_path(codex_home);
+    let provenance: IntegrationProvenance =
+        serde_json::from_slice(&read_required_bounded(&provenance_path)?)
+            .map_err(|_| UninstallError::InvalidProvenance)?;
+    validate_provenance(codex_home, &provenance)?;
+    let config_path = codex_home.join(CONFIG_FILE_NAME);
+    let hooks_path = codex_home.join(HOOKS_FILE_NAME);
+    reject_symbolic_link(&config_path)?;
+    reject_symbolic_link(&hooks_path)?;
+    let mut conflicts = Vec::new();
+    let (_, restored_notify, config_complete) = plan_config_uninstall(
+        &provenance,
+        read_optional(&config_path)?.as_deref(),
+        &mut conflicts,
+    )?;
+    let (_, removed_hook_handlers, hooks_complete) = plan_hooks_uninstall(
+        &provenance,
+        read_optional(&hooks_path)?.as_deref(),
+        &mut conflicts,
+    )?;
+    Ok(UninstallPreview {
+        complete: config_complete && hooks_complete,
+        restored_notify,
+        removed_hook_handlers,
+        conflicts,
+    })
 }
 
 pub fn uninstall(codex_home: &Path) -> Result<UninstallOutcome, UninstallError> {
@@ -88,10 +126,15 @@ fn validate_provenance(
         || provenance.config.path != codex_home.join(CONFIG_FILE_NAME)
         || provenance.hooks.path != codex_home.join(HOOKS_FILE_NAME)
         || provenance.notify_argv.is_empty()
+        || provenance.hook_commands.is_empty()
         || !provenance
             .notify_argv
             .iter()
             .any(|argument| argument.contains(LILI_INTEGRATION_ID))
+        || provenance
+            .hook_commands
+            .iter()
+            .any(|command| !command.contains(LILI_INTEGRATION_ID))
     {
         return Err(UninstallError::InvalidProvenance);
     }
@@ -162,16 +205,34 @@ fn plan_hooks_uninstall(
     };
     let mut document = serde_json::from_slice::<serde_json::Value>(contents)
         .map_err(|_| UninstallError::InvalidConfiguration)?;
-    let Some(hooks) = document
-        .get_mut("hooks")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
+    let Some(hooks) = document.get("hooks").and_then(serde_json::Value::as_object) else {
         let complete = !String::from_utf8_lossy(contents).contains(LILI_INTEGRATION_ID);
         if !complete {
             conflicts.push("Lili hook markers could not be structurally removed".to_owned());
         }
         return Ok((FileMutation::Unchanged, 0, complete));
     };
+    if !marker_layout_is_removable(hooks) {
+        conflicts.push("Lili hook markers could not be structurally removed".to_owned());
+        return Ok((FileMutation::Unchanged, 0, false));
+    }
+    let managed_hook_changed = hooks
+        .values()
+        .filter_map(serde_json::Value::as_array)
+        .flatten()
+        .filter_map(|group| group.get("hooks").and_then(serde_json::Value::as_array))
+        .flatten()
+        .filter(|handler| is_lili_handler(handler))
+        .any(|handler| !matches_hook_provenance(handler, provenance));
+    if managed_hook_changed {
+        conflicts.push("Lili hooks changed after installation and were left unchanged".to_owned());
+        return Ok((FileMutation::Unchanged, 0, false));
+    }
+
+    let hooks = document
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("hooks object was validated above");
     let mut removed = 0_usize;
     for groups in hooks
         .values_mut()
@@ -214,6 +275,104 @@ fn is_lili_handler(handler: &serde_json::Value) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|command| command.contains(LILI_INTEGRATION_ID))
     })
+}
+
+fn marker_layout_is_removable(hooks: &serde_json::Map<String, serde_json::Value>) -> bool {
+    hooks.iter().all(|(event, groups)| {
+        if event.contains(LILI_INTEGRATION_ID) {
+            return false;
+        }
+        if !value_contains_marker(groups) {
+            return true;
+        }
+        let Some(groups) = groups.as_array() else {
+            return false;
+        };
+        groups.iter().all(|group| {
+            if !value_contains_marker(group) {
+                return true;
+            }
+            let Some(group) = group.as_object() else {
+                return false;
+            };
+            group.iter().all(|(field, value)| {
+                if field == "hooks" {
+                    value.as_array().is_some_and(|handlers| {
+                        handlers.iter().all(|handler| {
+                            !value_contains_marker(handler) || is_lili_handler(handler)
+                        })
+                    })
+                } else {
+                    !field.contains(LILI_INTEGRATION_ID) && !value_contains_marker(value)
+                }
+            })
+        })
+    })
+}
+
+fn value_contains_marker(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.contains(LILI_INTEGRATION_ID),
+        serde_json::Value::Array(values) => values.iter().any(value_contains_marker),
+        serde_json::Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.contains(LILI_INTEGRATION_ID) || value_contains_marker(value)),
+        _ => false,
+    }
+}
+
+fn matches_hook_provenance(
+    handler: &serde_json::Value,
+    provenance: &IntegrationProvenance,
+) -> bool {
+    let Some(handler) = handler.as_object() else {
+        return false;
+    };
+    let expected_fields = [
+        "type",
+        "command",
+        "commandWindows",
+        "timeout",
+        "statusMessage",
+    ];
+    if handler.len() != expected_fields.len()
+        || expected_fields
+            .iter()
+            .any(|field| !handler.contains_key(*field))
+    {
+        return false;
+    }
+    let command_matches = handler
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|command| {
+            provenance
+                .hook_commands
+                .iter()
+                .any(|recorded| recorded == command)
+        });
+    let quoted_windows_binary = provenance
+        .hook_binary
+        .display()
+        .to_string()
+        .replace('"', "\\\"");
+    let expected_windows_command =
+        format!("\"{quoted_windows_binary}\" --integration-id {LILI_INTEGRATION_ID} --json-stdin");
+    command_matches
+        && handler.get("type").and_then(serde_json::Value::as_str) == Some("command")
+        && handler
+            .get("commandWindows")
+            .and_then(serde_json::Value::as_str)
+            == Some(expected_windows_command.as_str())
+        // Provenance predates timeout recording, so accept only the two Lili-generated shapes.
+        && matches!(
+            handler.get("timeout").and_then(serde_json::Value::as_u64),
+            Some(1 | 2)
+        )
+        && handler
+            .get("statusMessage")
+            .and_then(serde_json::Value::as_str)
+            == Some("Notify Lili")
 }
 
 fn apply_mutation(path: &Path, mutation: &FileMutation) -> Result<(), InstallError> {
@@ -407,6 +566,78 @@ mod tests {
                 .unwrap()
                 .contains("custom")
         );
+    }
+
+    #[test]
+    fn changed_managed_hook_blocks_uninstall_preview() {
+        let temp = TempDir::new();
+        install_exclusive(&temp, 42);
+        let hooks_path = temp.0.join(HOOKS_FILE_NAME);
+        let mut hooks: serde_json::Value =
+            serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        let command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"] =
+            serde_json::Value::String(format!("{command} --custom"));
+        fs::write(&hooks_path, serde_json::to_vec_pretty(&hooks).unwrap()).unwrap();
+
+        let preview = preview_uninstall(&temp.0).unwrap();
+        assert!(!preview.complete);
+        assert_eq!(preview.removed_hook_handlers, 0);
+        assert_eq!(
+            preview.conflicts,
+            vec!["Lili hooks changed after installation and were left unchanged"]
+        );
+    }
+
+    #[test]
+    fn malformed_marker_bearing_hook_group_blocks_uninstall_without_mutation() {
+        let temp = TempDir::new();
+        install_exclusive(&temp, 42);
+        let hooks_path = temp.0.join(HOOKS_FILE_NAME);
+        let mut hooks: serde_json::Value =
+            serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        hooks["hooks"]["SessionStart"] = serde_json::json!([{
+            "hooks": format!("orphan {LILI_INTEGRATION_ID}")
+        }]);
+        let malformed = serde_json::to_vec_pretty(&hooks).unwrap();
+        fs::write(&hooks_path, &malformed).unwrap();
+
+        let preview = preview_uninstall(&temp.0).unwrap();
+        assert!(!preview.complete);
+        assert_eq!(preview.removed_hook_handlers, 0);
+        assert_eq!(
+            preview.conflicts,
+            vec!["Lili hook markers could not be structurally removed"]
+        );
+
+        let outcome = uninstall(&temp.0).unwrap();
+        assert!(!outcome.complete);
+        assert_eq!(fs::read(&hooks_path).unwrap(), malformed);
+        assert!(provenance_path(&temp.0).exists());
+    }
+
+    #[test]
+    fn legacy_one_second_hooks_remain_cleanup_compatible() {
+        let temp = TempDir::new();
+        install_exclusive(&temp, 42);
+        let hooks_path = temp.0.join(HOOKS_FILE_NAME);
+        let mut hooks: serde_json::Value =
+            serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        for groups in hooks["hooks"].as_object_mut().unwrap().values_mut() {
+            for group in groups.as_array_mut().unwrap() {
+                for handler in group["hooks"].as_array_mut().unwrap() {
+                    handler["timeout"] = serde_json::json!(1);
+                }
+            }
+        }
+        fs::write(&hooks_path, serde_json::to_vec_pretty(&hooks).unwrap()).unwrap();
+
+        let preview = preview_uninstall(&temp.0).unwrap();
+        assert!(preview.complete);
+        assert_eq!(preview.removed_hook_handlers, 5);
     }
 
     #[test]

@@ -1,0 +1,45 @@
+{
+  "name": "lili",
+  "version": "0.1.0",
+  "description": "Local desktop companion for supported Codex session lifecycle events.",
+  "author": {
+    "name": "Jade Lin",
+    "url": "https://github.com/linw1995"
+  },
+  "homepage": "https://github.com/linw1995/lili/blob/master/docs/marketplace.md",
+  "repository": "https://github.com/linw1995/lili",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "desktop",
+    "local",
+    "notifications",
+    "productivity"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Lili",
+    "shortDescription": "Set up Lili for Codex",
+    "longDescription": "Set up and diagnose Lili, a separately installed local desktop companion for Codex. In Codex, trusted plugin hooks can forward supported lifecycle events to the local Lili application. In ChatGPT, the plugin provides setup, compatibility, migration, and troubleshooting guidance only; ChatGPT lifecycle observation is not supported. The plugin does not install the desktop application, approve permissions, expose an MCP server, or transfer session data to a remote service.",
+    "developerName": "Jade Lin",
+    "category": "Productivity",
+    "capabilities": [
+      "Set up local Codex lifecycle observation",
+      "Diagnose Lili desktop integration",
+      "Guide safe migration from legacy configuration"
+    ],
+    "websiteURL": "https://github.com/linw1995/lili/blob/master/docs/marketplace.md",
+    "supportURL": "https://github.com/linw1995/lili/blob/master/docs/support.md",
+    "privacyPolicyURL": "https://github.com/linw1995/lili/blob/master/docs/privacy-policy.md",
+    "termsOfServiceURL": "https://github.com/linw1995/lili/blob/master/docs/terms-of-service.md",
+    "defaultPrompt": [
+      "Check whether my Lili desktop and Codex versions are compatible.",
+      "Explain how to trust Lili hooks and verify local event delivery.",
+      "Help me migrate from Lili's legacy direct configuration safely."
+    ],
+    "brandColor": "#315C7B",
+    "composerIcon": "./assets/composer-icon.png",
+    "logo": "./assets/logo.png"
+  }
+}

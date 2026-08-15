@@ -15,11 +15,13 @@ use crate::{NormalizedSessionEvent, SessionEventKind};
 const SPOOL_VERSION: u16 = 1;
 const METRICS_FILE_NAME: &str = "metrics.json";
 const LOCK_DIRECTORY_NAME: &str = ".lock";
+const STAGED_RECORD_SUFFIX: &str = ".staged";
 pub const MAX_SPOOL_RECORD_BYTES: usize = 64 * 1024;
 const MAX_METRICS_BYTES: u64 = 4 * 1024;
-const LOCK_RETRY_COUNT: usize = 250;
+const LOCK_RETRY_COUNT: usize = 375;
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(2);
 const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
+const STALE_TEMPORARY_WRITE_AGE: Duration = Duration::from_secs(30);
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,8 +100,6 @@ impl SpoolStore {
         validate_limits(self.limits)?;
         event.validate().map_err(|_| SpoolError::InvalidEvent)?;
         ensure_private_directory(&self.directory)?;
-        let _lock = SpoolLock::acquire(&self.directory)?;
-        let mut metrics = self.load_metrics_unlocked()?;
         let record = SpoolRecord {
             version: SPOOL_VERSION,
             enqueued_at_ms,
@@ -109,15 +109,28 @@ impl SpoolStore {
         if payload.len() > MAX_SPOOL_RECORD_BYTES {
             return Err(SpoolError::RecordTooLarge);
         }
-        let pending_path = self.directory.join(pending_file_name(enqueued_at_ms)?);
-        atomic_write(&pending_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
+        let pending_name = pending_file_name(enqueued_at_ms)?;
+        let pending_path = self.directory.join(&pending_name);
+        let staged_path = self
+            .directory
+            .join(staged_file_name_from_pending(&pending_name)?);
+        atomic_write(&staged_path, &payload, MAX_SPOOL_RECORD_BYTES as u64)?;
+        let mut staged_guard = TemporaryFileGuard::new(staged_path.clone());
+
+        let lock = SpoolLock::acquire(&self.directory)?;
+        promote_staged_record(&staged_path, &pending_path)?;
+        staged_guard.commit();
+        let mut metrics = self.load_metrics_unlocked()?;
+        let original_metrics = metrics.clone();
         let candidates = self.collect_pending(enqueued_at_ms, &mut metrics)?;
         let retained = self.enforce_limits(candidates, &mut metrics)?;
-        self.save_metrics_unlocked(&metrics)?;
-        if retained
+        self.save_metrics_if_changed(&original_metrics, &metrics)?;
+        let retained = retained
             .iter()
-            .any(|candidate| candidate.path == pending_path)
-        {
+            .any(|candidate| candidate.path == pending_path);
+        drop(lock);
+        sync_directory(&self.directory)?;
+        if retained {
             Ok(SpoolEnqueueOutcome::Stored)
         } else {
             Ok(SpoolEnqueueOutcome::DroppedByLimit)
@@ -125,6 +138,10 @@ impl SpoolStore {
     }
 
     pub fn recover_claims(&self) -> Result<usize, SpoolError> {
+        self.recover_claims_at(SystemTime::now())
+    }
+
+    fn recover_claims_at(&self, now: SystemTime) -> Result<usize, SpoolError> {
         ensure_private_directory(&self.directory)?;
         let _lock = SpoolLock::acquire(&self.directory)?;
         let mut recovered = 0;
@@ -132,7 +149,21 @@ impl SpoolStore {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with(".write-") && name.ends_with(".tmp") {
-                remove_unsafe_record(&entry.path())?;
+                if temporary_write_is_stale(&entry.path(), now)? {
+                    remove_unsafe_record(&entry.path())?;
+                }
+                continue;
+            }
+            if name.ends_with(STAGED_RECORD_SUFFIX) {
+                validate_record_file(&entry.path())?;
+                let target = self.directory.join(pending_file_name_from_staged(&name)?);
+                let target = if target.exists() {
+                    self.directory.join(pending_file_name(now_nonce_seed())?)
+                } else {
+                    target
+                };
+                fs::rename(entry.path(), target)?;
+                recovered += 1;
                 continue;
             }
             if !name.contains(".claim-") {
@@ -159,6 +190,7 @@ impl SpoolStore {
         ensure_private_directory(&self.directory)?;
         let _lock = SpoolLock::acquire(&self.directory)?;
         let mut metrics = self.load_metrics_unlocked()?;
+        let original_metrics = metrics.clone();
         let mut candidates = self.collect_pending(now_ms, &mut metrics)?;
         candidates.sort_by(|left, right| {
             right
@@ -167,7 +199,7 @@ impl SpoolStore {
                 .then_with(|| left.record.enqueued_at_ms.cmp(&right.record.enqueued_at_ms))
                 .then_with(|| left.path.cmp(&right.path))
         });
-        self.save_metrics_unlocked(&metrics)?;
+        self.save_metrics_if_changed(&original_metrics, &metrics)?;
         let Some(candidate) = candidates.into_iter().next() else {
             return Ok(None);
         };
@@ -274,7 +306,7 @@ impl SpoolStore {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(SpoolError::UnsafePath);
         }
-        validate_private_metadata(&metadata)?;
+        validate_private_metadata(&path, &metadata)?;
         if metadata.len() > MAX_METRICS_BYTES {
             return Err(SpoolError::MalformedMetrics);
         }
@@ -295,6 +327,17 @@ impl SpoolStore {
             &payload,
             MAX_METRICS_BYTES,
         )
+    }
+
+    fn save_metrics_if_changed(
+        &self,
+        original: &SpoolMetrics,
+        current: &SpoolMetrics,
+    ) -> Result<(), SpoolError> {
+        if current != original {
+            self.save_metrics_unlocked(current)?;
+        }
+        Ok(())
     }
 }
 
@@ -386,7 +429,7 @@ impl SpoolLock {
                     if metadata.file_type().is_symlink() || !metadata.is_dir() {
                         return Err(SpoolError::UnsafePath);
                     }
-                    validate_private_metadata(&metadata)?;
+                    validate_private_metadata(&path, &metadata)?;
                     let stale = metadata
                         .modified()
                         .ok()
@@ -436,7 +479,7 @@ fn read_record(path: &Path) -> Result<(SpoolRecord, u64), SpoolError> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(SpoolError::UnsafePath);
     }
-    validate_private_metadata(&metadata)?;
+    validate_private_metadata(path, &metadata)?;
     if metadata.len() > MAX_SPOOL_RECORD_BYTES as u64 {
         return Err(SpoolError::RecordTooLarge);
     }
@@ -512,6 +555,41 @@ fn pending_file_name_from_claim(name: &str) -> Result<String, SpoolError> {
     Ok(format!("{base}.pending"))
 }
 
+fn staged_file_name_from_pending(name: &str) -> Result<String, SpoolError> {
+    let base = name
+        .strip_suffix(".pending")
+        .filter(|base| !base.is_empty())
+        .ok_or(SpoolError::MalformedRecord)?;
+    Ok(format!("{base}{STAGED_RECORD_SUFFIX}"))
+}
+
+fn pending_file_name_from_staged(name: &str) -> Result<String, SpoolError> {
+    let base = name
+        .strip_suffix(STAGED_RECORD_SUFFIX)
+        .filter(|base| !base.is_empty())
+        .ok_or(SpoolError::MalformedRecord)?;
+    Ok(format!("{base}.pending"))
+}
+
+fn promote_staged_record(staged: &Path, pending: &Path) -> Result<(), SpoolError> {
+    match fs::symlink_metadata(staged) {
+        Ok(_) => {
+            if pending.try_exists()? {
+                return Err(SpoolError::UnsafePath);
+            }
+            fs::rename(staged, pending)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !pending.try_exists()? {
+                return Err(error.into());
+            }
+            validate_record_file(pending)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn now_nonce_seed() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -546,12 +624,27 @@ fn atomic_write(path: &Path, payload: &[u8], limit: u64) -> Result<(), SpoolErro
         options.mode(0o600);
     }
     let mut file = options.open(&temporary)?;
+    #[cfg(windows)]
+    crate::windows_acl::enforce_owner_only(&temporary, false)?;
     file.write_all(payload)?;
     file.sync_all()?;
-    fs::rename(&temporary, path)?;
+    crate::replace_file_atomically(&temporary, path)?;
     guard.commit();
     sync_directory(directory)?;
     Ok(())
+}
+
+fn temporary_write_is_stale(path: &Path, now: SystemTime) -> Result<bool, SpoolError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(SpoolError::UnsafePath);
+    }
+    validate_private_metadata(path, &metadata)?;
+    Ok(metadata
+        .modified()
+        .ok()
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_some_and(|age| age > STALE_TEMPORARY_WRITE_AGE))
 }
 
 struct TemporaryFileGuard {
@@ -600,13 +693,14 @@ fn configure_private_directory(path: &Path, metadata: &fs::Metadata) -> Result<(
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn configure_private_directory(_path: &Path, _metadata: &fs::Metadata) -> Result<(), SpoolError> {
+#[cfg(windows)]
+fn configure_private_directory(path: &Path, _metadata: &fs::Metadata) -> Result<(), SpoolError> {
+    crate::windows_acl::enforce_owner_only(path, true)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn validate_private_metadata(metadata: &fs::Metadata) -> Result<(), SpoolError> {
+fn validate_private_metadata(_path: &Path, metadata: &fs::Metadata) -> Result<(), SpoolError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     if metadata.uid() != rustix::process::geteuid().as_raw()
@@ -617,8 +711,9 @@ fn validate_private_metadata(metadata: &fs::Metadata) -> Result<(), SpoolError> 
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_private_metadata(_metadata: &fs::Metadata) -> Result<(), SpoolError> {
+#[cfg(windows)]
+fn validate_private_metadata(path: &Path, _metadata: &fs::Metadata) -> Result<(), SpoolError> {
+    crate::windows_acl::validate_owner_only(path)?;
     Ok(())
 }
 
@@ -739,6 +834,61 @@ mod tests {
     }
 
     #[test]
+    fn recovery_publishes_interrupted_staged_record() {
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        store
+            .enqueue(&event("event-1", "turn_completed"), 100)
+            .unwrap();
+        let pending = fs::read_dir(&temp.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.to_string_lossy().ends_with(".pending"))
+            .unwrap();
+        let pending_name = pending.file_name().unwrap().to_str().unwrap();
+        let staged = temp
+            .0
+            .join(staged_file_name_from_pending(pending_name).unwrap());
+        fs::rename(&pending, &staged).unwrap();
+
+        assert_eq!(store.recover_claims().unwrap(), 1);
+        assert!(!staged.exists());
+        let claim = store.claim_next(101).unwrap().unwrap();
+        assert_eq!(claim.event().event_id.as_str(), "event-1");
+    }
+
+    #[test]
+    fn staged_promotion_is_idempotent_and_rejects_collisions() {
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        store
+            .enqueue(&event("event-1", "turn_completed"), 100)
+            .unwrap();
+        let pending = fs::read_dir(&temp.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.to_string_lossy().ends_with(".pending"))
+            .unwrap();
+        let staged = pending.with_extension("staged");
+
+        promote_staged_record(&staged, &pending).unwrap();
+        fs::write(&staged, b"collision").unwrap();
+        assert!(matches!(
+            promote_staged_record(&staged, &pending),
+            Err(SpoolError::UnsafePath)
+        ));
+
+        fs::remove_file(&staged).unwrap();
+        fs::remove_file(&pending).unwrap();
+        assert!(matches!(
+            promote_staged_record(&staged, &pending),
+            Err(SpoolError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
     fn eviction_preserves_attention_before_terminal_events() {
         let temp = TempDir::new();
         let store = SpoolStore::new(&temp.0, SpoolLimits::new(2, 1024 * 1024, 10_000));
@@ -790,7 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_temporary_write_is_removed_during_recovery() {
+    fn active_temporary_write_is_preserved_during_recovery() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = TempDir::new();
@@ -802,6 +952,25 @@ mod tests {
         fs::write(&temporary, b"partial").unwrap();
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
         store.recover_claims().unwrap();
+        assert!(temporary.exists());
+    }
+
+    #[test]
+    fn stale_temporary_write_is_removed_during_recovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let store = SpoolStore::new(&temp.0, SpoolLimits::default());
+        let temporary = temp.0.join(".write-crashed.tmp");
+        fs::write(&temporary, b"partial").unwrap();
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).unwrap();
+        let modified = fs::symlink_metadata(&temporary)
+            .unwrap()
+            .modified()
+            .unwrap();
+        store
+            .recover_claims_at(modified + STALE_TEMPORARY_WRITE_AGE + Duration::from_millis(1))
+            .unwrap();
         assert!(!temporary.exists());
     }
 

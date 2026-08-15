@@ -1,14 +1,23 @@
 mod install;
+mod migration;
 mod plan;
 mod uninstall;
 
 use std::{
     fs,
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
-use lili_session::{CodexIntegrationSurface, TESTED_CODEX_VERSION};
+use lili_session::{
+    CodexAdapterDiagnostics, CodexIntegrationSurface, CodexPluginAvailability,
+    CodexPluginDiagnostics, CodexPluginEvidenceStore, ForwardingCredentialStore,
+    TESTED_CODEX_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -18,12 +27,23 @@ pub use install::{
     InstallError, InstallOutcome, InstalledFileProvenance, IntegrationProvenance, install,
     install_with_verifier, load_plan,
 };
-pub use plan::{
-    InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, PlannedFileAction,
-    PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry, build_coexistence_install_plan,
-    build_install_plan,
+pub use migration::{
+    CodexPluginLifecycleHost, PLUGIN_MIGRATION_ASSESSMENT_FILE_NAME,
+    PLUGIN_MIGRATION_SCHEMA_VERSION, PLUGIN_MIGRATION_VERIFICATION_FILE_NAME, PluginLifecycleHost,
+    PluginMigrationAssessment, PluginMigrationError, PluginMigrationEvidence, PluginMigrationState,
+    PluginRemovalOutcome, assess_plugin_migration, cleanup_legacy_after_verification,
+    cleanup_legacy_after_verification_with_host, install_plugin, install_plugin_with_rollback,
+    load_plugin_migration_assessment, remove_plugin, remove_plugin_with_host, rollback_plugin,
+    save_plugin_migration_verification,
 };
-pub use uninstall::{UninstallError, UninstallOutcome, uninstall};
+pub use plan::{
+    InstallPlanStatus, IntegrationInstallMode, IntegrationInstallPlan, IntegrationOperationKind,
+    PlannedFileAction, PlannedFileChange, PlannedHookEntry, PlannedNotifyEntry,
+    build_coexistence_install_plan, build_install_plan,
+};
+pub use uninstall::{
+    UninstallError, UninstallOutcome, UninstallPreview, preview_uninstall, uninstall,
+};
 
 pub const INTEGRATION_SCHEMA_VERSION: u16 = 1;
 pub const LILI_INTEGRATION_ID: &str = "lili-session-v1";
@@ -31,6 +51,11 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const HOOKS_FILE_NAME: &str = "hooks.json";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 128;
+const MAX_PLUGIN_LIST_BYTES: usize = 1024 * 1024;
+const MAX_APP_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
+const CODEX_INSPECTION_TIMEOUT: Duration = Duration::from_millis(750);
+const CODEX_HOOK_TRUST_TIMEOUT: Duration = Duration::from_secs(5);
+const CODEX_INSPECTION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const HOOK_SURFACES: [(&str, CodexIntegrationSurface); 5] = [
     ("SessionStart", CodexIntegrationSurface::SessionStart),
     (
@@ -101,16 +126,39 @@ pub struct IntegrationInspection {
     pub hooks: IntegrationFileInspection,
     pub notify: NotifyInspection,
     pub hook_surfaces: Vec<HookSurfaceInspection>,
+    pub codex_adapter: CodexAdapterDiagnostics,
     pub warnings: Vec<String>,
 }
 
 pub fn inspect(codex_home: &Path) -> IntegrationInspection {
-    inspect_with_version(codex_home, detect_codex_version())
+    let codex_version = detect_codex_version(codex_home);
+    let plugin_list = detect_plugin_list(codex_home);
+    inspect_with_evidence(codex_home, codex_version, plugin_list.as_deref(), None)
+}
+
+pub fn inspect_plugin(codex_home: &Path, plugin_selector: &str) -> IntegrationInspection {
+    let codex_version = detect_codex_version(codex_home);
+    let plugin_list = detect_plugin_list(codex_home);
+    inspect_with_evidence(
+        codex_home,
+        codex_version,
+        plugin_list.as_deref(),
+        Some(plugin_selector),
+    )
 }
 
 pub fn inspect_with_version(
     codex_home: &Path,
     codex_version: Option<String>,
+) -> IntegrationInspection {
+    inspect_with_evidence(codex_home, codex_version, None, None)
+}
+
+fn inspect_with_evidence(
+    codex_home: &Path,
+    codex_version: Option<String>,
+    plugin_list: Option<&[u8]>,
+    plugin_selector: Option<&str>,
 ) -> IntegrationInspection {
     let config_path = codex_home.join(CONFIG_FILE_NAME);
     let hooks_path = codex_home.join(HOOKS_FILE_NAME);
@@ -136,6 +184,39 @@ pub fn inspect_with_version(
         })
         .collect::<Vec<_>>();
     hook_surfaces.sort_by_key(|surface| surface.surface);
+    let legacy_active = notify.kind == IntegrationKind::Lili
+        || hook_surfaces
+            .iter()
+            .any(|surface| surface.lili_handlers > 0);
+    let discovered_surfaces = hook_surfaces
+        .iter()
+        .filter(|surface| surface.lili_handlers > 0)
+        .map(|surface| surface.surface)
+        .chain((notify.kind == IntegrationKind::Lili).then_some(CodexIntegrationSurface::Notify));
+    let plugin = plugin_list.map_or_else(
+        || CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active),
+        |output| {
+            parse_plugin_diagnostics(
+                output,
+                codex_version.as_deref(),
+                legacy_active,
+                plugin_selector,
+            )
+            .unwrap_or_else(|| {
+                CodexPluginDiagnostics::unavailable(codex_version.as_deref(), legacy_active)
+            })
+        },
+    );
+    let discovered =
+        CodexAdapterDiagnostics::with_discovery(codex_version.as_deref(), discovered_surfaces)
+            .with_plugin(plugin);
+    let codex_adapter = match load_authenticated_codex_evidence(codex_home) {
+        Some(mut runtime) => {
+            runtime.refresh_discovery(discovered);
+            runtime
+        }
+        None => discovered,
+    };
 
     let mut warnings = Vec::new();
     if codex_version.is_none() {
@@ -172,13 +253,338 @@ pub fn inspect_with_version(
         hooks: hooks_file,
         notify,
         hook_surfaces,
+        codex_adapter,
         warnings,
     }
 }
 
-pub fn detect_codex_version() -> Option<String> {
-    let output = Command::new("codex").arg("--version").output().ok()?;
-    parse_codex_version(output.status.success(), &output.stdout)
+fn load_authenticated_codex_evidence(codex_home: &Path) -> Option<CodexAdapterDiagnostics> {
+    let runtime_dir = codex_home.join("lili").join("runtime");
+    let record = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
+        .load()
+        .ok()?;
+    let credentials = record.credentials().ok()?;
+    CodexPluginEvidenceStore::for_codex_home(codex_home)
+        .load(&credentials)
+        .ok()
+}
+
+pub fn detect_codex_version(codex_home: &Path) -> Option<String> {
+    let mut command = Command::new("codex");
+    command.arg("--version").env("CODEX_HOME", codex_home);
+    let output = bounded_command_output(&mut command, MAX_VERSION_BYTES)?;
+    parse_codex_version(output.success, &output.stdout)
+}
+
+fn detect_plugin_list(codex_home: &Path) -> Option<Vec<u8>> {
+    let mut command = Command::new("codex");
+    command
+        .args(["plugin", "list", "--available", "--json"])
+        .env("CODEX_HOME", codex_home);
+    let output = bounded_command_output(&mut command, MAX_PLUGIN_LIST_BYTES)?;
+    if !output.success {
+        return None;
+    }
+    Some(output.stdout)
+}
+
+pub fn plugin_hooks_are_trusted(codex_home: &Path, plugin_selector: &str) -> bool {
+    let mut child = match Command::new("codex")
+        .args(["app-server", "--stdio"])
+        .env("CODEX_HOME", codex_home)
+        .current_dir(codex_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = Vec::new();
+            match stdout.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) if line.len() <= MAX_APP_SERVER_MESSAGE_BYTES => {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+                Ok(_) | Err(_) => break,
+            }
+        }
+    });
+    let deadline = Instant::now() + CODEX_HOOK_TRUST_TIMEOUT;
+    let trusted = (|| {
+        write_app_server_message(
+            &mut stdin,
+            &serde_json::json!({
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "lili-migration", "version": env!("CARGO_PKG_VERSION")},
+                    "capabilities": {"experimentalApi": true}
+                }
+            }),
+        )?;
+        app_server_response(&receiver, 0, deadline)?;
+        write_app_server_message(
+            &mut stdin,
+            &serde_json::json!({"method": "initialized", "params": {}}),
+        )?;
+        write_app_server_message(
+            &mut stdin,
+            &serde_json::json!({
+                "id": 1,
+                "method": "hooks/list",
+                "params": {"cwds": [codex_home]}
+            }),
+        )?;
+        let response = app_server_response(&receiver, 1, deadline)?;
+        plugin_hook_response_is_trusted(&response, plugin_selector).then_some(())
+    })()
+    .is_some();
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+    trusted
+}
+
+fn write_app_server_message(stdin: &mut impl Write, message: &serde_json::Value) -> Option<()> {
+    let mut payload = serde_json::to_vec(message).ok()?;
+    if payload.len() > MAX_APP_SERVER_MESSAGE_BYTES {
+        return None;
+    }
+    payload.push(b'\n');
+    stdin.write_all(&payload).ok()?;
+    stdin.flush().ok()
+}
+
+fn app_server_response(
+    receiver: &mpsc::Receiver<Vec<u8>>,
+    identifier: u64,
+    deadline: Instant,
+) -> Option<serde_json::Value> {
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        let line = receiver.recv_timeout(remaining).ok()?;
+        let response: serde_json::Value = serde_json::from_slice(&line).ok()?;
+        if response.get("id").and_then(serde_json::Value::as_u64) == Some(identifier) {
+            return response.get("error").is_none().then_some(response);
+        }
+    }
+}
+
+fn plugin_hook_response_is_trusted(response: &serde_json::Value, plugin_selector: &str) -> bool {
+    let Some(workspaces) = response
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let [workspace] = workspaces.as_slice() else {
+        return false;
+    };
+    if !workspace
+        .get("errors")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty)
+        || !workspace
+            .get("warnings")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return false;
+    }
+    let Some(workspace_hooks) = workspace.get("hooks").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    let hooks = workspace_hooks
+        .iter()
+        .filter(|hook| {
+            hook.get("pluginId").and_then(serde_json::Value::as_str) == Some(plugin_selector)
+        })
+        .collect::<Vec<_>>();
+    let mut event_names = hooks
+        .iter()
+        .filter_map(|hook| hook.get("eventName"))
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    event_names.sort_unstable();
+    event_names
+        == [
+            "permissionRequest",
+            "sessionEnd",
+            "sessionStart",
+            "stop",
+            "userPromptSubmit",
+        ]
+        && hooks.iter().all(|hook| {
+            hook.get("source").and_then(serde_json::Value::as_str) == Some("plugin")
+                && hook.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+                && hook.get("trustStatus").and_then(serde_json::Value::as_str) == Some("trusted")
+                && hook
+                    .get("currentHash")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|hash| !hash.is_empty())
+        })
+}
+
+struct BoundedCommandOutput {
+    success: bool,
+    stdout: Vec<u8>,
+}
+
+fn bounded_command_output(command: &mut Command, limit: usize) -> Option<BoundedCommandOutput> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout
+            .by_ref()
+            .take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut output)
+            .ok()?;
+        Some(output)
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = reader.join().ok().flatten()?;
+                if stdout.len() > limit {
+                    return None;
+                }
+                return Some(BoundedCommandOutput {
+                    success: status.success(),
+                    stdout,
+                });
+            }
+            Ok(None) if started.elapsed() < CODEX_INSPECTION_TIMEOUT => {
+                thread::sleep(CODEX_INSPECTION_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginListOutput {
+    #[serde(default)]
+    installed: Vec<PluginListRecord>,
+    #[serde(default)]
+    available: Vec<PluginListRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginListRecord {
+    plugin_id: Option<String>,
+    name: Option<String>,
+    version: Option<String>,
+    enabled: Option<bool>,
+}
+
+fn parse_plugin_diagnostics(
+    output: &[u8],
+    codex_version: Option<&str>,
+    legacy_active: bool,
+    plugin_selector: Option<&str>,
+) -> Option<CodexPluginDiagnostics> {
+    if output.len() > MAX_PLUGIN_LIST_BYTES {
+        return None;
+    }
+    let list: PluginListOutput = serde_json::from_slice(output).ok()?;
+    if let Some(plugin) = list
+        .installed
+        .iter()
+        .find(|plugin| plugin.matches(plugin_selector))
+    {
+        return Some(
+            CodexPluginDiagnostics::discovered(
+                codex_version,
+                CodexPluginAvailability::Installed,
+                true,
+                plugin.enabled?,
+                plugin.version.as_deref(),
+                legacy_active,
+            )
+            .with_plugin_id(plugin.plugin_id.as_deref()),
+        );
+    }
+    if let Some(plugin) = list
+        .available
+        .iter()
+        .find(|plugin| plugin.matches(plugin_selector))
+    {
+        return Some(
+            CodexPluginDiagnostics::discovered(
+                codex_version,
+                CodexPluginAvailability::Available,
+                false,
+                false,
+                plugin.version.as_deref(),
+                legacy_active,
+            )
+            .with_plugin_id(plugin.plugin_id.as_deref()),
+        );
+    }
+    Some(CodexPluginDiagnostics::discovered(
+        codex_version,
+        CodexPluginAvailability::NotAvailable,
+        false,
+        false,
+        None,
+        legacy_active,
+    ))
+}
+
+impl PluginListRecord {
+    fn matches(&self, plugin_selector: Option<&str>) -> bool {
+        plugin_selector.map_or_else(
+            || self.is_lili(),
+            |selector| self.plugin_id.as_deref() == Some(selector),
+        )
+    }
+
+    fn is_lili(&self) -> bool {
+        self.name.as_deref() == Some("lili")
+            || self
+                .plugin_id
+                .as_deref()
+                .and_then(|plugin_id| plugin_id.split('@').next())
+                == Some("lili")
+    }
 }
 
 fn parse_codex_version(success: bool, stdout: &[u8]) -> Option<String> {
@@ -475,5 +881,206 @@ notify = ["other-notifier", "secret-argument"]
         assert_eq!(parse_codex_version(true, b"  \n"), None);
         assert_eq!(parse_codex_version(true, &[b'x'; 65]), None);
         assert_eq!(parse_codex_version(true, b"codex 0.147\0.0"), None);
+    }
+
+    #[test]
+    fn plugin_list_reports_only_bounded_lili_status() {
+        let output = br#"{
+          "installed": [{
+            "pluginId": "lili@example",
+            "name": "lili",
+            "version": "0.1.0",
+            "installed": true,
+            "enabled": true,
+            "source": {"path": "/private/plugin/path"}
+          }],
+          "available": []
+        }"#;
+        let diagnostics =
+            parse_plugin_diagnostics(output, Some(TESTED_CODEX_VERSION), true, None).unwrap();
+        assert_eq!(diagnostics.availability, CodexPluginAvailability::Installed);
+        assert_eq!(diagnostics.plugin_id.as_deref(), Some("lili@example"));
+        assert_eq!(diagnostics.installed, Some(true));
+        assert_eq!(diagnostics.enabled, Some(true));
+        assert_eq!(diagnostics.plugin_version.as_deref(), Some("0.1.0"));
+        assert!(
+            !serde_json::to_string(&diagnostics)
+                .unwrap()
+                .contains("/private/plugin/path")
+        );
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_plugin_state_remains_unknown() {
+        assert!(parse_plugin_diagnostics(b"not-json", None, false, None).is_none());
+        let missing_enabled = br#"{
+          "installed": [{"pluginId": "lili@example", "name": "lili", "version": "0.1.0"}],
+          "available": []
+        }"#;
+        assert!(parse_plugin_diagnostics(missing_enabled, None, false, None).is_none());
+        assert!(
+            parse_plugin_diagnostics(&vec![b'x'; MAX_PLUGIN_LIST_BYTES + 1], None, false, None,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn plugin_discovery_selects_the_exact_marketplace_identity() {
+        let output = br#"{
+          "installed": [{
+            "pluginId": "lili@marketplace-b",
+            "name": "lili",
+            "version": "0.1.0",
+            "enabled": true
+          }],
+          "available": [{
+            "pluginId": "lili@marketplace-a",
+            "name": "lili",
+            "version": "0.1.0",
+            "enabled": false
+          }]
+        }"#;
+
+        let selected = parse_plugin_diagnostics(
+            output,
+            Some(TESTED_CODEX_VERSION),
+            true,
+            Some("lili@marketplace-a"),
+        )
+        .unwrap();
+        assert_eq!(selected.availability, CodexPluginAvailability::Available);
+        assert_eq!(selected.installed, Some(false));
+        assert_eq!(selected.plugin_id.as_deref(), Some("lili@marketplace-a"));
+
+        let other = parse_plugin_diagnostics(
+            output,
+            Some(TESTED_CODEX_VERSION),
+            true,
+            Some("lili@marketplace-b"),
+        )
+        .unwrap();
+        assert_eq!(other.availability, CodexPluginAvailability::Installed);
+        assert_eq!(other.installed, Some(true));
+        assert_eq!(other.plugin_id.as_deref(), Some("lili@marketplace-b"));
+    }
+
+    #[test]
+    fn hook_trust_response_requires_every_selected_hook_to_remain_trusted() {
+        let response = serde_json::json!({
+            "result": {
+                "data": [{
+                    "errors": [],
+                    "warnings": [],
+                    "hooks": [
+                        {
+                            "eventName": "permissionRequest",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "first"
+                        },
+                        {
+                            "eventName": "sessionEnd",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "second"
+                        },
+                        {
+                            "eventName": "sessionStart",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "third"
+                        },
+                        {
+                            "eventName": "stop",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "fourth"
+                        },
+                        {
+                            "eventName": "userPromptSubmit",
+                            "source": "plugin",
+                            "pluginId": "lili@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "trusted",
+                            "currentHash": "fifth"
+                        },
+                        {
+                            "eventName": "stop",
+                            "source": "plugin",
+                            "pluginId": "other@test-marketplace",
+                            "enabled": true,
+                            "trustStatus": "untrusted",
+                            "currentHash": "ignored"
+                        }
+                    ]
+                }]
+            }
+        });
+        assert!(plugin_hook_response_is_trusted(
+            &response,
+            "lili@test-marketplace"
+        ));
+
+        let mut invalidated = response;
+        invalidated["result"]["data"][0]["hooks"][1]["trustStatus"] =
+            serde_json::Value::String("modified".to_owned());
+        assert!(!plugin_hook_response_is_trusted(
+            &invalidated,
+            "lili@test-marketplace"
+        ));
+        assert!(!plugin_hook_response_is_trusted(
+            &invalidated,
+            "missing@test-marketplace"
+        ));
+    }
+
+    #[test]
+    fn app_server_response_is_bounded_to_the_requested_identifier_and_deadline() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(br#"{"method":"notification"}"#.to_vec())
+            .unwrap();
+        sender
+            .send(br#"{"id":1,"result":{"status":"ok"}}"#.to_vec())
+            .unwrap();
+        let response =
+            app_server_response(&receiver, 1, Instant::now() + Duration::from_millis(100)).unwrap();
+        assert_eq!(response["result"]["status"], "ok");
+
+        let (sender, receiver) = mpsc::channel();
+        sender.send(br#"{"id":1,"error":{}}"#.to_vec()).unwrap();
+        assert!(
+            app_server_response(&receiver, 1, Instant::now() + Duration::from_millis(100))
+                .is_none()
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        sender.send(b"not-json".to_vec()).unwrap();
+        assert!(
+            app_server_response(&receiver, 1, Instant::now() + Duration::from_millis(100))
+                .is_none()
+        );
+
+        let (_sender, receiver) = mpsc::channel::<Vec<u8>>();
+        assert!(app_server_response(&receiver, 1, Instant::now()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_command_output_is_bounded_by_a_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "while :; do :; done"]);
+        let started = Instant::now();
+
+        assert!(bounded_command_output(&mut command, 16).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

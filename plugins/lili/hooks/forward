@@ -1,0 +1,66 @@
+#!/bin/sh
+
+set -eu
+umask 077
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit "$2"
+}
+
+PATH=/usr/bin:/bin
+export PATH
+
+uname_path=
+for candidate in /usr/bin/uname /bin/uname /run/current-system/sw/bin/uname; do
+    if [ -x "$candidate" ]; then
+        uname_path=$candidate
+        break
+    fi
+done
+if [ -z "$uname_path" ]; then
+    fail "Lili plugin host utility could not be resolved" 64
+fi
+
+case "$0" in
+    /*) ;;
+    *) fail "Lili plugin launcher requires an absolute package path" 65 ;;
+esac
+
+script_directory=${0%/*}
+plugin_root=$(CDPATH='' cd "$script_directory/.." 2>/dev/null && pwd -P) \
+    || fail "Lili plugin root could not be resolved" 65
+
+if [ -z "${PLUGIN_ROOT:-}" ]; then
+    fail "Lili plugin root is unavailable" 65
+fi
+provided_root=$(CDPATH='' cd "$PLUGIN_ROOT" 2>/dev/null && pwd -P) \
+    || fail "Lili plugin root is invalid" 65
+if [ "$provided_root" != "$plugin_root" ]; then
+    fail "Lili plugin root does not match the active package" 65
+fi
+
+kernel=$("$uname_path" -s 2>/dev/null) \
+    || fail "Lili plugin host could not be identified" 64
+machine=$("$uname_path" -m 2>/dev/null) \
+    || fail "Lili plugin host could not be identified" 64
+case "$kernel:$machine" in
+    Darwin:arm64)
+        target=arm64-apple-darwin
+        forwarder_name=lili-hook
+        ;;
+    Linux:x86_64)
+        target=x86_64-unknown-linux-gnu
+        forwarder_name=lili-hook
+        ;;
+    *)
+        fail "Lili plugin does not support this host" 64
+        ;;
+esac
+
+forwarder=$plugin_root/bin/$target/$forwarder_name
+if [ ! -f "$forwarder" ] || [ -L "$forwarder" ] || [ ! -x "$forwarder" ]; then
+    fail "Lili plugin forwarder is missing or invalid" 66
+fi
+
+exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin

@@ -11,9 +11,9 @@ use axum::{
 };
 use leptos::prelude::*;
 use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
-use lili_app_state::{AppState, IngestionDiagnostics, UserSettings};
+use lili_app_state::{AppState, IngestionDiagnostics, NativeIngestionHandle, UserSettings};
 use lili_core::{DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
-use lili_session::{NotificationId, ReductionOutcome};
+use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
 use lili_ui::App;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, watch};
@@ -73,6 +73,27 @@ struct NotificationMutationResponse {
 struct ServerState {
     app: AppState,
     fixture: Option<FixturePresentationStore>,
+    diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+}
+
+type CodexDiagnosticsInspector = Arc<dyn Fn() -> CodexAdapterDiagnostics + Send + Sync>;
+
+#[derive(Clone)]
+pub struct NativeDiagnosticsRefresh {
+    ingestion: NativeIngestionHandle,
+    inspector: CodexDiagnosticsInspector,
+}
+
+impl NativeDiagnosticsRefresh {
+    pub fn new(
+        ingestion: NativeIngestionHandle,
+        inspector: impl Fn() -> CodexAdapterDiagnostics + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            ingestion,
+            inspector: Arc::new(inspector),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -156,8 +177,12 @@ impl FixturePresentationStore {
 }
 
 impl ServerState {
-    fn native(app: AppState) -> Self {
-        Self { app, fixture: None }
+    fn native(app: AppState, diagnostics_refresh: Option<NativeDiagnosticsRefresh>) -> Self {
+        Self {
+            app,
+            fixture: None,
+            diagnostics_refresh,
+        }
     }
 
     fn fixture(app: AppState) -> Self {
@@ -165,6 +190,21 @@ impl ServerState {
         Self {
             app,
             fixture: Some(FixturePresentationStore::new(initial)),
+            diagnostics_refresh: None,
+        }
+    }
+
+    async fn ingestion_diagnostics(&self) -> IngestionDiagnostics {
+        let Some(refresh) = self.diagnostics_refresh.clone() else {
+            return self.app.ingestion_diagnostics().await;
+        };
+        let inspector = Arc::clone(&refresh.inspector);
+        let Ok(discovered) = tokio::task::spawn_blocking(move || inspector()).await else {
+            return self.app.ingestion_diagnostics().await;
+        };
+        match refresh.ingestion.refresh_codex_adapter(discovered).await {
+            Ok(diagnostics) => diagnostics,
+            Err(_) => self.app.ingestion_diagnostics().await,
         }
     }
 
@@ -218,12 +258,32 @@ pub fn build_native_router(state: AppState, assets: Option<StaticAssets>) -> Rou
     build_router(state, assets)
 }
 
+pub fn build_native_router_with_diagnostics(
+    state: AppState,
+    assets: Option<StaticAssets>,
+    diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+) -> Router {
+    build_router_with_diagnostics(state, assets, diagnostics_refresh)
+}
+
 pub fn build_fixture_router(assets: Option<StaticAssets>) -> Router {
     build_server_router(ServerState::fixture(AppState::default()), assets, true)
 }
 
 fn build_router(state: AppState, assets: Option<StaticAssets>) -> Router {
-    build_server_router(ServerState::native(state), assets, false)
+    build_router_with_diagnostics(state, assets, None)
+}
+
+fn build_router_with_diagnostics(
+    state: AppState,
+    assets: Option<StaticAssets>,
+    diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+) -> Router {
+    build_server_router(
+        ServerState::native(state, diagnostics_refresh),
+        assets,
+        false,
+    )
 }
 
 fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture: bool) -> Router {
@@ -300,7 +360,7 @@ async fn update_settings(
 
 async fn diagnostics(State(state): State<ServerState>) -> Json<Diagnostics> {
     let (ingestion, actions, action_audit) = tokio::join!(
-        state.app.ingestion_diagnostics(),
+        state.ingestion_diagnostics(),
         state.app.effective_actions(),
         state.app.action_audit(),
     );
@@ -542,7 +602,11 @@ mod tests {
 
     use axum::body::to_bytes;
     use http::Request;
-    use lili_session::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
+    use lili_session::{
+        CodexPluginAvailability, CodexPluginDiagnostics, ForwardingCredentials,
+        ProviderCapabilitiesInputV1, ProviderInputV1, TESTED_CODEX_VERSION,
+        normalize_provider_input,
+    };
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
@@ -636,6 +700,83 @@ mod tests {
                 .unwrap()
                 .contains(&serde_json::json!("mac_secret"))
         );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_refresh_plugin_discovery_without_desktop_restart() {
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let (handle, actor) =
+            lili_app_state::NativeIngestionActor::channel(state.clone(), credentials, 1).await;
+        let task = tokio::spawn(actor.run());
+        let current = Arc::new(std::sync::Mutex::new(
+            CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), []).with_plugin(
+                CodexPluginDiagnostics::discovered(
+                    Some(TESTED_CODEX_VERSION),
+                    CodexPluginAvailability::Installed,
+                    true,
+                    true,
+                    Some(env!("CARGO_PKG_VERSION")),
+                    false,
+                )
+                .with_plugin_id(Some("lili@lili-local")),
+            ),
+        ));
+        let inspected = Arc::clone(&current);
+        let refresh = NativeDiagnosticsRefresh::new(handle.clone(), move || {
+            inspected.lock().unwrap().clone()
+        });
+        let router = build_router_with_diagnostics(state, None, Some(refresh));
+
+        let installed = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(installed.into_body(), usize::MAX).await.unwrap();
+        let diagnostics: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            diagnostics["ingestion"]["codexAdapter"]["plugin"]["installed"],
+            true
+        );
+
+        *current.lock().unwrap() =
+            CodexAdapterDiagnostics::with_discovery(Some(TESTED_CODEX_VERSION), []).with_plugin(
+                CodexPluginDiagnostics::discovered(
+                    Some(TESTED_CODEX_VERSION),
+                    CodexPluginAvailability::Available,
+                    false,
+                    false,
+                    Some(env!("CARGO_PKG_VERSION")),
+                    false,
+                )
+                .with_plugin_id(Some("lili@lili-local")),
+            );
+        let removed = router
+            .oneshot(
+                Request::get("/api/v1/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(removed.into_body(), usize::MAX).await.unwrap();
+        let diagnostics: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            diagnostics["ingestion"]["codexAdapter"]["plugin"]["installed"],
+            false
+        );
+        assert_eq!(
+            diagnostics["ingestion"]["codexAdapter"]["plugin"]["availability"],
+            "available"
+        );
+
+        drop(handle);
+        task.await.unwrap();
     }
 
     #[tokio::test]

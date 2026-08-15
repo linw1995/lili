@@ -79,17 +79,34 @@ cp examples/actions.toml "$release_root/examples/"
 cp LICENSE NOTICE THIRD_PARTY_NOTICES.html "$release_root/"
 
 signature_kind="platform-standard"
+forwarder_signature_kind="platform-standard"
 if [[ "$(uname -s)" == "Darwin" ]] && find "$release_root/bundles" -name '*.app' -type d -print -quit | grep -q .; then
   app_bundle="$(find "$release_root/bundles" -name '*.app' -type d -print -quit)"
   if codesign --verify --deep --strict "$app_bundle" >/dev/null 2>&1 \
     && codesign -dv --verbose=4 "$app_bundle" 2>&1 | grep -q '^Authority='; then
     signature_kind="signed"
   fi
+  if codesign --verify --strict "$build_target/release/lili-hook" >/dev/null 2>&1 \
+    && codesign -dv --verbose=4 "$build_target/release/lili-hook" 2>&1 | grep -q '^Authority='; then
+    forwarder_signature_kind="signed"
+  fi
 fi
-if [[ "${LILI_REQUIRE_SIGNED:-0}" == "1" && "$signature_kind" != "signed" ]]; then
-  echo "release signing was required but no platform identity was applied" >&2
+if [[ "${LILI_REQUIRE_SIGNED:-0}" == "1" \
+  && ("$signature_kind" != "signed" || "$forwarder_signature_kind" != "signed") ]]; then
+  echo "release signing was required but the app or hook forwarder is unsigned" >&2
   exit 1
 fi
+
+forwarder_root="$release_parent/forwarders/$platform"
+rm -rf -- "$forwarder_root"
+mkdir -p "$forwarder_root"
+cp "$build_target/release/lili-hook" "$forwarder_root/lili-hook"
+node scripts/write-forwarder-manifest.mjs \
+  "$forwarder_root/lili-hook" \
+  "$forwarder_root/manifest.json" \
+  "$version" \
+  "$platform" \
+  "$forwarder_signature_kind"
 
 node scripts/release-manifest.mjs \
   "$release_root" \
@@ -105,4 +122,8 @@ tar -C "$release_parent" -czf "$archive" "$release_name"
   cd "$release_parent"
   sha256sum "$release_name.tar.gz" > "$release_name.tar.gz.sha256"
 )
-printf '{"release":"%s","signatureKind":"%s"}\n' "$archive" "$signature_kind"
+printf '{"release":"%s","signatureKind":"%s","forwarder":"%s","forwarderSignatureKind":"%s"}\n' \
+  "$archive" \
+  "$signature_kind" \
+  "$forwarder_root" \
+  "$forwarder_signature_kind"

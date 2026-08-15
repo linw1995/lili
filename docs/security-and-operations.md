@@ -50,17 +50,17 @@ Structured logs and diagnostics exclude raw prompts, complete assistant messages
 
 ## Codex integration changes
 
-Lili provides an inspect, plan, install, and uninstall workflow:
+Lili provides read-only inspection plus an explicit legacy fallback plan, install, and uninstall workflow. The Codex plugin is the primary installation path; direct configuration remains available only when the plugin is unavailable or Marketplace policy prevents its use.
 
 ```text
 lili integrate inspect
-lili integrate plan
-lili integrate plan --coexist
-lili integrate install --plan <plan.json>
+lili integrate plan --legacy-fallback
+lili integrate plan --legacy-fallback --coexist
+lili integrate install --legacy-fallback --plan <plan.json>
 lili integrate uninstall
 ```
 
-The plan is immutable and includes expected file hashes. Installation stops if either target changes after planning.
+The plan is immutable, identifies itself as `legacy_fallback`, and includes expected file hashes. Installation rejects old or differently classified plans and stops if either target changes after planning.
 
 An accepted plan can make these changes:
 
@@ -72,6 +72,8 @@ An accepted plan can make these changes:
 Existing non-Lili `notify` configuration is a conflict by default. `--coexist` must be selected explicitly; it preserves the previous argv and dispatches the two notification commands independently. Codex may still require the user to trust newly configured hooks.
 
 `PermissionRequest` is observation-only. The hook returns no approval or denial and Lili never becomes a Codex authorization authority.
+
+Plugin removal and migration rollback invoke only the supported `codex plugin remove <plugin@marketplace> --json` operation. They do not call legacy uninstall and do not remove or edit the desktop application, pet packages, actions, state, spool, unrelated hooks, notification commands, or Lili-owned legacy configuration. Legacy cleanup remains a separate provenance-gated operation after verified migration.
 
 ## Action authority
 

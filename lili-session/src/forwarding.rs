@@ -21,6 +21,7 @@ const SECRET_BYTES: usize = 32;
 const MAC_BYTES: usize = 32;
 const MAX_ENDPOINT_TEXT_BYTES: usize = 1024;
 const SIGNATURE_DOMAIN: &[u8] = b"lili-forwarding-v1";
+const EVIDENCE_SIGNATURE_DOMAIN: &[u8] = b"lili-evidence-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -171,14 +172,72 @@ impl ForwardingCredentials {
         &self.instance_id
     }
 
+    pub fn authenticate_evidence(
+        &self,
+        evidence_domain: &str,
+        payload: &[u8],
+    ) -> Result<String, ForwardingProtocolError> {
+        if evidence_domain.is_empty()
+            || evidence_domain.len() > 128
+            || evidence_domain.chars().any(char::is_control)
+            || payload.len() > MAX_FORWARDING_FRAME_BYTES
+        {
+            return Err(ForwardingProtocolError::Malformed);
+        }
+        let bytes = evidence_signing_bytes(evidence_domain, payload);
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.secret).expect("HMAC accepts a key of any size");
+        mac.update(&bytes);
+        Ok(encode_hex(&mac.finalize().into_bytes()))
+    }
+
+    pub fn verify_evidence(
+        &self,
+        evidence_domain: &str,
+        payload: &[u8],
+        authentication: &str,
+    ) -> Result<(), ForwardingProtocolError> {
+        if evidence_domain.is_empty()
+            || evidence_domain.len() > 128
+            || evidence_domain.chars().any(char::is_control)
+            || payload.len() > MAX_FORWARDING_FRAME_BYTES
+        {
+            return Err(ForwardingProtocolError::Malformed);
+        }
+        let supplied = decode_hex_array::<MAC_BYTES>(authentication)
+            .ok_or(ForwardingProtocolError::InvalidMac)?;
+        Hmac::<Sha256>::new_from_slice(&self.secret)
+            .expect("HMAC accepts a key of any size")
+            .chain_update(evidence_signing_bytes(evidence_domain, payload))
+            .verify_slice(&supplied)
+            .map_err(|_| ForwardingProtocolError::InvalidMac)
+    }
+
     pub fn sign(
         &self,
         event: NormalizedSessionEvent,
         sent_at_ms: u64,
     ) -> Result<ForwardingMessage, ForwardingProtocolError> {
+        self.sign_for_purpose(event, sent_at_ms, ForwardingPurpose::Event)
+    }
+
+    pub fn sign_verification(
+        &self,
+        event: NormalizedSessionEvent,
+        sent_at_ms: u64,
+    ) -> Result<ForwardingMessage, ForwardingProtocolError> {
+        self.sign_for_purpose(event, sent_at_ms, ForwardingPurpose::Verification)
+    }
+
+    fn sign_for_purpose(
+        &self,
+        event: NormalizedSessionEvent,
+        sent_at_ms: u64,
+        purpose: ForwardingPurpose,
+    ) -> Result<ForwardingMessage, ForwardingProtocolError> {
         let mut nonce = [0_u8; NONCE_BYTES];
         getrandom::fill(&mut nonce).map_err(|_| ForwardingProtocolError::Randomness)?;
-        self.sign_with_nonce(event, sent_at_ms, encode_hex(&nonce))
+        self.sign_with_nonce(event, sent_at_ms, encode_hex(&nonce), purpose)
     }
 
     fn sign_with_nonce(
@@ -186,6 +245,7 @@ impl ForwardingCredentials {
         event: NormalizedSessionEvent,
         sent_at_ms: u64,
         nonce: String,
+        purpose: ForwardingPurpose,
     ) -> Result<ForwardingMessage, ForwardingProtocolError> {
         validate_hex(&nonce, NONCE_BYTES).ok_or(ForwardingProtocolError::InvalidNonce)?;
         let unsigned = UnsignedForwardingMessage {
@@ -194,6 +254,7 @@ impl ForwardingCredentials {
             nonce,
             sent_at_ms,
             event,
+            purpose,
         };
         let mac = compute_mac(&self.secret, &unsigned)?;
         Ok(ForwardingMessage {
@@ -202,8 +263,23 @@ impl ForwardingCredentials {
             nonce: unsigned.nonce,
             sent_at_ms: unsigned.sent_at_ms,
             event: unsigned.event,
+            purpose: unsigned.purpose,
             mac: encode_hex(&mac),
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardingPurpose {
+    #[default]
+    Event,
+    Verification,
+}
+
+impl ForwardingPurpose {
+    const fn is_event(&self) -> bool {
+        matches!(self, Self::Event)
     }
 }
 
@@ -215,6 +291,8 @@ pub struct ForwardingMessage {
     nonce: String,
     sent_at_ms: u64,
     event: NormalizedSessionEvent,
+    #[serde(default, skip_serializing_if = "ForwardingPurpose::is_event")]
+    purpose: ForwardingPurpose,
     mac: String,
 }
 
@@ -285,6 +363,7 @@ impl ForwardingAck {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedForwardingMessage {
     event: NormalizedSessionEvent,
+    purpose: ForwardingPurpose,
     instance_id: String,
     nonce: String,
 }
@@ -296,6 +375,10 @@ impl VerifiedForwardingMessage {
 
     pub fn into_event(self) -> NormalizedSessionEvent {
         self.event
+    }
+
+    pub const fn purpose(&self) -> ForwardingPurpose {
+        self.purpose
     }
 
     pub fn acknowledgement(&self, disposition: ForwardingAckDisposition) -> ForwardingAck {
@@ -365,6 +448,7 @@ impl ForwardingVerifier {
             nonce: message.nonce.clone(),
             sent_at_ms: message.sent_at_ms,
             event: message.event.clone(),
+            purpose: message.purpose,
         };
         let signing_bytes = signing_bytes(&unsigned)?;
         Hmac::<Sha256>::new_from_slice(&self.credentials.secret)
@@ -393,6 +477,7 @@ impl ForwardingVerifier {
 
         Ok(VerifiedForwardingMessage {
             event: message.event,
+            purpose: message.purpose,
             instance_id: message.instance_id,
             nonce: message.nonce,
         })
@@ -421,6 +506,8 @@ struct UnsignedForwardingMessage {
     nonce: String,
     sent_at_ms: u64,
     event: NormalizedSessionEvent,
+    #[serde(skip_serializing_if = "ForwardingPurpose::is_event")]
+    purpose: ForwardingPurpose,
 }
 
 fn compute_mac(
@@ -440,6 +527,21 @@ fn signing_bytes(message: &UnsignedForwardingMessage) -> Result<Vec<u8>, Forward
     bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
     bytes.extend_from_slice(&payload);
     Ok(bytes)
+}
+
+fn evidence_signing_bytes(evidence_domain: &str, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        EVIDENCE_SIGNATURE_DOMAIN.len() + evidence_domain.len() + payload.len() + 24,
+    );
+    for field in [
+        EVIDENCE_SIGNATURE_DOMAIN,
+        evidence_domain.as_bytes(),
+        payload,
+    ] {
+        bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes
 }
 
 fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, ForwardingProtocolError> {
@@ -589,15 +691,42 @@ mod tests {
         let credentials = ForwardingCredentials::generate().unwrap();
         let message = credentials.sign(event(), 1_000).unwrap();
         let frame = message.to_frame().unwrap();
+        assert!(
+            !std::str::from_utf8(payload(&frame))
+                .unwrap()
+                .contains("purpose")
+        );
         let mut verifier = ForwardingVerifier::new(credentials);
         let verified = verifier.verify_payload(payload(&frame), 1_001).unwrap();
         assert_eq!(verified.event(), message.event());
+        assert_eq!(verified.purpose(), ForwardingPurpose::Event);
 
         let ack = verified.acknowledgement(ForwardingAckDisposition::Accepted);
         let ack_frame = ack.to_frame().unwrap();
         let restored = ForwardingAck::from_payload(payload(&ack_frame)).unwrap();
         assert_eq!(restored, ack);
         restored.validate_for(&message).unwrap();
+    }
+
+    #[test]
+    fn verification_message_round_trip_marks_the_authenticated_purpose() {
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let message = credentials.sign_verification(event(), 1_000).unwrap();
+        let frame = message.to_frame().unwrap();
+        assert!(
+            std::str::from_utf8(payload(&frame))
+                .unwrap()
+                .contains("\"purpose\":\"verification\"")
+        );
+        let mut tampered = message.clone();
+        tampered.purpose = ForwardingPurpose::Event;
+        let mut verifier = ForwardingVerifier::new(credentials);
+        assert_eq!(
+            verifier.verify_payload(payload(&tampered.to_frame().unwrap()), 1_001),
+            Err(ForwardingProtocolError::InvalidMac)
+        );
+        let verified = verifier.verify_payload(payload(&frame), 1_001).unwrap();
+        assert_eq!(verified.purpose(), ForwardingPurpose::Verification);
     }
 
     #[test]
@@ -617,10 +746,34 @@ mod tests {
     }
 
     #[test]
+    fn evidence_authentication_is_domain_separated_and_detects_edits() {
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let authentication = credentials
+            .authenticate_evidence("plugin-migration", b"receipt")
+            .unwrap();
+        credentials
+            .verify_evidence("plugin-migration", b"receipt", &authentication)
+            .unwrap();
+        assert_eq!(
+            credentials.verify_evidence("plugin-migration", b"edited", &authentication),
+            Err(ForwardingProtocolError::InvalidMac)
+        );
+        assert_eq!(
+            credentials.verify_evidence("other", b"receipt", &authentication),
+            Err(ForwardingProtocolError::InvalidMac)
+        );
+    }
+
+    #[test]
     fn nonce_is_accepted_only_once_within_the_window() {
         let credentials = ForwardingCredentials::generate().unwrap();
         let message = credentials
-            .sign_with_nonce(event(), 1_000, "ab".repeat(NONCE_BYTES))
+            .sign_with_nonce(
+                event(),
+                1_000,
+                "ab".repeat(NONCE_BYTES),
+                ForwardingPurpose::Event,
+            )
             .unwrap();
         let frame = message.to_frame().unwrap();
         let mut verifier = ForwardingVerifier::new(credentials);

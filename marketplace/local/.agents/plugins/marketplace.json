@@ -1,0 +1,20 @@
+{
+  "name": "lili-local",
+  "interface": {
+    "displayName": "Lili Local Acceptance"
+  },
+  "plugins": [
+    {
+      "name": "lili",
+      "source": {
+        "source": "local",
+        "path": "./plugins/lili"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

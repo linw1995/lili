@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "evidenceMaxAgeHours": 168,
+  "identityMaxAgeHours": 720,
+  "requiredOpenSpecChanges": [
+    "add-marketplace-plugin-integration",
+    "add-session-aware-desktop-pet"
+  ],
+  "requiredAutomation": [
+    "audit",
+    "codex-matrix",
+    "e2e",
+    "format-check",
+    "fuzz-smoke",
+    "license-check",
+    "lint",
+    "marketplace-check",
+    "marketplace-roundtrip",
+    "marketplace-trust",
+    "plugin-inspect",
+    "plugin-supply-chain",
+    "test",
+    "web-build",
+    "workflow-lint"
+  ],
+  "requiredPackagedTargets": [
+    "arm64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu"
+  ],
+  "requiredReviewerMaterials": [
+    "docs/marketplace.md",
+    "docs/privacy-policy.md",
+    "docs/support.md",
+    "docs/terms-of-service.md",
+    "marketplace/lili/assets.json",
+    "marketplace/lili/compatibility.json",
+    "marketplace/lili/compliance-checklist.md",
+    "marketplace/lili/package-policy.json",
+    "marketplace/lili/release-notes.md",
+    "marketplace/lili/reviewer-cases/negative.json",
+    "marketplace/lili/reviewer-cases/positive.json",
+    "marketplace/lili/submission-readiness.json",
+    "marketplace/lili/submission.json",
+    "plugins/lili/.codex-plugin/plugin.json"
+  ],
+  "requiredRuleSources": [
+    {
+      "id": "plugin-concepts",
+      "url": "https://developers.openai.com/plugins/concepts/plugins"
+    },
+    {
+      "id": "plugin-packaging",
+      "url": "https://developers.openai.com/plugins/build/plugins"
+    },
+    {
+      "id": "codex-hooks",
+      "url": "https://learn.chatgpt.com/docs/hooks"
+    },
+    {
+      "id": "plugin-submission",
+      "url": "https://developers.openai.com/plugins/deploy/submission"
+    },
+    {
+      "id": "plugin-guidelines",
+      "url": "https://developers.openai.com/plugins/app-guidelines"
+    },
+    {
+      "id": "plugin-security-privacy",
+      "url": "https://developers.openai.com/plugins/guides/security-privacy"
+    }
+  ]
+}

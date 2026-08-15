@@ -1,9 +1,8 @@
 #![cfg(unix)]
 
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -52,15 +51,12 @@ async fn restarting_application_ignores_stale_instance_without_decision_output()
     let runtime_dir = temp.0.join("lili").join("runtime");
     let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
     let credential_store = endpoint.credential_store().clone();
-    let stale_record = credential_store.load().unwrap();
+    let stale_instance = endpoint.credentials().instance_id().to_owned();
     drop(endpoint);
-
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
-    let mut file = options.open(credential_store.path()).unwrap();
-    serde_json::to_writer(&mut file, &stale_record).unwrap();
-    file.write_all(b"\n").unwrap();
-    file.sync_all().unwrap();
+    assert_eq!(
+        credential_store.load().unwrap().instance_id(),
+        stale_instance
+    );
 
     let started = Instant::now();
     let output = run_permission_hook(&temp.0);

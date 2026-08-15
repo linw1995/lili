@@ -1,3 +1,5 @@
+#[cfg(feature = "acceptance")]
+pub mod acceptance_marketplace;
 mod desktop_acceptance;
 mod desktop_smoke;
 mod diagnostics;
@@ -10,6 +12,7 @@ mod macos_panel;
 mod platform_pinning;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
@@ -25,9 +28,10 @@ use lili_app_state::{
 use lili_core::PetId;
 use lili_integration::{IntegrationKind, inspect};
 use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
-use lili_server::{StaticAssets, build_native_router};
+use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
-    BoundForwardingEndpoint, ClaimedSpoolRecord, ForwardingTransportError, SpoolStore,
+    BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
+    ForwardingCredentialStore, ForwardingTransportError, SpoolStore,
 };
 use loopback::LoopbackServer;
 use tauri::{
@@ -37,6 +41,8 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::oneshot;
+
+const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 
 pub fn run() {
     diagnostics::init();
@@ -78,7 +84,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     let (state, state_store, codex_home, saved_window_placement) = load_app_state();
     app.state::<DesktopAcceptanceState>()
         .configure(codex_home.clone(), state.clone());
-    configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
+    let native_ingestion =
+        configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
     app.manage(DesktopPersistence {
         state: state.clone(),
         store: state_store.clone(),
@@ -86,8 +93,18 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     app.manage(WindowDragState::default());
     setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
-    let loopback = LoopbackServer::bind(build_native_router(state.clone(), assets))
-        .expect("failed to bind secure loopback transport");
+    let diagnostics_refresh =
+        native_ingestion
+            .zip(codex_home.clone())
+            .map(|(ingestion, codex_home)| {
+                NativeDiagnosticsRefresh::new(ingestion, move || inspect(&codex_home).codex_adapter)
+            });
+    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics(
+        state.clone(),
+        assets,
+        diagnostics_refresh,
+    ))
+    .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();
     let origin = loopback.origin();
@@ -119,16 +136,22 @@ fn configure_desktop_companion_application(_app: &tauri::App) -> tauri::Result<(
     Ok(())
 }
 
-fn configure_native_runtime(enabled: bool, codex_home: Option<&Path>, state: &AppState) {
+fn configure_native_runtime(
+    enabled: bool,
+    codex_home: Option<&Path>,
+    state: &AppState,
+) -> Option<NativeIngestionHandle> {
     if !enabled {
-        return;
+        return None;
     }
-    let Some(codex_home) = codex_home else {
-        return;
-    };
+    let codex_home = codex_home?;
     configure_native_actions(codex_home, state);
-    if start_native_ingestion(codex_home, state.clone()).is_err() {
-        diagnostics::warn("ingestion", "start", "transport_unavailable");
+    match start_native_ingestion(codex_home, state.clone()) {
+        Ok(handle) => Some(handle),
+        Err(_) => {
+            diagnostics::warn("ingestion", "start", "transport_unavailable");
+            None
+        }
     }
 }
 
@@ -338,20 +361,38 @@ fn load_resolved_app_state(codex_home: PathBuf) -> LoadedAppState {
 fn start_native_ingestion(
     codex_home: &Path,
     state: AppState,
-) -> Result<(), ForwardingTransportError> {
+) -> Result<NativeIngestionHandle, ForwardingTransportError> {
     let runtime_dir = codex_home.join("lili").join("runtime");
+    let previous_credentials = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
+        .load()
+        .ok()
+        .and_then(|record| record.credentials().ok());
+    let codex_adapter = inspect(codex_home).codex_adapter;
+    let evidence_store = CodexPluginEvidenceStore::for_codex_home(codex_home);
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
-        let endpoint = BoundForwardingEndpoint::bind(&runtime_dir)?;
+        let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
+            &runtime_dir,
+            |credentials| evidence_store.save(&codex_adapter, credentials),
+            || match &previous_credentials {
+                Some(credentials) => evidence_store.save(&codex_adapter, credentials),
+                None => Ok(()),
+            },
+        )?;
         let credentials = endpoint.credentials();
-        let (handle, actor) =
-            NativeIngestionActor::channel(state, credentials, DEFAULT_INGESTION_QUEUE_CAPACITY)
-                .await;
+        let (handle, actor) = NativeIngestionActor::channel_with_diagnostics_and_evidence_store(
+            state,
+            credentials,
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+            codex_adapter,
+            Some(evidence_store),
+        )
+        .await;
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
     })?;
     tauri::async_runtime::spawn(actor.run());
     let spool = SpoolStore::for_codex_home(codex_home);
-    tauri::async_runtime::spawn(run_native_services(endpoint, handle, spool));
-    Ok(())
+    tauri::async_runtime::spawn(run_native_services(endpoint, handle.clone(), spool));
+    Ok(handle)
 }
 
 async fn run_native_services(
@@ -363,12 +404,21 @@ async fn run_native_services(
         diagnostics::warn("spool", "recover_claims", "recovery_failed");
     }
     drain_offline_spool(&spool, &handle).await;
-    serve_native_ingestion(endpoint, handle).await;
+    tokio::join!(
+        serve_native_ingestion(endpoint, handle.clone()),
+        drain_offline_spool_continuously(spool, handle),
+    );
+}
+
+async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeIngestionHandle) {
+    loop {
+        tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;
+        drain_offline_spool(&spool, &handle).await;
+    }
 }
 
 async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
-    publish_spool_metrics(spool, handle).await;
-    while let Some(claim) = next_spool_claim(spool) {
+    while let Some(claim) = next_spool_claim(spool).await {
         if !ingest_spool_claim(claim, handle).await {
             break;
         }
@@ -377,15 +427,17 @@ async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle)
 }
 
 async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandle) {
-    if let Ok(metrics) = spool.metrics() {
+    let spool = spool.clone();
+    if let Ok(Ok(metrics)) = tokio::task::spawn_blocking(move || spool.metrics()).await {
         let _ = handle.set_spool_metrics(metrics).await;
     }
 }
 
-fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
-    match spool.claim_next(unix_time_ms()) {
-        Ok(claim) => claim,
-        Err(_) => {
+async fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
+    let spool = spool.clone();
+    match tokio::task::spawn_blocking(move || spool.claim_next(unix_time_ms())).await {
+        Ok(Ok(claim)) => claim,
+        Ok(Err(_)) | Err(_) => {
             diagnostics::warn("spool", "claim", "read_failed");
             None
         }
@@ -395,7 +447,10 @@ fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
 async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionHandle) -> bool {
     match handle.ingest_spooled(claim.event().clone()).await {
         Ok(_) => {
-            if claim.commit().is_ok() {
+            if tokio::task::spawn_blocking(move || claim.commit())
+                .await
+                .is_ok_and(|result| result.is_ok())
+            {
                 true
             } else {
                 diagnostics::warn("spool", "commit", "commit_failed");
@@ -403,7 +458,10 @@ async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionH
             }
         }
         Err(_) => {
-            if claim.release().is_err() {
+            if !tokio::task::spawn_blocking(move || claim.release())
+                .await
+                .is_ok_and(|result| result.is_ok())
+            {
                 diagnostics::warn("spool", "release", "release_failed");
             }
             diagnostics::warn("ingestion", "reduce_spooled", "unavailable");
@@ -1141,7 +1199,97 @@ fn desktop_assets(
 
 #[cfg(test)]
 mod tests {
+    use lili_session::{
+        ForwardingCredentials, ProviderCapabilitiesInputV1, ProviderInputV1, SpoolEnqueueOutcome,
+        SpoolLimits, normalize_provider_input,
+    };
+
     use super::*;
+
+    #[tokio::test]
+    async fn live_spool_drainer_ingests_events_enqueued_after_startup() {
+        let root =
+            std::env::temp_dir().join(format!("lili-live-spool-drain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let spool = SpoolStore::new(root.join("spool"), SpoolLimits::default());
+        let state = AppState::default();
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let (handle, actor) = NativeIngestionActor::channel(
+            state.clone(),
+            credentials,
+            DEFAULT_INGESTION_QUEUE_CAPACITY,
+        )
+        .await;
+        let actor_task = tokio::spawn(actor.run());
+
+        drain_offline_spool(&spool, &handle).await;
+        let mut snapshots = handle.subscribe();
+        let drainer_task = tokio::spawn(drain_offline_spool_continuously(
+            spool.clone(),
+            handle.clone(),
+        ));
+        let now_ms = unix_time_ms();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-after-startup".to_owned()),
+            session_id: Some("session-after-startup".to_owned()),
+            turn_id: Some("turn-after-startup".to_owned()),
+            occurred_at_ms: Some(now_ms),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: Some("hook:Stop".to_owned()),
+        })
+        .unwrap();
+        assert_eq!(
+            spool.enqueue(&event, now_ms).unwrap(),
+            SpoolEnqueueOutcome::Stored
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), snapshots.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshots.borrow().revision, 1);
+        assert!(spool.claim_next(unix_time_ms()).unwrap().is_none());
+
+        drainer_task.abort();
+        drainer_task.await.unwrap_err();
+        drop(handle);
+        actor_task.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spool_lock_backoff_does_not_block_async_runtime() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let root =
+            std::env::temp_dir().join(format!("lili-spool-lock-backoff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let spool = SpoolStore::new(root.join("spool"), SpoolLimits::default());
+        spool.metrics().unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(spool.directory().join(".lock"))
+            .unwrap();
+
+        let claim_spool = spool.clone();
+        let claim_task = tokio::spawn(async move { next_spool_claim(&claim_spool).await });
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            tokio::time::sleep(Duration::from_millis(10)),
+        )
+        .await
+        .unwrap();
+
+        std::fs::remove_dir(spool.directory().join(".lock")).unwrap();
+        assert!(claim_task.await.unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn packaged_assets_are_preferred() {
