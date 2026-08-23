@@ -28,46 +28,44 @@ $env:LILI_RELEASE = "C:\absolute\path\to\unpacked-lili-release"
 
 Keep the release directory at a stable absolute path after installing Session integration. The generated Codex configuration references its `bin/lili-hook` by absolute path. If the release moves, generate and install a new plan from the new location.
 
-## 2. Select the Codex home
+## 2. Lili application storage
 
-Lili uses `${CODEX_HOME}` when it is set to an absolute path. Otherwise it uses `~/.codex`. The same root controls pet discovery, action configuration, local state, forwarding, and Codex integration files.
+The desktop application and `lili-hook` use Lili-owned platform application storage. They do not use `CODEX_HOME`, the current directory, Documents, or Desktop for desktop state or event forwarding.
 
-The desktop application, integration command, hook, and Codex process must resolve the same root. The default needs no configuration. For a custom root, provide the same environment value to every process:
+Typical application roots are:
 
-```text
-export CODEX_HOME="/absolute/path/to/codex-home"
-```
+| Platform | Application root |
+| --- | --- |
+| macOS | `~/Library/Application Support/dev.linw1995.lili/` |
+| Linux | `$XDG_STATE_HOME/dev.linw1995.lili/`, or `~/.local/state/dev.linw1995.lili/` |
+| Windows | `%LOCALAPPDATA%\dev.linw1995.lili\` |
 
-The PowerShell equivalent is `$env:CODEX_HOME = "C:\absolute\path\to\codex-home"`.
+The root contains the SQLite database `lili.sqlite3`, the application-owned `pets/` directory, `config/actions.toml`, owner-only runtime credentials and endpoint metadata, and SQLite WAL/SHM sidecars. The structured state, reducer records, notifications, plugin evidence, and offline spool are stored in SQLite with embedded migrations, WAL, foreign-key checks, and bounded transactions.
 
-Applications launched from a desktop shell may not inherit terminal environment variables. On macOS, a direct launch that preserves the override is:
+Existing `${CODEX_HOME}/lili`, `${CODEX_HOME}/pets`, and `${CODEX_HOME}/pet` paths are intentionally ignored. This release does not migrate, delete, or read them.
 
-```text
-CODEX_HOME="/absolute/path/to/codex-home" "$LILI_RELEASE/bundles/macos/Lili.app/Contents/MacOS/lili"
-```
-
-Use the default root unless all launch paths can consistently provide the override.
+`CODEX_HOME` is used only by an explicitly invoked `lili integrate` command to inspect or update Codex configuration. It is not a desktop configuration switch.
 
 ## 3. Configure pet packages
 
-Lili always has an embedded Lili fallback. Every external package is discovered one directory below `${CODEX_HOME}/pets/`. A valid package at `${CODEX_HOME}/pets/lili/` replaces the embedded fallback:
+Lili always has an embedded Lili fallback. External packages are discovered only below the application root's `pets/` directory. A valid package at `<LILI_DATA>/pets/lili/` replaces the embedded fallback:
 
 ```text
-${CODEX_HOME}/pets/lili/pet.json
-${CODEX_HOME}/pets/lili/spritesheet.webp
-${CODEX_HOME}/pets/<other-pet-id>/pet.json
-${CODEX_HOME}/pets/<other-pet-id>/spritesheet.webp
+<LILI_DATA>/pets/lili/pet.json
+<LILI_DATA>/pets/lili/spritesheet.webp
+<LILI_DATA>/pets/<other-pet-id>/pet.json
+<LILI_DATA>/pets/<other-pet-id>/spritesheet.webp
 ```
 
 To install the release copy as the external default package:
 
 ```text
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/pets/lili"
-cp "$LILI_RELEASE/pets/lili/pet.json" "${CODEX_HOME:-$HOME/.codex}/pets/lili/pet.json"
-cp "$LILI_RELEASE/pets/lili/spritesheet.webp" "${CODEX_HOME:-$HOME/.codex}/pets/lili/spritesheet.webp"
+mkdir -p "$LILI_DATA/pets/lili"
+cp "$LILI_RELEASE/pets/lili/pet.json" "$LILI_DATA/pets/lili/pet.json"
+cp "$LILI_RELEASE/pets/lili/spritesheet.webp" "$LILI_DATA/pets/lili/spritesheet.webp"
 ```
 
-The legacy singular `${CODEX_HOME}/pet/` directory is not scanned or migrated. Move any package that still uses it into `${CODEX_HOME}/pets/<pet-id>/`, then restart Lili.
+Set `LILI_DATA` to the platform application root shown above for a manual package installation. The old Codex package directories are not scanned or migrated.
 
 A v2 manifest uses camel-case field names:
 
@@ -126,11 +124,11 @@ After installation, restart Codex and start a new Session so it reads the update
 
 ## 5. Configure interaction actions
 
-Native actions are optional and are loaded from `${CODEX_HOME}/lili/actions.toml` when Lili starts. Copy the release example, then replace every placeholder executable path:
+Native actions are optional and are loaded from `$LILI_DATA/config/actions.toml` when Lili starts. Copy the release example, then replace every placeholder executable path:
 
 ```text
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/lili"
-cp "$LILI_RELEASE/examples/actions.toml" "${CODEX_HOME:-$HOME/.codex}/lili/actions.toml"
+mkdir -p "$LILI_DATA/config"
+cp "$LILI_RELEASE/examples/actions.toml" "$LILI_DATA/config/actions.toml"
 ```
 
 The three supported triggers are:
@@ -163,12 +161,12 @@ max_parallel = 1
 queue_capacity = 0
 
 [action.working_directory]
-policy = "codex_home"
+policy = "application_data"
 ```
 
 Filters support `providers`, `notification_kinds`, and `project_labels`. They require a notification context, so omit `[action.filters]` from pet click and pet double-click actions.
 
-Working-directory policies are `application`, `codex_home`, and `explicit`. An `explicit` policy also requires an existing absolute `path`. Actions receive only a minimal process environment; add fixed values explicitly when needed:
+Working-directory policies are `application`, `application_data`, and `explicit`. An `explicit` policy also requires an existing absolute `path`. Actions receive only a minimal process environment; add fixed values explicitly when needed:
 
 ```toml
 [action.working_directory]
@@ -228,7 +226,7 @@ Use this sequence after configuration:
 
 If the pet package does not load, confirm the manifest field names, atlas dimensions and transparency, and package paths. Lili falls back to the embedded package instead of rendering an invalid image.
 
-If Session notifications do not arrive, confirm Lili and Codex use the same absolute `${CODEX_HOME}`, keep Lili running for direct delivery, restart Codex after integration changes, and inspect compatibility warnings. Events received while the desktop endpoint is unavailable are recovered only if the hook can write to the same local spool.
+If Session notifications do not arrive, run `lili integrate inspect`, verify that the exact Hook definitions are trusted, keep Lili running for direct delivery, restart Codex after integration changes, and inspect compatibility warnings. Events received while the desktop endpoint is unavailable are recovered in the Lili-owned SQLite spool.
 
 If an action does not run, restart Lili after editing the file, confirm the executable exists and is executable, remove filters from pet-triggered actions, and review action diagnostics. Remember that the inherited environment is cleared and the default Unix `PATH` is only `/usr/bin:/bin`.
 

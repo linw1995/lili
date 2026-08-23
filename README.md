@@ -4,7 +4,7 @@ Lili is a local desktop pet that renders Codex v2 pet packages, observes support
 
 Lili is named after my cat.
 
-Optional pet packages are discovered under `${CODEX_HOME}/pets/<pet-id>`. Lili includes an embedded default, so no external pet package is required; invalid external packages are skipped.
+Optional Pet v2 packages are discovered under Lili's platform-native application data directory at `pets/<pet-id>`. Lili includes an embedded default, so no external package is required; invalid application-owned packages are skipped. The desktop runtime does not scan `CODEX_HOME`.
 
 ## Configuration
 
