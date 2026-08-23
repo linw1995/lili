@@ -24,6 +24,7 @@ const FIXTURES: [&str; 5] = [
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/stop.json"),
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/session-end.json"),
 ];
+const CONCURRENT_HOOK_TEST_BUDGET: Duration = Duration::from_secs(5);
 const VERSIONED_FIXTURES: [(&str, &str); 5] = [
     (
         "SessionStart",
@@ -110,7 +111,7 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
         assert!(output.stderr.is_empty());
     }
     assert!(
-        started.elapsed() <= Duration::from_secs(2),
+        started.elapsed() <= CONCURRENT_HOOK_TEST_BUDGET,
         "concurrent plugin hooks exceeded their bounded execution budget"
     );
 

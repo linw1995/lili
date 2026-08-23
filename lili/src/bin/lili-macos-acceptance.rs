@@ -206,8 +206,12 @@ mod macos {
         }
 
         fn write_action_config(&self) -> Result<(), String> {
+            let application_paths = self.application_paths();
+            fs::create_dir_all(application_paths.config_root()).map_err(|error| {
+                format!("application config directory could not be created: {error}")
+            })?;
             fs::write(
-                self.application_paths().actions_path(),
+                application_paths.actions_path(),
                 r#"version = 1
 
 [[action]]
