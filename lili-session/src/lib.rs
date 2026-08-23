@@ -3,6 +3,7 @@ mod forwarding;
 mod normalization;
 mod reducer;
 mod spool;
+mod sqlite_spool;
 mod transport;
 mod types;
 #[cfg(windows)]
@@ -31,6 +32,7 @@ pub use spool::{
     ClaimedSpoolRecord, MAX_SPOOL_RECORD_BYTES, SpoolEnqueueOutcome, SpoolError, SpoolLimits,
     SpoolMetrics, SpoolStore, decode_spool_record,
 };
+pub use sqlite_spool::{ClaimedSqliteSpoolRecord, SqliteSpoolStore};
 pub use transport::{
     BoundForwardingEndpoint, CodexPluginEvidenceStore, ForwardingConnection,
     ForwardingCredentialStore, ForwardingTransportError, deliver_forwarding_message,

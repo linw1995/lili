@@ -2839,6 +2839,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 

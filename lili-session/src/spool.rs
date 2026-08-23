@@ -39,6 +39,18 @@ impl SpoolLimits {
             max_age_ms,
         }
     }
+
+    pub const fn max_count(self) -> usize {
+        self.max_count
+    }
+
+    pub const fn max_bytes(self) -> u64 {
+        self.max_bytes
+    }
+
+    pub const fn max_age_ms(self) -> u64 {
+        self.max_age_ms
+    }
 }
 
 impl Default for SpoolLimits {
@@ -526,7 +538,7 @@ fn remove_unsafe_record(path: &Path) -> Result<(), SpoolError> {
     }
 }
 
-fn event_priority(event_type: SessionEventKind) -> u8 {
+pub(crate) fn event_priority(event_type: SessionEventKind) -> u8 {
     match event_type {
         SessionEventKind::AttentionRequired => 3,
         SessionEventKind::TurnFailed => 2,
@@ -731,6 +743,8 @@ fn sync_directory(_directory: &Path) -> Result<(), std::io::Error> {
 pub enum SpoolError {
     #[error("spool I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    #[error("spool database failed: {0}")]
+    Database(String),
     #[error("spool path is unsafe")]
     UnsafePath,
     #[error("spool object belongs to another user")]

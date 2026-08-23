@@ -11,6 +11,7 @@ use crate::schema::{
     app_state, inbound_spool, lifecycle_events, notifications, plugin_evidence, recent_events,
     sessions, turns,
 };
+use crate::transaction::with_short_transaction;
 
 pub fn load_app_state(connection: &mut SqliteConnection) -> QueryResult<AppStateRow> {
     app_state::table
@@ -98,6 +99,138 @@ pub fn insert_inbound_spool(
         .find((value.provider, value.event_id))
         .select(InboundSpoolRow::as_select())
         .first(connection)
+}
+
+pub fn find_inbound_spool(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    event_id: &str,
+) -> QueryResult<Option<InboundSpoolRow>> {
+    inbound_spool::table
+        .find((provider, event_id))
+        .select(InboundSpoolRow::as_select())
+        .first(connection)
+        .optional()
+}
+
+pub fn list_inbound_spool(connection: &mut SqliteConnection) -> QueryResult<Vec<InboundSpoolRow>> {
+    inbound_spool::table
+        .order((
+            inbound_spool::priority.asc(),
+            inbound_spool::inserted_at_ms.asc(),
+        ))
+        .select(InboundSpoolRow::as_select())
+        .load(connection)
+}
+
+pub fn recover_expired_inbound_spool_claims(
+    connection: &mut SqliteConnection,
+    now_ms: i64,
+) -> QueryResult<usize> {
+    diesel::update(
+        inbound_spool::table
+            .filter(inbound_spool::status.eq("claimed"))
+            .filter(inbound_spool::lease_expires_at_ms.is_not_null())
+            .filter(inbound_spool::lease_expires_at_ms.le(now_ms)),
+    )
+    .set((
+        inbound_spool::status.eq("pending"),
+        inbound_spool::claim_token.eq::<Option<&str>>(None),
+        inbound_spool::claimed_at_ms.eq::<Option<i64>>(None),
+        inbound_spool::lease_expires_at_ms.eq::<Option<i64>>(None),
+    ))
+    .execute(connection)
+}
+
+pub fn claim_inbound_spool(
+    connection: &mut SqliteConnection,
+    now_ms: i64,
+    lease_ms: i64,
+    claim_token: &str,
+) -> QueryResult<Option<InboundSpoolRow>> {
+    with_short_transaction(connection, |connection| {
+        let Some(candidate) = inbound_spool::table
+            .filter(inbound_spool::status.eq("pending"))
+            .order((
+                inbound_spool::priority.desc(),
+                inbound_spool::inserted_at_ms.asc(),
+            ))
+            .select(InboundSpoolRow::as_select())
+            .first(connection)
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let updated = diesel::update(
+            inbound_spool::table
+                .find((&candidate.provider, &candidate.event_id))
+                .filter(inbound_spool::status.eq("pending")),
+        )
+        .set((
+            inbound_spool::status.eq("claimed"),
+            inbound_spool::claim_token.eq(Some(claim_token)),
+            inbound_spool::claimed_at_ms.eq(Some(now_ms)),
+            inbound_spool::lease_expires_at_ms.eq(Some(now_ms.saturating_add(lease_ms))),
+            inbound_spool::attempts.eq(inbound_spool::attempts + 1),
+        ))
+        .execute(connection)?;
+        if updated != 1 {
+            return Ok(None);
+        }
+        inbound_spool::table
+            .find((&candidate.provider, &candidate.event_id))
+            .select(InboundSpoolRow::as_select())
+            .first(connection)
+            .optional()
+    })
+}
+
+pub fn delete_claimed_inbound_spool(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    event_id: &str,
+    claim_token: &str,
+) -> QueryResult<bool> {
+    let deleted = diesel::delete(
+        inbound_spool::table
+            .find((provider, event_id))
+            .filter(inbound_spool::status.eq("claimed"))
+            .filter(inbound_spool::claim_token.eq(claim_token)),
+    )
+    .execute(connection)?;
+    Ok(deleted == 1)
+}
+
+pub fn release_claimed_inbound_spool(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    event_id: &str,
+    claim_token: &str,
+) -> QueryResult<bool> {
+    let updated = diesel::update(
+        inbound_spool::table
+            .find((provider, event_id))
+            .filter(inbound_spool::status.eq("claimed"))
+            .filter(inbound_spool::claim_token.eq(claim_token)),
+    )
+    .set((
+        inbound_spool::status.eq("pending"),
+        inbound_spool::claim_token.eq::<Option<&str>>(None),
+        inbound_spool::claimed_at_ms.eq::<Option<i64>>(None),
+        inbound_spool::lease_expires_at_ms.eq::<Option<i64>>(None),
+    ))
+    .execute(connection)?;
+    Ok(updated == 1)
+}
+
+pub fn delete_inbound_spool(
+    connection: &mut SqliteConnection,
+    provider: &str,
+    event_id: &str,
+) -> QueryResult<bool> {
+    let deleted =
+        diesel::delete(inbound_spool::table.find((provider, event_id))).execute(connection)?;
+    Ok(deleted == 1)
 }
 
 pub fn insert_lifecycle_event(
