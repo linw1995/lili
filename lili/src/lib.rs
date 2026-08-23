@@ -27,7 +27,7 @@ use lili_app_state::{
 };
 use lili_core::PetId;
 use lili_integration::{IntegrationKind, inspect};
-use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
+use lili_pet::{PetCatalog, resolve_codex_home};
 use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
@@ -1171,7 +1171,6 @@ fn select_pet(state: &AppState, codex_home: &Path, pet_id: &PetId) -> Result<(),
     if catalog.active().definition().id() != pet_id {
         return Err("selected pet is unavailable".to_owned());
     }
-    persist_selected_pet(codex_home, pet_id).map_err(|error| error.to_string())?;
     tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));
     Ok(())
 }

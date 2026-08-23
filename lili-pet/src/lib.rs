@@ -14,10 +14,7 @@ pub use discovery::{
     resolve_codex_home,
 };
 pub use rendering::{AnimationScheduler, DirectionLookupError, LookDirectionSelector};
-pub use selection::{
-    AvailablePet, CatalogDiagnostic, LoadedPetAsset, PetAssetSource, PetCatalog, SelectionError,
-    persist_selected_pet, selection_path,
-};
+pub use selection::{AvailablePet, CatalogDiagnostic, LoadedPetAsset, PetAssetSource, PetCatalog};
 pub use validation::{
     AtlasFormat, AtlasMetadata, AtlasValidationError, ValidatedPetPackage,
     validate_discovered_package,
