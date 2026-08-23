@@ -10,7 +10,7 @@
 - [x] 2.2 Implement database opening and initialization with embedded migrations, `foreign_keys = ON`, WAL mode, and `busy_timeout = 5000`; verify first-open behavior and bounded connection errors.
 - [x] 2.3 Add the initial schema for application metadata, sessions, turns, notifications, recent event identities, inbound spool, plugin evidence, and immutable lifecycle events; verify foreign keys, enum checks, JSON validity, unique identities, indexes, and retention-related constraints.
 - [x] 2.4 Add Diesel models, generated schema, typed codecs, and repository functions for the new tables; verify business CRUD uses query-builder APIs and raw SQL appears only in migrations or fixed connection PRAGMAs.
-- [ ] 2.5 Add migration, rollback, constraint, immutable-event, and database-integrity tests; verify a failed migration or transaction does not leave a partially initialized application store.
+- [x] 2.5 Add migration, rollback, constraint, immutable-event, and database-integrity tests; verify a failed migration or transaction does not leave a partially initialized application store.
 
 ## 3. Persisted Application State and Pet Resources
 

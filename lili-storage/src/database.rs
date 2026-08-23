@@ -96,8 +96,12 @@ mod tests {
     use std::fs;
 
     use diesel::prelude::*;
+    use diesel_migrations::MigrationHarness;
 
     use super::*;
+    use crate::models::NewLifecycleEvent;
+    use crate::repository::insert_lifecycle_event;
+    use crate::schema::lifecycle_events;
 
     #[derive(QueryableByName)]
     struct CountRow {
@@ -142,6 +146,79 @@ mod tests {
 
         assert_eq!(foreign_keys, 1);
         assert_eq!(journal_mode, "wal");
+        drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn embedded_migrations_can_be_reverted_and_rerun() {
+        let paths = temporary_paths();
+        let mut database = open(&paths).unwrap();
+        database
+            .connection()
+            .revert_last_migration(MIGRATIONS)
+            .unwrap();
+        database
+            .connection()
+            .run_pending_migrations(MIGRATIONS)
+            .unwrap();
+
+        let count = diesel::sql_query("SELECT COUNT(*) AS count FROM app_state")
+            .get_result::<CountRow>(database.connection())
+            .unwrap()
+            .count;
+        assert_eq!(count, 1);
+        drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn schema_rejects_invalid_json_and_orphaned_notifications() {
+        let paths = temporary_paths();
+        let mut database = open(&paths).unwrap();
+        let invalid_json = diesel::sql_query(
+            "INSERT INTO inbound_spool (provider, event_id, payload_json, priority, occurred_at_ms, inserted_at_ms, status, attempts) VALUES ('codex', 'event-1', 'not-json', 1, 1, 1, 'pending', 0)",
+        )
+        .execute(database.connection());
+        assert!(invalid_json.is_err());
+
+        let orphaned_notification = diesel::sql_query(
+            "INSERT INTO notifications (id, provider, event_id, session_id, kind, state, occurred_at_ms) VALUES ('notification-1', 'codex', 'event-1', 'missing-session', 'completion', 'unread', 1)",
+        )
+        .execute(database.connection());
+        assert!(orphaned_notification.is_err());
+        drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_events_are_immutable() {
+        let paths = temporary_paths();
+        let mut database = open(&paths).unwrap();
+        insert_lifecycle_event(
+            database.connection(),
+            &NewLifecycleEvent {
+                event_id: "event-1",
+                entity_type: "application",
+                entity_id: "app",
+                event_type: "started",
+                source: "test",
+                occurred_at_ms: 1,
+                previous_state: None,
+                current_state: Some("idle"),
+                details_json: None,
+                error_json: None,
+            },
+        )
+        .unwrap();
+
+        let update = diesel::update(lifecycle_events::table.find("event-1"))
+            .set(lifecycle_events::event_type.eq("changed"))
+            .execute(database.connection());
+        let delete =
+            diesel::delete(lifecycle_events::table.find("event-1")).execute(database.connection());
+        assert!(update.is_err());
+        assert!(delete.is_err());
         drop(database);
         fs::remove_dir_all(paths.root()).unwrap();
     }
