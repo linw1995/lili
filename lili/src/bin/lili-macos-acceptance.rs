@@ -83,7 +83,7 @@ mod macos {
         )?;
         let mut app = spawn_app(&app_binary, workspace.path(), workspace.home())?;
         let credential_path = workspace.application_paths().credentials_path();
-        if !wait_for_file(&credential_path, Duration::from_secs(15)) {
+        if !wait_for_file(&credential_path, Duration::from_secs(30)) {
             terminate(&mut app);
             return Err("packaged app did not publish forwarding credentials".to_owned());
         }

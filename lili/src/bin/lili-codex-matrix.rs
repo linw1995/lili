@@ -10,7 +10,8 @@ use std::{
 use lili_integration::{
     InstallError, IntegrationKind, build_install_plan, inspect_with_version, install_with_verifier,
 };
-use lili_session::{SpoolLimits, SpoolStore};
+use lili_session::SqliteSpoolStore;
+use lili_storage::ApplicationPaths;
 use serde::Deserialize;
 
 const MAX_MATRIX_BYTES: u64 = 64 * 1024;
@@ -98,10 +99,10 @@ fn verify_version(
         let Some(program) = command.first() else {
             return Err(InstallError::InvalidPlan);
         };
-        let output = Command::new(program)
-            .args(&command[1..])
-            .env("CODEX_HOME", workspace.path())
-            .output()?;
+        let mut process = Command::new(program);
+        process.args(&command[1..]);
+        configure_command(&mut process, &workspace);
+        let output = process.output()?;
         if output.status.success() && output.stdout.is_empty() && output.stderr.is_empty() {
             Ok(())
         } else {
@@ -126,20 +127,22 @@ fn verify_version(
             let mut command = Command::new(&plan.notify.argv[0]);
             command
                 .args(&plan.notify.argv[1..])
-                .arg(String::from_utf8(payload).map_err(|_| "notify fixture is not UTF-8")?)
-                .env("CODEX_HOME", workspace.path())
-                .output()
+                .arg(String::from_utf8(payload).map_err(|_| "notify fixture is not UTF-8")?);
+            configure_command(&mut command, &workspace);
+            command.output()
         } else {
-            let mut child = Command::new(hook_binary)
+            let mut command = Command::new(hook_binary);
+            command
                 .args([
                     "--integration-id",
                     lili_integration::LILI_INTEGRATION_ID,
                     "--json-stdin",
                 ])
-                .env("CODEX_HOME", workspace.path())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+                .stderr(Stdio::piped());
+            configure_command(&mut command, &workspace);
+            let mut child = command
                 .spawn()
                 .map_err(|error| format!("{surface} hook could not start: {error}"))?;
             child
@@ -156,7 +159,7 @@ fn verify_version(
         }
     }
 
-    let spool = SpoolStore::new(workspace.path().join("spool"), SpoolLimits::default());
+    let spool = SqliteSpoolStore::for_application(workspace.application_paths());
     let mut accepted = 0;
     while let Some(claim) = spool
         .claim_next(unix_time_ms())
@@ -177,6 +180,14 @@ fn verify_version(
         ));
     }
     Ok(())
+}
+
+fn configure_command(command: &mut Command, workspace: &AcceptanceWorkspace) {
+    command
+        .env("CODEX_HOME", workspace.path())
+        .env("HOME", workspace.home())
+        .env("XDG_STATE_HOME", workspace.home().join("state"))
+        .env("LOCALAPPDATA", workspace.home().join("local-app-data"));
 }
 
 fn required_file(value: Option<std::ffi::OsString>, label: &str) -> Result<PathBuf, String> {
@@ -230,7 +241,10 @@ struct FixtureManifest {
     surfaces: Vec<String>,
 }
 
-struct AcceptanceWorkspace(PathBuf);
+struct AcceptanceWorkspace {
+    path: PathBuf,
+    home: PathBuf,
+}
 
 impl AcceptanceWorkspace {
     fn new(version: &str) -> Result<Self, String> {
@@ -239,18 +253,45 @@ impl AcceptanceWorkspace {
             std::process::id(),
             unix_time_ms()
         ));
+        let home = path.join("home");
         fs::create_dir_all(&path)
             .map_err(|error| format!("matrix workspace could not be created: {error}"))?;
-        Ok(Self(path))
+        fs::create_dir_all(&home)
+            .map_err(|error| format!("matrix home could not be created: {error}"))?;
+        Ok(Self { path, home })
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        &self.path
+    }
+
+    fn home(&self) -> &Path {
+        &self.home
+    }
+
+    fn application_paths(&self) -> ApplicationPaths {
+        #[cfg(target_os = "macos")]
+        let root = self
+            .home
+            .join("Library")
+            .join("Application Support")
+            .join(lili_storage::APPLICATION_IDENTIFIER);
+        #[cfg(target_os = "windows")]
+        let root = self
+            .home
+            .join("local-app-data")
+            .join(lili_storage::APPLICATION_IDENTIFIER);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let root = self
+            .home
+            .join("state")
+            .join(lili_storage::APPLICATION_IDENTIFIER);
+        ApplicationPaths::from_root(root).expect("matrix application path must be absolute")
     }
 }
 
 impl Drop for AcceptanceWorkspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
