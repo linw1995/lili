@@ -49,5 +49,5 @@
 ## 8. Documentation and Release Surface
 
 - [x] 8.1 Rewrite configuration and security documentation to describe the platform-native Lili directory, SQLite database, Pet file tree, actions file, runtime files, and explicit integration boundary; verify release manifests contain the updated guides.
-- [ ] 8.2 Update Marketplace/plugin skill text, diagnostics wording, privacy policy, and support material so they describe SQLite-backed local state without claiming desktop storage or hook forwarding uses Codex directories; verify consistency checks pass.
+- [x] 8.2 Update Marketplace/plugin skill text, diagnostics wording, privacy policy, and support material so they describe SQLite-backed local state without claiming desktop storage or hook forwarding uses Codex directories; verify consistency checks pass.
 - [ ] 8.3 Add a release note for the intentional breaking storage change, including a fresh SQLite schema, ignored old data, and explicit integration reinstallation requirements; verify the note is included in the release artifact checklist.

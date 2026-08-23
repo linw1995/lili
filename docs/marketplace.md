@@ -17,6 +17,8 @@ The plugin does not install the desktop application, approve or deny permission 
 
 Supported hook payloads are normalized before local delivery. Lili keeps bounded identifiers, lifecycle state, timestamps, project labels, and display-safe summaries needed for presentation and recovery. Raw prompts, credentials, approval arguments, process memory, private Codex databases, rollout logs, and complete conversation history are outside the supported integration boundary.
 
+The desktop application stores structured state, evidence, and offline events in a local SQLite database under Lili's platform application data directory. Pet assets and user action configuration are stored in Lili-owned files. Neither the desktop runtime nor the forwarder uses `CODEX_HOME`; only an explicitly invoked integration command inspects or updates Codex configuration.
+
 When the desktop process is unavailable, the local forwarder can retain bounded owner-only spool records for later recovery. Lili has no product telemetry or remote session-data recipient. Optional native actions run only when configured by the user and have the operating-system authority of the selected executable.
 
 ## Resources

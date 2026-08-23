@@ -25,6 +25,7 @@ State the active surface before giving setup advice.
 - On Codex, the plugin can provide this skill and trusted lifecycle hooks.
 - On ChatGPT, provide setup, compatibility, migration, and troubleshooting guidance only. Do not claim that the plugin observes ChatGPT lifecycle events.
 - On either surface, state that the desktop application is a separate prerequisite and is not installed by the plugin.
+- The desktop runtime and forwarder use Lili's platform application data and runtime directories; they do not use `CODEX_HOME` for state, Pet assets, actions, credentials, evidence, or spool data.
 
 ## Collect only safe evidence
 
@@ -63,6 +64,7 @@ Return a concise table with these fields when relevant:
 - IPC compatibility;
 - last accepted plugin event metadata;
 - legacy integration state;
+- application-storage availability and SQLite/runtime storage status;
 - safe next action.
 
 Separate observed evidence from user confirmation and inference. If trust is unknown, say that exact hook review is still required. Never expose event content in the report.
@@ -105,7 +107,7 @@ Generate the cleanup assessment only with `lili integrate assess --plugin <plugi
 - **Hooks untrusted or changed:** require review of the exact new hook definition. Changed hooks invalidate prior trust.
 - **Desktop unavailable:** ask the user to start the matching desktop release, then retry a bounded verification event.
 - **Version mismatch:** recommend a version pair inside the supported range. Do not force delivery across an incompatible protocol.
-- **No event delivery:** verify surface, attribution, trust, versions, local endpoint availability, and safe diagnostics in that order.
+- **No event delivery:** verify surface, attribution, trust, versions, Lili application-storage availability, local endpoint availability, and safe diagnostics in that order. Do not tell the user to make the desktop process use `CODEX_HOME`.
 - **Unreviewed Codex version:** report limited evidence and keep legacy cleanup blocked until real delivery succeeds.
 - **Unsupported host or missing packaged binary:** fail closed. Never use a binary from `PATH`, download a replacement, or suggest bypassing signature checks.
 - **ChatGPT lifecycle request:** explain that automatic ChatGPT lifecycle observation is unsupported; offer guidance only.
