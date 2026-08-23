@@ -1,5 +1,5 @@
 use std::{
-    env, fmt,
+    env, fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -55,6 +55,26 @@ impl ApplicationPaths {
     pub fn endpoint_path(&self) -> PathBuf {
         self.runtime_root().join("endpoint")
     }
+
+    pub fn ensure_layout(&self) -> Result<(), StorageError> {
+        for path in [
+            self.root.clone(),
+            self.config_root(),
+            self.pets_root(),
+            self.runtime_root(),
+        ] {
+            ensure_private_directory(&path)?;
+        }
+        for path in [
+            self.database_path(),
+            self.database_path().with_extension("sqlite3-wal"),
+            self.database_path().with_extension("sqlite3-shm"),
+            self.credentials_path(),
+        ] {
+            harden_existing_file(&path)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
@@ -63,6 +83,85 @@ pub enum PathError {
     HomeDirectoryUnavailable,
     #[error("application root must be absolute: {0}")]
     RelativeRoot(PathBuf),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    #[error("storage path is not a directory: {0}")]
+    InvalidDirectory(PathBuf),
+    #[error("storage path is not a regular file: {0}")]
+    InvalidFile(PathBuf),
+    #[error("storage I/O failed for {path}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+fn ensure_private_directory(path: &Path) -> Result<(), StorageError> {
+    fs::create_dir_all(path).map_err(|source| StorageError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| StorageError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(StorageError::InvalidDirectory(path.to_owned()));
+    }
+    set_private_directory_mode(path).map_err(|source| StorageError::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn harden_existing_file(path: &Path) -> Result<(), StorageError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(StorageError::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(StorageError::InvalidFile(path.to_owned()));
+    }
+    set_private_file_mode(path).map_err(|source| StorageError::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn set_private_directory_mode(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_mode(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_mode(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn set_private_file_mode(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 fn platform_application_root() -> Result<PathBuf, PathError> {
@@ -138,7 +237,17 @@ impl fmt::Display for ApplicationPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use std::{
+        ffi::OsString,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_TEMP_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    fn temporary_root() -> PathBuf {
+        let sequence = NEXT_TEMP_ROOT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("lili-storage-{}-{sequence}", std::process::id()))
+    }
 
     #[test]
     fn application_layout_is_stable_from_an_explicit_root() {
@@ -182,5 +291,62 @@ mod tests {
 
         assert!(!paths.starts_with("/Users/example/Documents/codex"));
         assert!(paths.is_absolute());
+    }
+
+    #[test]
+    fn ensure_layout_creates_expected_directories() {
+        let root = temporary_root();
+        let paths = ApplicationPaths::from_root(&root).unwrap();
+
+        paths.ensure_layout().unwrap();
+
+        assert!(root.is_dir());
+        assert!(paths.config_root().is_dir());
+        assert!(paths.pets_root().is_dir());
+        assert!(paths.runtime_root().is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_layout_rejects_a_symlinked_application_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_root();
+        let target = temporary_root();
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &root).unwrap();
+        let paths = ApplicationPaths::from_root(&root).unwrap();
+
+        assert!(matches!(
+            paths.ensure_layout(),
+            Err(StorageError::InvalidDirectory(path)) if path == root
+        ));
+        fs::remove_file(root).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_layout_hardens_existing_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temporary_root();
+        let paths = ApplicationPaths::from_root(&root).unwrap();
+        paths.ensure_layout().unwrap();
+        fs::write(paths.credentials_path(), b"secret").unwrap();
+        fs::set_permissions(&paths.credentials_path(), fs::Permissions::from_mode(0o644)).unwrap();
+
+        paths.ensure_layout().unwrap();
+
+        assert_eq!(
+            fs::metadata(paths.credentials_path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
