@@ -267,6 +267,27 @@ mod tests {
     }
 
     #[test]
+    fn file_asset_loader_reads_a_bounded_validated_atlas() {
+        let temp = TempDir::new();
+        let atlas_path = temp.0.join("spritesheet.webp");
+        fs::write(&atlas_path, FALLBACK_ATLAS).unwrap();
+
+        let (bytes, metadata) = crate::validation::read_validated_atlas(&atlas_path).unwrap();
+
+        assert_eq!(bytes, FALLBACK_ATLAS);
+        assert_eq!(metadata.format(), crate::AtlasFormat::WebP);
+        assert_eq!(metadata.width(), crate::ATLAS_WIDTH);
+        assert_eq!(metadata.height(), crate::ATLAS_HEIGHT);
+
+        let empty_path = temp.0.join("empty.webp");
+        fs::write(&empty_path, []).unwrap();
+        assert!(matches!(
+            crate::validation::read_validated_atlas(&empty_path),
+            Err(AtlasValidationError::EncodedSize(0))
+        ));
+    }
+
+    #[test]
     fn embedded_fallback_rows_share_one_tabby_palette() {
         const MAX_CHROMATICITY_DRIFT: f64 = 0.03;
 

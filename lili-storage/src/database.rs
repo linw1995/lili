@@ -148,6 +148,29 @@ mod tests {
     }
 
     #[test]
+    fn database_errors_expose_bounded_display_and_sources() {
+        use std::error::Error;
+
+        let errors = [
+            DatabaseError::Path(PathError::HomeDirectoryUnavailable),
+            DatabaseError::Storage(StorageError::InvalidDirectory(PathBuf::from("/tmp/root"))),
+            DatabaseError::Connection(diesel::ConnectionError::InvalidConnectionUrl(
+                "invalid".to_owned(),
+            )),
+            DatabaseError::Configuration(diesel::result::Error::RollbackTransaction),
+            DatabaseError::Migration(Box::new(std::io::Error::other("migration failed"))),
+        ];
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            assert!(error.source().is_some());
+        }
+
+        let path_error = DatabaseError::PathNotUtf8(PathBuf::from("/tmp/database"));
+        assert!(path_error.to_string().contains("database path"));
+        assert!(path_error.source().is_none());
+    }
+
+    #[test]
     fn open_creates_database_and_applies_metadata_migration() {
         let paths = temporary_paths();
         let database_path = paths.database_path();
