@@ -1,25 +1,45 @@
 use std::{
     ffi::CStr,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
 
+use block2::RcBlock;
 use objc2::{
     msg_send,
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
-use objc2_app_kit::{NSWindowCollectionBehavior, NSWindowStyleMask};
+use objc2_app_kit::{NSEvent, NSEventMask, NSWindowCollectionBehavior, NSWindowStyleMask};
+use std::ptr::NonNull;
 
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 
-pub fn configure(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+type ContextMenuHandler = Arc<dyn Fn() + Send + Sync>;
+
+static CONTEXT_MENU_HANDLER: OnceLock<Mutex<Option<(isize, ContextMenuHandler)>>> = OnceLock::new();
+thread_local! {
+    static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub fn configure(
+    window: &tauri::WebviewWindow,
+    context_menu_handler: impl Fn() + Send + Sync + 'static,
+) -> tauri::Result<()> {
     let raw_window = window.ns_window()?;
     if raw_window.is_null() {
         return Err(tauri::Error::InvalidWindowHandle);
     }
     let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
+    let context_menu_handler: ContextMenuHandler = Arc::new(context_menu_handler);
+    let handler = CONTEXT_MENU_HANDLER.get_or_init(|| Mutex::new(None));
+    *handler
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("context menu handler".to_owned()))? =
+        Some((window_number, Arc::clone(&context_menu_handler)));
     let panel_class = panel_class();
     let old_class = native_window.class();
     assert!(
@@ -43,6 +63,7 @@ pub fn configure(window: &tauri::WebviewWindow) -> tauri::Result<()> {
             | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![native_window, setCollectionBehavior: behavior];
     }
+    install_context_menu_monitor();
     Ok(())
 }
 
@@ -121,4 +142,31 @@ fn panel_class() -> &'static AnyClass {
 
 extern "C" fn can_become_key_window(_window: &AnyObject, _selector: Sel) -> Bool {
     Bool::YES
+}
+
+fn install_context_menu_monitor() {
+    let already_installed = CONTEXT_MENU_MONITOR.with(|monitor| monitor.borrow().is_some());
+    if already_installed {
+        return;
+    }
+    let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        let event = unsafe { event.as_ref() };
+        let Some((window_number, handler)) = CONTEXT_MENU_HANDLER
+            .get()
+            .and_then(|handler| handler.lock().ok().and_then(|handler| handler.clone()))
+        else {
+            return event as *const NSEvent as *mut NSEvent;
+        };
+        if event.windowNumber() as isize != window_number {
+            return event as *const NSEvent as *mut NSEvent;
+        }
+        handler();
+        std::ptr::null_mut()
+    });
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::RightMouseDown, &block)
+    };
+    if let Some(monitor) = monitor {
+        CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
 }

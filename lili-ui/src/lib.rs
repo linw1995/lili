@@ -116,7 +116,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
                     }
                 }
                 on:pointerup=move |event| {
-                    if !event.is_primary() {
+                    if !event.is_primary() || !pointer.get_untracked().pressed() {
                         return;
                     }
                     release_pointer(&event);
@@ -1082,6 +1082,12 @@ export function activateNativePet(trigger) {
 export function dismissNativeNotification(id) {
   void fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
 }
+
+export function openNativePetContextMenu(screenX, screenY) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('open_pet_context_menu', { screenX, screenY }).catch(() => {});
+}
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
@@ -1092,6 +1098,9 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = dismissNativeNotification)]
     fn dismiss_native_notification(id: &str);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = openNativePetContextMenu)]
+    fn open_native_pet_context_menu(screen_x: i32, screen_y: i32);
 }
 
 #[cfg(feature = "hydrate")]
@@ -1108,6 +1117,11 @@ struct AnimationClock {
 }
 
 #[cfg(feature = "hydrate")]
+struct ContextMenuHandlers {
+    _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
+}
+
+#[cfg(feature = "hydrate")]
 thread_local! {
     static PRESENTATION_STREAM: std::cell::RefCell<Option<PresentationStream>> =
         const { std::cell::RefCell::new(None) };
@@ -1116,6 +1130,8 @@ thread_local! {
 #[cfg(feature = "hydrate")]
 thread_local! {
     static ANIMATION_CLOCK: std::cell::RefCell<Option<AnimationClock>> =
+        const { std::cell::RefCell::new(None) };
+    static CONTEXT_MENU_HANDLERS: std::cell::RefCell<Option<ContextMenuHandlers>> =
         const { std::cell::RefCell::new(None) };
     static REDUCED_MOTION_QUERY: Option<web_sys::MediaQueryList> = web_sys::window()
         .and_then(|window| window.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
@@ -1133,11 +1149,48 @@ pub fn hydrate() {
     leptos::mount::hydrate_body(move || {
         view! { <App presentation=presentation.clone()/> }
     });
+    install_context_menu_handlers();
     if let Some(app) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id("lili-app"))
     {
         let _ = app.set_attribute("data-hydrated", "true");
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn install_context_menu_handlers() {
+    use wasm_bindgen::{JsCast, closure::Closure};
+    use web_sys::{Element, MouseEvent};
+
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let contextmenu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        if event.button() != 2 || !is_pet_context_target(&event) {
+            return;
+        }
+        event.prevent_default();
+        event.stop_immediate_propagation();
+        open_native_pet_context_menu(event.screen_x(), event.screen_y());
+    });
+    let _ = document.add_event_listener_with_callback_and_bool(
+        "contextmenu",
+        contextmenu.as_ref().unchecked_ref(),
+        true,
+    );
+    CONTEXT_MENU_HANDLERS.with(|handlers| {
+        handlers.borrow_mut().replace(ContextMenuHandlers {
+            _contextmenu: contextmenu,
+        });
+    });
+
+    fn is_pet_context_target(event: &MouseEvent) -> bool {
+        event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
+            .and_then(|target| target.closest(".pet-sprite").ok().flatten())
+            .is_some()
     }
 }
 

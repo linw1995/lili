@@ -11,8 +11,14 @@ mod loopback;
 mod macos_panel;
 mod platform_pinning;
 
-use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
@@ -43,6 +49,36 @@ use tauri::{
 use tokio::sync::oneshot;
 
 const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+const CONTEXT_MENU_WINDOW_LABEL: &str = "pet-context-menu";
+const CONTEXT_MENU_WIDTH: u32 = 196;
+const CONTEXT_MENU_HEIGHT: u32 = 244;
+const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
+(() => {
+  const invoke = (action) => {
+    const nativeInvoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!nativeInvoke) return;
+    void nativeInvoke('run_pet_context_action', { action });
+  };
+
+  for (const button of document.querySelectorAll('[data-action]')) {
+    button.onclick = () => invoke(button.dataset.action);
+  }
+})();
+"#;
+
+#[derive(Clone)]
+struct PetContextActions {
+    state: AppState,
+    codex_home: Option<PathBuf>,
+    always_on_top: CheckMenuItem<tauri::Wry>,
+    pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
+}
+
+#[derive(Clone)]
+struct ContextMenuNavigation {
+    url: tauri::Url,
+    certificate_sha256: [u8; 32],
+}
 
 pub fn run() {
     diagnostics::init();
@@ -67,6 +103,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             begin_window_drag,
             move_window_to,
             commit_window_position,
+            open_pet_context_menu,
+            run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
         ])
@@ -91,8 +129,14 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         store: state_store.clone(),
     });
     app.manage(WindowDragState::default());
-    setup_tray(&app, state.clone(), codex_home.as_deref())
+    let tray_menu = setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
+    app.manage(PetContextActions {
+        state: state.clone(),
+        codex_home: codex_home.clone(),
+        always_on_top: tray_menu.always_on_top.clone(),
+        pet_items: tray_menu.pet_items.clone(),
+    });
     let diagnostics_refresh =
         native_ingestion
             .zip(codex_home.clone())
@@ -115,6 +159,16 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     app.manage(signer);
     register_loopback_capability(&app, &origin, smoke, acceptance)
         .expect("failed to register loopback capability");
+    register_context_menu_capability(&app, &origin)
+        .expect("failed to configure context menu capability");
+    app.manage(ContextMenuNavigation {
+        url: tauri::Url::parse(&format!(
+            "{}/context-menu",
+            origin.as_str().trim_end_matches('/')
+        ))
+        .expect("valid context menu URL"),
+        certificate_sha256,
+    });
     let window = create_pet_window(&app, &state, &origin, smoke, acceptance)
         .expect("failed to create pet window");
     restore_window_placement(&window, saved_window_placement.as_ref());
@@ -168,7 +222,8 @@ fn register_loopback_capability(
         .permission("allow-sign-loopback-request")
         .permission("allow-begin-window-drag")
         .permission("allow-move-window-to")
-        .permission("allow-commit-window-position");
+        .permission("allow-commit-window-position")
+        .permission("allow-open-pet-context-menu");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
     } else if smoke {
@@ -176,6 +231,15 @@ fn register_loopback_capability(
     } else {
         capability
     };
+    app.add_capability(capability)
+}
+
+fn register_context_menu_capability(app: &tauri::App, origin: &tauri::Url) -> tauri::Result<()> {
+    let capability = CapabilityBuilder::new("context-menu-window")
+        .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
+        .local(false)
+        .window(CONTEXT_MENU_WINDOW_LABEL)
+        .permission("allow-run-pet-context-action");
     app.add_capability(capability)
 }
 
@@ -213,17 +277,78 @@ fn create_pet_window(
     } else {
         builder.build()
     }?;
-    configure_desktop_companion_window(&window)?;
+    configure_desktop_companion_window(&window, app.handle().clone())?;
+    Ok(window)
+}
+
+fn create_context_menu_window(
+    app: &tauri::AppHandle,
+    navigation: &ContextMenuNavigation,
+) -> Result<tauri::WebviewWindow, String> {
+    let app_handle = app.clone();
+    let has_been_focused = Arc::new(AtomicBool::new(false));
+    let focus_state = Arc::clone(&has_been_focused);
+    let window = WebviewWindowBuilder::new(
+        app,
+        CONTEXT_MENU_WINDOW_LABEL,
+        WebviewUrl::External("about:blank".parse().expect("valid context menu URL")),
+    )
+    .initialization_script(CONTEXT_MENU_INITIALIZATION_SCRIPT)
+    .title("Lili")
+    .inner_size(
+        f64::from(CONTEXT_MENU_WIDTH),
+        f64::from(CONTEXT_MENU_HEIGHT),
+    )
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .resizable(false)
+    .shadow(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false)
+    .on_page_load(|window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
+        }
+    })
+    .build()
+    .map_err(|error| format!("failed to create pet context menu window: {error}"))?;
+    platform_pinning::install_and_navigate(
+        &window,
+        navigation.url.clone(),
+        navigation.certificate_sha256,
+    )
+    .map_err(|error| format!("failed to navigate pet context menu window: {error}"))?;
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Focused(true) => {
+            focus_state.store(true, Ordering::Release);
+        }
+        tauri::WindowEvent::Focused(false) if focus_state.swap(false, Ordering::AcqRel) => {
+            if let Some(window) = app_handle.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
+                let _ = window.hide();
+            }
+        }
+        _ => {}
+    });
     Ok(window)
 }
 
 #[cfg(target_os = "macos")]
-fn configure_desktop_companion_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    macos_panel::configure(window)
+fn configure_desktop_companion_window(
+    window: &tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> tauri::Result<()> {
+    macos_panel::configure(window, move || {
+        open_pet_context_menu_from_native(&app);
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
-fn configure_desktop_companion_window(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+fn configure_desktop_companion_window(
+    _window: &tauri::WebviewWindow,
+    _app: tauri::AppHandle,
+) -> tauri::Result<()> {
     Ok(())
 }
 
@@ -656,6 +781,119 @@ struct WindowDragAnchor {
 struct WindowDragState(std::sync::Mutex<Option<WindowDragAnchor>>);
 
 #[tauri::command]
+fn open_pet_context_menu(
+    app: tauri::AppHandle,
+    source: tauri::WebviewWindow,
+    navigation: tauri::State<'_, ContextMenuNavigation>,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<(), String> {
+    open_pet_context_menu_at(
+        &app,
+        &source,
+        &navigation,
+        Some(tauri::PhysicalPosition::new(screen_x, screen_y)),
+    )
+}
+
+fn open_pet_context_menu_from_native(app: &tauri::AppHandle) {
+    let Some(source) = app.get_webview_window("pet") else {
+        diagnostics::warn("context_menu", "open", "pet_window_unavailable");
+        return;
+    };
+    let navigation = app.state::<ContextMenuNavigation>();
+    if open_pet_context_menu_at(app, &source, &navigation, None).is_err() {
+        diagnostics::warn("context_menu", "open", "failed");
+    }
+}
+
+fn open_pet_context_menu_at(
+    app: &tauri::AppHandle,
+    source: &tauri::WebviewWindow,
+    navigation: &ContextMenuNavigation,
+    fallback: Option<tauri::PhysicalPosition<i32>>,
+) -> Result<(), String> {
+    let window = match app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
+        Some(window) => window,
+        None => create_context_menu_window(app, navigation)?,
+    };
+    let pointer = source
+        .cursor_position()
+        .ok()
+        .filter(|point| point.x.is_finite() && point.y.is_finite())
+        .map(|point| tauri::PhysicalPosition::new(point.x.round() as i32, point.y.round() as i32))
+        .or(fallback)
+        .ok_or_else(|| "current cursor position is unavailable".to_owned())?;
+    let position = context_menu_position(source, &window, pointer);
+    window
+        .set_position(position)
+        .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("failed to show pet context menu: {error}"))?;
+    let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
+    let _ = window.set_focus();
+    Ok(())
+}
+
+fn context_menu_position(
+    source: &tauri::WebviewWindow,
+    popup: &tauri::WebviewWindow,
+    pointer: tauri::PhysicalPosition<i32>,
+) -> tauri::PhysicalPosition<i32> {
+    let size = popup
+        .outer_size()
+        .ok()
+        .filter(|size| size.width > 0 && size.height > 0)
+        .unwrap_or_else(|| tauri::PhysicalSize::new(CONTEXT_MENU_WIDTH, CONTEXT_MENU_HEIGHT));
+    let monitor = source
+        .monitor_from_point(f64::from(pointer.x), f64::from(pointer.y))
+        .ok()
+        .flatten()
+        .or_else(|| source.current_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return pointer;
+    };
+    let work_area = monitor.work_area();
+    let min_x = work_area.position.x;
+    let min_y = work_area.position.y;
+    let max_x = (work_area.position.x + work_area.size.width as i32 - size.width as i32).max(min_x);
+    let max_y =
+        (work_area.position.y + work_area.size.height as i32 - size.height as i32).max(min_y);
+    tauri::PhysicalPosition::new(pointer.x.clamp(min_x, max_x), pointer.y.clamp(min_y, max_y))
+}
+
+#[tauri::command]
+fn run_pet_context_action(
+    app: tauri::AppHandle,
+    actions: tauri::State<'_, PetContextActions>,
+    action: String,
+) -> Result<(), String> {
+    hide_pet_context_menu(&app);
+    match TrayAction::parse(&action) {
+        TrayAction::AlwaysOnTop => {
+            let enabled = !actions.always_on_top.is_checked().unwrap_or(true);
+            set_always_on_top(&app, &actions.state, &actions.always_on_top, enabled);
+        }
+        action => handle_tray_menu_event(
+            &app,
+            action,
+            &actions.state,
+            actions.codex_home.as_deref(),
+            &actions.pet_items,
+            &actions.always_on_top,
+        ),
+    }
+    Ok(())
+}
+
+fn hide_pet_context_menu(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
 fn begin_window_drag(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, WindowDragState>,
@@ -785,8 +1023,13 @@ async fn commit_window_position(
     Ok(true)
 }
 
-fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> tauri::Result<()> {
+fn setup_tray(
+    app: &tauri::App,
+    state: AppState,
+    codex_home: Option<&Path>,
+) -> tauri::Result<TrayMenu> {
     let tray_menu = build_tray_menu(app, &state, codex_home)?;
+    let event_menu = tray_menu.clone();
     let icon = app
         .default_window_icon()
         .cloned()
@@ -806,15 +1049,16 @@ fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> t
                     TrayAction::parse(event.id().as_ref()),
                     &state,
                     codex_home.as_deref(),
-                    &tray_menu.pet_items,
-                    &tray_menu.always_on_top,
+                    &event_menu.pet_items,
+                    &event_menu.always_on_top,
                 );
             }
         })
         .build(app)?;
-    Ok(())
+    Ok(tray_menu)
 }
 
+#[derive(Clone)]
 struct TrayMenu {
     menu: Menu<tauri::Wry>,
     always_on_top: CheckMenuItem<tauri::Wry>,
@@ -1026,6 +1270,16 @@ fn update_always_on_top(
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
     let enabled = always_on_top.is_checked().unwrap_or(true);
+    set_always_on_top(app, state, always_on_top, enabled);
+}
+
+fn set_always_on_top(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    always_on_top: &CheckMenuItem<tauri::Wry>,
+    enabled: bool,
+) {
+    let _ = always_on_top.set_checked(enabled);
     if let Some(window) = app.get_webview_window("pet") {
         let _ = window.set_always_on_top(enabled);
     }

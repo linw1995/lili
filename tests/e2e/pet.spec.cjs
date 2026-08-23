@@ -179,6 +179,82 @@ test("every standard animation state is observable", async ({ page }) => {
   });
 });
 
+test("pet owns the context menu gesture", async ({ page }) => {
+  await openPet(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  const pet = page.locator(".pet-sprite");
+  const box = await pet.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.click(box.x + 80, box.y + 90, { button: "right" });
+  await expect
+    .poll(() => page.evaluate(() => window.__LILI_INVOKES__))
+    .toEqual([
+      {
+        name: "open_pet_context_menu",
+        args: { screenX: box.x + 80, screenY: box.y + 90 },
+      },
+    ]);
+  const result = await pet.evaluate((element) => {
+    const event = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: 80,
+      clientY: 90,
+    });
+    return {
+      dispatchResult: element.dispatchEvent(event),
+      defaultPrevented: event.defaultPrevented,
+    };
+  });
+  expect(result).toEqual({ dispatchResult: false, defaultPrevented: true });
+});
+
+test("left drag continues to use native window movement", async ({ page }) => {
+  await openPet(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__LILI_DRAG_STARTS__ = 0;
+    document.addEventListener("dragstart", () => {
+      window.__LILI_DRAG_STARTS__ += 1;
+    });
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+
+  const pet = page.locator(".pet-sprite");
+  const box = await pet.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.click(box.x + 80, box.y + 90, { button: "right" });
+  await page.mouse.move(box.x + 20, box.y + 104);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 172, box.y + 104, { steps: 2 });
+  await page.mouse.up();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__LILI_INVOKES__.map((call) => call.name)),
+    )
+    .toContain("commit_window_position");
+  const calls = await page.evaluate(() => window.__LILI_INVOKES__);
+  expect(calls.map((call) => call.name)).toEqual(
+    expect.arrayContaining(["begin_window_drag", "move_window_to"]),
+  );
+  expect(await page.evaluate(() => window.__LILI_DRAG_STARTS__)).toBe(0);
+});
+
 test("look direction follows all four quadrants", async ({ page }) => {
   await openPet(page);
   await replacePresentation(page);

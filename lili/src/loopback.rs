@@ -352,6 +352,9 @@ async fn authorize(
         );
         return security.harden(response);
     }
+    if request.uri().path() == "/context-menu" && request.method() == Method::GET {
+        return security.harden(next.run(request).await);
+    }
     if !has_session_cookie(request.headers(), &security.cookie_name, &security.secret) {
         return security.harden(StatusCode::UNAUTHORIZED.into_response());
     }
