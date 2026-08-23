@@ -1,5 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use diesel::Connection;
 use diesel::connection::SimpleConnection;
@@ -11,7 +13,9 @@ use crate::{ApplicationPaths, PathError, StorageError};
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 const CONNECTION_PRAGMAS: &str =
-    "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;";
+    "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;";
+const INITIALIZATION_RETRY_COUNT: usize = 100;
+const INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 pub struct EmbeddedDatabase {
     connection: SqliteConnection,
@@ -31,6 +35,21 @@ pub fn open(paths: &ApplicationPaths) -> Result<EmbeddedDatabase, DatabaseError>
 }
 
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
+    let mut last_error = None;
+    for attempt in 0..=INITIALIZATION_RETRY_COUNT {
+        match connect_once(path) {
+            Ok(connection) => return Ok(connection),
+            Err(error) if error.is_retryable() && attempt < INITIALIZATION_RETRY_COUNT => {
+                last_error = Some(error);
+                thread::sleep(INITIALIZATION_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.expect("database initialization must produce an error"))
+}
+
+fn connect_once(path: &Path) -> Result<SqliteConnection, DatabaseError> {
     let path_text = path
         .to_str()
         .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
@@ -88,6 +107,12 @@ impl std::error::Error for DatabaseError {
             Self::Configuration(error) => Some(error),
             Self::Migration(error) => Some(&**error),
         }
+    }
+}
+
+impl DatabaseError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::Configuration(error) if error.to_string().contains("database is locked"))
     }
 }
 

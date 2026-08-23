@@ -1,17 +1,16 @@
 use std::{
     ffi::OsString,
-    fs,
     io::Read,
-    path::Path,
     process::{Command, Stdio},
     time::Duration,
 };
 
-use lili_integration::{LILI_INTEGRATION_ID, resolve_codex_home};
+use lili_integration::LILI_INTEGRATION_ID;
 use lili_session::{
-    ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolStore,
+    ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SqliteSpoolStore,
     deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,
 };
+use lili_storage::ApplicationPaths;
 
 pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(150);
 pub const ONLINE_FORWARDING_BUDGET: Duration = Duration::from_millis(250);
@@ -76,7 +75,7 @@ impl HookResult {
 enum HookInvocation {
     Direct {
         payload: Vec<u8>,
-        plugin_attributed: bool,
+        plugin_id: Option<String>,
     },
     Coexist {
         original_argv: Vec<String>,
@@ -91,49 +90,52 @@ pub async fn run_from_environment() -> HookResult {
         Ok(invocation) => invocation,
         Err(result) => return result,
     };
-    let codex_home = match resolve_codex_home() {
-        Ok(codex_home) => codex_home,
+    let application_paths = match ApplicationPaths::resolve() {
+        Ok(application_paths) => application_paths,
         Err(_) => {
             return HookResult::failure(
                 HookExitCode::DeliveryFailed,
-                "Codex home could not be resolved",
+                "Lili application storage could not be resolved",
             );
         }
     };
     match invocation {
-        HookInvocation::Direct {
-            payload,
-            plugin_attributed,
-        } => {
-            let plugin_id = plugin_attributed
-                .then(|| installed_plugin_selector(&codex_home))
-                .flatten();
-            if plugin_attributed && plugin_id.is_none() {
+        HookInvocation::Direct { payload, plugin_id } => {
+            if plugin_id.is_some() && plugin_id.as_deref().is_some_and(str::is_empty) {
                 return HookResult::failure(
                     HookExitCode::InvalidInput,
-                    "plugin invocation identity could not be verified",
+                    "plugin invocation identity is invalid",
                 );
             }
-            process_payload_with_source(&codex_home, &payload, unix_time_ms(), plugin_id.as_deref())
-                .await
+            process_payload_with_source(
+                &application_paths,
+                &payload,
+                unix_time_ms(),
+                plugin_id.as_deref(),
+            )
+            .await
         }
         HookInvocation::Coexist {
             original_argv,
             payload,
         } => {
             let original_started = launch_original_notify(&original_argv, &payload);
-            let lili_result = process_payload(&codex_home, &payload, unix_time_ms()).await;
+            let lili_result = process_payload(&application_paths, &payload, unix_time_ms()).await;
             isolate_coexistence_result(original_started, lili_result)
         }
     }
 }
 
-pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> HookResult {
-    process_payload_with_source(codex_home, payload, now_ms, None).await
+pub async fn process_payload(
+    application_paths: &ApplicationPaths,
+    payload: &[u8],
+    now_ms: u64,
+) -> HookResult {
+    process_payload_with_source(application_paths, payload, now_ms, None).await
 }
 
 async fn process_payload_with_source(
-    codex_home: &Path,
+    application_paths: &ApplicationPaths,
     payload: &[u8],
     now_ms: u64,
     plugin_id: Option<&str>,
@@ -155,7 +157,7 @@ async fn process_payload_with_source(
     }
 
     let credential_store =
-        ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"));
+        ForwardingCredentialStore::for_runtime_dir(&application_paths.runtime_root());
     let online = credential_store.load().ok().and_then(|record| {
         record
             .credentials()
@@ -174,7 +176,7 @@ async fn process_payload_with_source(
         return HookResult::success(HookOutcome::Delivered);
     }
 
-    match SpoolStore::for_codex_home(codex_home).enqueue(&event, now_ms) {
+    match SqliteSpoolStore::for_application(application_paths.clone()).enqueue(&event, now_ms) {
         Ok(SpoolEnqueueOutcome::Stored) => HookResult::success(HookOutcome::Spooled),
         Ok(SpoolEnqueueOutcome::DroppedByLimit) => HookResult::failure(
             HookExitCode::DeliveryFailed,
@@ -185,42 +187,6 @@ async fn process_payload_with_source(
             "hook event could not be delivered or spooled",
         ),
     }
-}
-
-fn installed_plugin_selector(codex_home: &Path) -> Option<String> {
-    let plugin_root = std::env::var_os("PLUGIN_ROOT")?;
-    installed_plugin_selector_for_root(codex_home, Path::new(&plugin_root))
-}
-
-fn installed_plugin_selector_for_root(codex_home: &Path, plugin_root: &Path) -> Option<String> {
-    let plugin_root = fs::canonicalize(plugin_root).ok()?;
-    let codex_home = fs::canonicalize(codex_home).ok()?;
-    let version = plugin_root.file_name()?.to_str()?;
-    let plugin_directory = plugin_root.parent()?;
-    let plugin_name = plugin_directory.file_name()?.to_str()?;
-    let marketplace_directory = plugin_directory.parent()?;
-    let marketplace_name = marketplace_directory.file_name()?.to_str()?;
-    let cache_directory = marketplace_directory.parent()?;
-    let plugins_directory = cache_directory.parent()?;
-    if version != env!("CARGO_PKG_VERSION")
-        || cache_directory.file_name()?.to_str()? != "cache"
-        || plugins_directory.file_name()?.to_str()? != "plugins"
-        || plugins_directory.parent()? != codex_home
-    {
-        return None;
-    }
-    let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
-    if fs::metadata(&manifest_path).ok()?.len() > 64 * 1024 {
-        return None;
-    }
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
-    if manifest.get("name").and_then(serde_json::Value::as_str) != Some(plugin_name)
-        || manifest.get("version").and_then(serde_json::Value::as_str) != Some(version)
-    {
-        return None;
-    }
-    Some(format!("{plugin_name}@{marketplace_name}"))
 }
 
 #[cfg(test)]
@@ -283,24 +249,36 @@ fn read_hook_invocation<R: Read>(
         [mode, payload] if mode == "--json-argv" => {
             bounded_argv_payload(payload).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_attributed: false,
+                plugin_id: None,
             })
         }
         [mode] if mode == "--json-stdin" => {
             bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_attributed: false,
+                plugin_id: None,
             })
         }
-        [plugin, mode] if plugin == "--plugin-hook" && mode == "--json-stdin" => {
+        [plugin, plugin_id, mode] if plugin == "--plugin-hook" && mode == "--json-stdin" => {
+            let plugin_id = plugin_id.to_str().ok_or_else(|| {
+                HookResult::failure(
+                    HookExitCode::InvalidInput,
+                    "plugin invocation identity must be valid UTF-8",
+                )
+            })?;
+            if plugin_id.is_empty() || plugin_id.len() > 128 {
+                return Err(HookResult::failure(
+                    HookExitCode::InvalidInput,
+                    "plugin invocation identity is invalid",
+                ));
+            }
             bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_attributed: true,
+                plugin_id: Some(plugin_id.to_owned()),
             })
         }
         _ => Err(HookResult::failure(
             HookExitCode::Usage,
-            "usage: lili-hook [--plugin-hook] --json-stdin | --json-argv <json>",
+            "usage: lili-hook [--plugin-hook <plugin-id>] --json-stdin | --json-argv <json>",
         )),
     }
 }
@@ -485,6 +463,7 @@ mod tests {
                 OsString::from("--integration-id"),
                 OsString::from(LILI_INTEGRATION_ID),
                 OsString::from("--plugin-hook"),
+                OsString::from("lili@lili-local"),
                 OsString::from("--json-stdin"),
             ],
             &mut Cursor::new(
@@ -495,42 +474,10 @@ mod tests {
         assert!(matches!(
             invocation,
             HookInvocation::Direct {
-                plugin_attributed: true,
+                plugin_id: Some(_),
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn installed_plugin_selector_is_bound_to_cache_path_and_manifest() {
-        let temp = TempDir::new();
-        let root = temp
-            .0
-            .join("plugins/cache/marketplace-a/lili")
-            .join(env!("CARGO_PKG_VERSION"));
-        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
-        fs::write(
-            root.join(".codex-plugin/plugin.json"),
-            format!(
-                r#"{{"name":"lili","version":"{}"}}"#,
-                env!("CARGO_PKG_VERSION")
-            ),
-        )
-        .unwrap();
-
-        assert_eq!(
-            installed_plugin_selector_for_root(&temp.0, &root).as_deref(),
-            Some("lili@marketplace-a")
-        );
-
-        let copied = temp.0.join("copied-plugin");
-        fs::create_dir_all(copied.join(".codex-plugin")).unwrap();
-        fs::copy(
-            root.join(".codex-plugin/plugin.json"),
-            copied.join(".codex-plugin/plugin.json"),
-        )
-        .unwrap();
-        assert!(installed_plugin_selector_for_root(&temp.0, &copied).is_none());
     }
 
     #[test]
@@ -550,9 +497,10 @@ mod tests {
     #[tokio::test]
     async fn unavailable_endpoint_falls_back_to_one_normalized_spool_record() {
         let temp = TempDir::new();
-        let result = process_payload(&temp.0, &payload(), 1_000).await;
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let result = process_payload(&paths, &payload(), 1_000).await;
         assert_eq!(result, HookResult::success(HookOutcome::Spooled));
-        let spool = SpoolStore::for_codex_home(&temp.0);
+        let spool = SqliteSpoolStore::for_application(paths);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
         assert_eq!(claim.event().event_id.as_str(), "event-1");
         claim.commit().unwrap();
@@ -561,13 +509,14 @@ mod tests {
     #[tokio::test]
     async fn plugin_invocation_spools_attributed_event_without_changing_identity() {
         let temp = TempDir::new();
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
         let lifecycle =
             br#"{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1"}"#;
         let legacy = normalize_hook_json(lifecycle, 1_000).unwrap();
         let result =
-            process_payload_with_source(&temp.0, lifecycle, 1_000, Some("lili@lili-local")).await;
+            process_payload_with_source(&paths, lifecycle, 1_000, Some("lili@lili-local")).await;
         assert_eq!(result, HookResult::success(HookOutcome::Spooled));
-        let spool = SpoolStore::for_codex_home(&temp.0);
+        let spool = SqliteSpoolStore::for_application(paths);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
         assert_eq!(claim.event().event_id, legacy.event_id);
         assert!(claim.event().source_discriminator.starts_with("plugin:"));
@@ -577,9 +526,10 @@ mod tests {
     #[tokio::test]
     async fn malformed_payload_has_a_deterministic_exit_code_without_spooling() {
         let temp = TempDir::new();
-        let result = process_payload(&temp.0, b"not-json", 1_000).await;
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let result = process_payload(&paths, b"not-json", 1_000).await;
         assert_eq!(result.exit_code, HookExitCode::InvalidInput);
-        assert!(!SpoolStore::for_codex_home(&temp.0).directory().exists());
+        assert!(!paths.database_path().exists());
     }
 
     #[test]

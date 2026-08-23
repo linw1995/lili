@@ -14,7 +14,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use lili_session::{ReductionOutcome, SessionEventKind, SessionReducer, SpoolStore};
+use lili_session::{ReductionOutcome, SessionEventKind, SessionReducer, SqliteSpoolStore};
+use lili_storage::ApplicationPaths;
 
 const FIXTURES: [&str; 5] = [
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/session-start.json"),
@@ -73,6 +74,7 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
         return;
     };
     let temp = TempDir::new();
+    let home = temp.0.join("home");
     let codex_home = temp.0.join("codex home with spaces");
     let plugin_root = codex_home
         .join("plugins/cache/lili-local/lili")
@@ -85,9 +87,10 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
         let launcher = launcher.clone();
         let plugin_root = plugin_root.clone();
         let codex_home = codex_home.clone();
+        let home = home.clone();
         thread::spawn(move || {
             barrier.wait();
-            invoke(&launcher, &plugin_root, &codex_home, fixture)
+            invoke(&launcher, &plugin_root, &codex_home, &home, fixture)
         })
     });
     barrier.wait();
@@ -111,7 +114,7 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
         "concurrent plugin hooks exceeded their bounded execution budget"
     );
 
-    let spool = SpoolStore::for_codex_home(&codex_home);
+    let spool = SqliteSpoolStore::for_application(application_paths(&home));
     let mut kinds = Vec::new();
     while let Some(claim) = spool.claim_next(unix_time_ms()).unwrap() {
         kinds.push(claim.event().event_type);
@@ -163,13 +166,14 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
     );
 
     let temp = TempDir::new();
+    let home = temp.0.join("home");
     let codex_home = temp.0.join("offline codex home");
     let plugin_root = codex_home
         .join("plugins/cache/lili-local/lili")
         .join(env!("CARGO_PKG_VERSION"));
     let launcher = install_plugin_runtime(&plugin_root, target);
     for (surface, fixture) in VERSIONED_FIXTURES {
-        let output = invoke(&launcher, &plugin_root, &codex_home, fixture);
+        let output = invoke(&launcher, &plugin_root, &codex_home, &home, fixture);
         assert_eq!(output.status.code(), Some(0), "{surface} failed");
         assert!(
             output.stdout.is_empty(),
@@ -180,27 +184,14 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
             "{surface} emitted diagnostic output"
         );
         if surface == "Stop" {
-            let duplicate = invoke(&launcher, &plugin_root, &codex_home, fixture);
+            let duplicate = invoke(&launcher, &plugin_root, &codex_home, &home, fixture);
             assert_eq!(duplicate.status.code(), Some(0));
             assert!(duplicate.stdout.is_empty());
             assert!(duplicate.stderr.is_empty());
         }
     }
 
-    let spool = SpoolStore::for_codex_home(&codex_home);
-    let pending = fs::read_dir(spool.directory())
-        .unwrap()
-        .map(|entry| entry.unwrap())
-        .filter(|entry| entry.file_type().unwrap().is_file() && entry.file_name() != "metrics.json")
-        .collect::<Vec<_>>();
-    assert_eq!(pending.len(), VERSIONED_FIXTURES.len() + 1);
-    assert!(
-        pending
-            .iter()
-            .map(|entry| entry.metadata().unwrap().len())
-            .sum::<u64>()
-            <= 4 * 1024 * 1024
-    );
+    let spool = SqliteSpoolStore::for_application(application_paths(&home));
 
     let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
     let mut recovered = 0;
@@ -224,16 +215,16 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
         recovered += 1;
         claim.commit().unwrap();
     }
-    assert_eq!(recovered, VERSIONED_FIXTURES.len() + 1);
+    assert_eq!(recovered, VERSIONED_FIXTURES.len());
     assert_eq!(
         identity_counts
             .values()
             .filter(|count| **count > 1)
             .copied()
             .collect::<Vec<_>>(),
-        [2]
+        Vec::<u64>::new()
     );
-    assert_eq!(duplicates, 1);
+    assert_eq!(duplicates, 0);
     assert!(spool.claim_next(unix_time_ms()).unwrap().is_none());
     let metrics = spool.metrics().unwrap();
     assert_eq!(metrics.expired_drops, 0);
@@ -273,11 +264,14 @@ fn invoke(
     launcher: &Path,
     plugin_root: &Path,
     codex_home: &Path,
+    home: &Path,
     fixture: &str,
 ) -> std::process::Output {
     let mut child = Command::new(launcher)
         .env("PLUGIN_ROOT", plugin_root)
         .env("CODEX_HOME", codex_home)
+        .env("HOME", home)
+        .env("XDG_STATE_HOME", home.join("state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -290,6 +284,19 @@ fn invoke(
         .write_all(fixture.as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn application_paths(home: &Path) -> ApplicationPaths {
+    #[cfg(target_os = "macos")]
+    let root = home
+        .join("Library")
+        .join("Application Support")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    #[cfg(target_os = "linux")]
+    let root = home
+        .join("state")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    ApplicationPaths::from_root(root).unwrap()
 }
 
 fn supported_target() -> Option<&'static str> {

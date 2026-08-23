@@ -12,8 +12,9 @@ use lili_lib::hook_forwarder::{
     process_payload,
 };
 use lili_session::{
-    BoundForwardingEndpoint, ForwardingAckDisposition, ForwardingVerifier, SpoolStore,
+    BoundForwardingEndpoint, ForwardingAckDisposition, ForwardingVerifier, SqliteSpoolStore,
 };
+use lili_storage::ApplicationPaths;
 
 const SAMPLE_COUNT: usize = 9;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -53,7 +54,8 @@ fn percentile_95(mut samples: Vec<Duration>) -> Duration {
 #[tokio::test]
 async fn online_forwarding_p95_stays_within_budget() {
     let temp = TempDir::new();
-    let runtime_dir = temp.0.join("lili").join("runtime");
+    let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+    let runtime_dir = paths.runtime_root();
     let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
     let mut verifier = ForwardingVerifier::new(endpoint.credentials());
     let server = tokio::spawn(async move {
@@ -73,7 +75,7 @@ async fn online_forwarding_p95_stays_within_budget() {
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for index in 0..SAMPLE_COUNT {
         let started = Instant::now();
-        let result = process_payload(&temp.0, &payload(index), 1_000).await;
+        let result = process_payload(&paths, &payload(index), 1_000).await;
         samples.push(started.elapsed());
         assert_eq!(result.outcome, Some(HookOutcome::Delivered));
     }
@@ -89,10 +91,11 @@ async fn online_forwarding_p95_stays_within_budget() {
 #[tokio::test]
 async fn offline_fallback_p95_stays_within_budget() {
     let temp = TempDir::new();
+    let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for index in 0..SAMPLE_COUNT {
         let started = Instant::now();
-        let result = process_payload(&temp.0, &payload(index), 1_000).await;
+        let result = process_payload(&paths, &payload(index), 1_000).await;
         samples.push(started.elapsed());
         assert_eq!(result.outcome, Some(HookOutcome::Spooled));
     }
@@ -107,7 +110,8 @@ async fn offline_fallback_p95_stays_within_budget() {
 #[tokio::test]
 async fn unresponsive_native_endpoint_falls_back_without_renderer_dependency() {
     let temp = TempDir::new();
-    let runtime_dir = temp.0.join("lili").join("runtime");
+    let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+    let runtime_dir = paths.runtime_root();
     let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
     let server = tokio::spawn(async move {
         let mut connection = endpoint.accept().await.unwrap();
@@ -116,7 +120,7 @@ async fn unresponsive_native_endpoint_falls_back_without_renderer_dependency() {
     });
 
     let started = Instant::now();
-    let result = process_payload(&temp.0, &payload(0), 1_000).await;
+    let result = process_payload(&paths, &payload(0), 1_000).await;
     let elapsed = started.elapsed();
     eprintln!("unresponsive_endpoint_fallback_ms={}", elapsed.as_millis());
     server.abort();
@@ -126,7 +130,7 @@ async fn unresponsive_native_endpoint_falls_back_without_renderer_dependency() {
         "unresponsive endpoint fallback exceeded its latency budget"
     );
     assert!(
-        SpoolStore::for_codex_home(&temp.0)
+        SqliteSpoolStore::for_application(paths)
             .claim_next(1_001)
             .unwrap()
             .is_some()

@@ -94,6 +94,8 @@ pub fn insert_inbound_spool(
 ) -> QueryResult<InboundSpoolRow> {
     diesel::insert_into(inbound_spool::table)
         .values(value)
+        .on_conflict((inbound_spool::provider, inbound_spool::event_id))
+        .do_nothing()
         .execute(connection)?;
     inbound_spool::table
         .find((value.provider, value.event_id))

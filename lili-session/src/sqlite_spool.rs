@@ -331,4 +331,30 @@ mod tests {
         second.commit().unwrap();
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
+
+    #[test]
+    fn concurrent_first_open_does_not_fail_migrations() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let paths = paths();
+        let store = SqliteSpoolStore::for_application(paths.clone());
+        let barrier = Arc::new(Barrier::new(5));
+        let workers = (0..5)
+            .map(|index| {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    store.enqueue(&event(&format!("event-open-{index}"), "turn_completed"), 1)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
 }

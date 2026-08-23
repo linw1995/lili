@@ -494,22 +494,6 @@ async fn ingest_sqlite_spool_claim(
 }
 
 #[cfg(test)]
-async fn run_native_services(
-    endpoint: BoundForwardingEndpoint,
-    handle: NativeIngestionHandle,
-    spool: SpoolStore,
-) {
-    if spool.recover_claims().is_err() {
-        diagnostics::warn("spool", "recover_claims", "recovery_failed");
-    }
-    drain_offline_spool(&spool, &handle).await;
-    tokio::join!(
-        serve_native_ingestion(endpoint, handle.clone()),
-        drain_offline_spool_continuously(spool, handle),
-    );
-}
-
-#[cfg(test)]
 async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeIngestionHandle) {
     loop {
         tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;

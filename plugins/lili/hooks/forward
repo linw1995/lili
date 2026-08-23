@@ -63,4 +63,4 @@ if [ ! -f "$forwarder" ] || [ -L "$forwarder" ] || [ ! -x "$forwarder" ]; then
     fail "Lili plugin forwarder is missing or invalid" 66
 fi
 
-exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin
+exec "$forwarder" --integration-id lili-session-v1 --plugin-hook lili@lili-local --json-stdin
