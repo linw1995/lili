@@ -6,6 +6,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use lili_storage::ApplicationPaths;
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);
@@ -47,14 +49,37 @@ fn version_matches_the_workspace_release() {
 #[test]
 fn argv_mode_spools_without_emitting_approval_output() {
     let temp = TempDir::new();
+    let home = temp.0.join("home");
+    let codex_home = temp.0.join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(codex_home.join("marker"), b"untouched").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
         .args(["--json-argv", payload()])
-        .env("CODEX_HOME", &temp.0)
+        .env("CODEX_HOME", &codex_home)
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("state"))
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(codex_home.join("marker")).unwrap(), b"untouched");
+    #[cfg(target_os = "macos")]
+    let application_root = home
+        .join("Library")
+        .join("Application Support")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    #[cfg(target_os = "linux")]
+    let application_root = home
+        .join("state")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    assert!(
+        ApplicationPaths::from_root(application_root)
+            .unwrap()
+            .database_path()
+            .is_file()
+    );
 }
 
 #[test]

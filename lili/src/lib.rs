@@ -1380,6 +1380,28 @@ mod tests {
     }
 
     #[test]
+    fn desktop_state_loading_does_not_touch_codex_home() {
+        let root = std::env::temp_dir().join(format!(
+            "lili-desktop-storage-isolation-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let application_paths = ApplicationPaths::from_root(root.join("application")).unwrap();
+        let codex_home = root.join("codex-home");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        let marker = codex_home.join("marker");
+        std::fs::write(&marker, b"untouched").unwrap();
+
+        let (_state, store, placement) = load_app_state(&application_paths).unwrap();
+
+        assert!(store.is_some());
+        assert!(placement.is_none());
+        assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
+        assert!(!codex_home.join("lili").exists());
+        assert!(!codex_home.join("pets").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn tray_integration_statuses_have_stable_labels() {
         let statuses = [
             TrayIntegrationStatus::Installed,
