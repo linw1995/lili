@@ -6,6 +6,9 @@ fn main() {
             "begin_window_drag",
             "move_window_to",
             "commit_window_position",
+            "open_pet_context_menu",
+            "set_pet_context_menu_target",
+            "run_pet_context_action",
             "complete_desktop_smoke",
         ]));
     tauri_build::try_build(attributes).expect("failed to run Tauri build script");
