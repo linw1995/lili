@@ -1,7 +1,7 @@
 ## 1. Storage Contract and Shared Resolver
 
 - [x] 1.1 Add a shared `ApplicationPaths` abstraction for Lili persistent data, SQLite, configuration, runtime, and Pet roots; verify platform defaults use the Lili application identity and never fall back to `CODEX_HOME`, the current directory, Documents, or Desktop.
-- [ ] 1.2 Add the shared storage crate to the workspace and make it usable by both the Tauri desktop binary and standalone `lili-hook`; verify both processes resolve the same database and relative file layout on every supported platform.
+- [x] 1.2 Add the shared storage crate to the workspace and make it usable by both the Tauri desktop binary and standalone `lili-hook`; verify both processes resolve the same database and relative file layout on every supported platform.
 - [ ] 1.3 Define application directory creation, database ownership, runtime permissions, and sidecar handling; verify the database, WAL/SHM files, credentials, and endpoint metadata remain owner-only on Unix.
 
 ## 2. SQLite Foundation and Schema

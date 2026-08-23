@@ -2590,6 +2590,7 @@ dependencies = [
  "lili-pet",
  "lili-server",
  "lili-session",
+ "lili-storage",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

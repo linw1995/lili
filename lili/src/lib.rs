@@ -44,6 +44,8 @@ use tokio::sync::oneshot;
 
 const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 
+pub use lili_storage::{ApplicationPaths, PathError as ApplicationPathError};
+
 pub fn run() {
     diagnostics::init();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
