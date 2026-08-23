@@ -10,7 +10,7 @@ use std::{
 use lili_integration::{
     InstallError, IntegrationKind, build_install_plan, inspect_with_version, install_with_verifier,
 };
-use lili_session::SpoolStore;
+use lili_session::{SpoolLimits, SpoolStore};
 use serde::Deserialize;
 
 const MAX_MATRIX_BYTES: u64 = 64 * 1024;
@@ -156,7 +156,7 @@ fn verify_version(
         }
     }
 
-    let spool = SpoolStore::for_codex_home(workspace.path());
+    let spool = SpoolStore::new(workspace.path().join("spool"), SpoolLimits::default());
     let mut accepted = 0;
     while let Some(claim) = spool
         .claim_next(unix_time_ms())

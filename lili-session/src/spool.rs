@@ -93,13 +93,6 @@ impl SpoolStore {
         }
     }
 
-    pub fn for_codex_home(codex_home: &Path) -> Self {
-        Self::new(
-            codex_home.join("lili").join("spool"),
-            SpoolLimits::default(),
-        )
-    }
-
     pub fn directory(&self) -> &Path {
         &self.directory
     }
