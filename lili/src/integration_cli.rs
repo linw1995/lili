@@ -11,6 +11,7 @@ use lili_session::{
     ProviderCapabilitiesInputV1, ProviderInputV1, deliver_forwarding_message,
     normalize_provider_input,
 };
+use lili_storage::ApplicationPaths;
 
 const SYNTHETIC_DELIVERY_DEADLINE: std::time::Duration = std::time::Duration::from_millis(750);
 
@@ -198,7 +199,7 @@ fn write_assessment(assessment: &PluginMigrationAssessment) -> u8 {
 }
 
 fn verify_synthetic_overlap(
-    codex_home: &std::path::Path,
+    _codex_home: &std::path::Path,
     plugin_selector: &str,
 ) -> (
     bool,
@@ -206,13 +207,16 @@ fn verify_synthetic_overlap(
     String,
     Option<lili_session::ForwardingCredentials>,
 ) {
-    let record =
-        match ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"))
-            .load()
-        {
-            Ok(record) => record,
-            Err(_) => return (false, false, String::new(), None),
-        };
+    let application_paths = match ApplicationPaths::resolve() {
+        Ok(paths) => paths,
+        Err(_) => return (false, false, String::new(), None),
+    };
+    let record = match ForwardingCredentialStore::for_runtime_dir(&application_paths.runtime_root())
+        .load()
+    {
+        Ok(record) => record,
+        Err(_) => return (false, false, String::new(), None),
+    };
     let credentials = match record.credentials() {
         Ok(credentials) => credentials,
         Err(_) => return (false, false, String::new(), None),

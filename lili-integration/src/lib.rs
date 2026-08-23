@@ -275,13 +275,13 @@ fn inspect_with_evidence(
     }
 }
 
-fn load_authenticated_codex_evidence(codex_home: &Path) -> Option<CodexAdapterDiagnostics> {
-    let runtime_dir = codex_home.join("lili").join("runtime");
+fn load_authenticated_codex_evidence(_codex_home: &Path) -> Option<CodexAdapterDiagnostics> {
+    let application_paths = lili_storage::ApplicationPaths::resolve().ok()?;
+    let runtime_dir = application_paths.runtime_root();
     let record = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
         .load()
         .ok()?;
     let credentials = record.credentials().ok()?;
-    let application_paths = lili_storage::ApplicationPaths::resolve().ok()?;
     CodexPluginEvidenceStore::for_application(application_paths)
         .load(&credentials)
         .ok()

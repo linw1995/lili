@@ -570,8 +570,19 @@ fn verify_saved_plugin_migration_evidence(
     codex_home: &Path,
     assessment: &PluginMigrationAssessment,
 ) -> bool {
+    let Some(application_paths) = lili_storage::ApplicationPaths::resolve().ok() else {
+        return false;
+    };
+    verify_saved_plugin_migration_evidence_with_paths(codex_home, assessment, &application_paths)
+}
+
+fn verify_saved_plugin_migration_evidence_with_paths(
+    codex_home: &Path,
+    assessment: &PluginMigrationAssessment,
+    application_paths: &lili_storage::ApplicationPaths,
+) -> bool {
     let credential_store =
-        ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"));
+        ForwardingCredentialStore::for_runtime_dir(&application_paths.runtime_root());
     let Ok(record) = credential_store.load() else {
         return false;
     };
@@ -1224,7 +1235,9 @@ mod tests {
                 overlap_deduplication_verified: true,
             },
         );
-        let runtime_dir = temp.0.join("lili/runtime");
+        let application_paths =
+            lili_storage::ApplicationPaths::from_root(temp.0.join("application")).unwrap();
+        let runtime_dir = application_paths.runtime_root();
         let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
         save_plugin_migration_verification(
             &temp.0,
@@ -1233,7 +1246,11 @@ mod tests {
             "synthetic-event",
         )
         .unwrap();
-        assert!(verify_saved_plugin_migration_evidence(&temp.0, &assessment));
+        assert!(verify_saved_plugin_migration_evidence_with_paths(
+            &temp.0,
+            &assessment,
+            &application_paths
+        ));
         save_plugin_migration_verification(
             &temp.0,
             &assessment,
@@ -1241,17 +1258,26 @@ mod tests {
             "synthetic-event-repeated",
         )
         .unwrap();
-        assert!(verify_saved_plugin_migration_evidence(&temp.0, &assessment));
+        assert!(verify_saved_plugin_migration_evidence_with_paths(
+            &temp.0,
+            &assessment,
+            &application_paths
+        ));
 
         let mut edited = assessment.clone();
         edited.next_actions.push("edited".to_owned());
-        assert!(!verify_saved_plugin_migration_evidence(&temp.0, &edited));
+        assert!(!verify_saved_plugin_migration_evidence_with_paths(
+            &temp.0,
+            &edited,
+            &application_paths
+        ));
 
         drop(endpoint);
         let replacement = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
-        assert!(!verify_saved_plugin_migration_evidence(
+        assert!(!verify_saved_plugin_migration_evidence_with_paths(
             &temp.0,
-            &assessment
+            &assessment,
+            &application_paths
         ));
         drop(replacement);
     }
