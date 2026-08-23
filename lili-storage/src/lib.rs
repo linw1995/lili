@@ -189,21 +189,21 @@ fn platform_state_base(
 ) -> Result<PathBuf, PathError> {
     #[cfg(target_os = "linux")]
     {
-        return Ok(non_empty_path(get_env, "XDG_STATE_HOME")
-            .unwrap_or(home_directory(get_env)?.join(".local").join("state")));
+        Ok(non_empty_path(get_env, "XDG_STATE_HOME")
+            .unwrap_or(home_directory(get_env)?.join(".local").join("state")))
     }
 
     #[cfg(target_os = "macos")]
     {
-        return Ok(home_directory(get_env)?
+        Ok(home_directory(get_env)?
             .join("Library")
-            .join("Application Support"));
+            .join("Application Support"))
     }
 
     #[cfg(target_os = "windows")]
     {
-        return Ok(non_empty_path(get_env, "LOCALAPPDATA")
-            .unwrap_or(home_directory(get_env)?.join("AppData").join("Local")));
+        Ok(non_empty_path(get_env, "LOCALAPPDATA")
+            .unwrap_or(home_directory(get_env)?.join("AppData").join("Local")))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -344,7 +344,7 @@ mod tests {
         let paths = ApplicationPaths::from_root(&root).unwrap();
         paths.ensure_layout().unwrap();
         fs::write(paths.credentials_path(), b"secret").unwrap();
-        fs::set_permissions(&paths.credentials_path(), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(paths.credentials_path(), fs::Permissions::from_mode(0o644)).unwrap();
 
         paths.ensure_layout().unwrap();
 

@@ -5,21 +5,19 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use lili_lib::hook_forwarder::UNRESPONSIVE_ENDPOINT_BUDGET;
 use lili_session::{BoundForwardingEndpoint, SessionEventKind, SqliteSpoolStore};
 use lili_storage::ApplicationPaths;
+use tokio::sync::Mutex;
 
 const PERMISSION_FIXTURE: &str =
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json");
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+static HOOK_TEST_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 struct TempDir(PathBuf);
 
@@ -43,7 +41,7 @@ impl Drop for TempDir {
 
 #[test]
 fn stopped_application_spools_permission_without_decision_output() {
-    let _lock = HOOK_TEST_LOCK.lock().unwrap();
+    let _lock = HOOK_TEST_LOCK.blocking_lock();
     let temp = TempDir::new();
     let home = short_home();
     let started = Instant::now();
@@ -55,7 +53,7 @@ fn stopped_application_spools_permission_without_decision_output() {
 
 #[tokio::test]
 async fn restarting_application_ignores_stale_instance_without_decision_output() {
-    let _lock = HOOK_TEST_LOCK.lock().unwrap();
+    let _lock = HOOK_TEST_LOCK.lock().await;
     let temp = TempDir::new();
     let home = short_home();
     let paths = application_paths(&home);
@@ -78,7 +76,7 @@ async fn restarting_application_ignores_stale_instance_without_decision_output()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hung_application_falls_back_without_decision_output() {
-    let _lock = HOOK_TEST_LOCK.lock().unwrap();
+    let _lock = HOOK_TEST_LOCK.lock().await;
     let temp = TempDir::new();
     let home = short_home();
     let paths = application_paths(&home);
