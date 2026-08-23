@@ -28,9 +28,11 @@ use lili_integration::{IntegrationKind, inspect, resolve_codex_home};
 use lili_pet::PetCatalog;
 use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
-    BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
-    ForwardingCredentialStore, ForwardingTransportError, SpoolStore,
+    BoundForwardingEndpoint, ClaimedSqliteSpoolRecord, CodexPluginEvidenceStore,
+    ForwardingCredentialStore, ForwardingTransportError, SqliteSpoolStore,
 };
+#[cfg(test)]
+use lili_session::{ClaimedSpoolRecord, SpoolStore};
 use loopback::LoopbackServer;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
@@ -382,7 +384,7 @@ fn start_native_ingestion(
     state: AppState,
     state_store: Option<AppStateStore>,
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
-    let runtime_dir = codex_home.join("lili").join("runtime");
+    let runtime_dir = application_paths.runtime_root();
     let previous_credentials = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
         .load()
         .ok()
@@ -414,11 +416,84 @@ fn start_native_ingestion(
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
     })?;
     tauri::async_runtime::spawn(actor.run());
-    let spool = SpoolStore::for_codex_home(codex_home);
-    tauri::async_runtime::spawn(run_native_services(endpoint, handle.clone(), spool));
+    let spool = SqliteSpoolStore::for_application(application_paths.clone());
+    tauri::async_runtime::spawn(run_sqlite_native_services(endpoint, handle.clone(), spool));
     Ok(handle)
 }
 
+async fn run_sqlite_native_services(
+    endpoint: BoundForwardingEndpoint,
+    handle: NativeIngestionHandle,
+    spool: SqliteSpoolStore,
+) {
+    if tokio::task::spawn_blocking({
+        let spool = spool.clone();
+        move || spool.recover_claims(unix_time_ms())
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .is_none()
+    {
+        diagnostics::warn("spool", "recover_claims", "recovery_failed");
+    }
+    drain_sqlite_spool(&spool, &handle).await;
+    tokio::join!(
+        serve_native_ingestion(endpoint, handle.clone()),
+        drain_sqlite_spool_continuously(spool, handle),
+    );
+}
+
+async fn drain_sqlite_spool_continuously(spool: SqliteSpoolStore, handle: NativeIngestionHandle) {
+    loop {
+        tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;
+        drain_sqlite_spool(&spool, &handle).await;
+    }
+}
+
+async fn drain_sqlite_spool(spool: &SqliteSpoolStore, handle: &NativeIngestionHandle) {
+    while let Some(claim) = next_sqlite_spool_claim(spool).await {
+        if !ingest_sqlite_spool_claim(claim, handle).await {
+            break;
+        }
+    }
+    publish_sqlite_spool_metrics(spool, handle).await;
+}
+
+async fn publish_sqlite_spool_metrics(spool: &SqliteSpoolStore, handle: &NativeIngestionHandle) {
+    let spool = spool.clone();
+    if let Ok(Ok(metrics)) = tokio::task::spawn_blocking(move || spool.metrics()).await {
+        let _ = handle.set_spool_metrics(metrics).await;
+    }
+}
+
+async fn next_sqlite_spool_claim(spool: &SqliteSpoolStore) -> Option<ClaimedSqliteSpoolRecord> {
+    let spool = spool.clone();
+    match tokio::task::spawn_blocking(move || spool.claim_next(unix_time_ms())).await {
+        Ok(Ok(claim)) => claim,
+        Ok(Err(_)) | Err(_) => {
+            diagnostics::warn("spool", "claim", "read_failed");
+            None
+        }
+    }
+}
+
+async fn ingest_sqlite_spool_claim(
+    claim: ClaimedSqliteSpoolRecord,
+    handle: &NativeIngestionHandle,
+) -> bool {
+    match handle.ingest_spooled(claim.event().clone()).await {
+        Ok(_) => tokio::task::spawn_blocking(move || claim.commit())
+            .await
+            .is_ok_and(|result| result.is_ok()),
+        Err(_) => {
+            let _ = tokio::task::spawn_blocking(move || claim.release()).await;
+            false
+        }
+    }
+}
+
+#[cfg(test)]
 async fn run_native_services(
     endpoint: BoundForwardingEndpoint,
     handle: NativeIngestionHandle,
@@ -434,6 +509,7 @@ async fn run_native_services(
     );
 }
 
+#[cfg(test)]
 async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeIngestionHandle) {
     loop {
         tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;
@@ -441,6 +517,7 @@ async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeInges
     }
 }
 
+#[cfg(test)]
 async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
     while let Some(claim) = next_spool_claim(spool).await {
         if !ingest_spool_claim(claim, handle).await {
@@ -450,6 +527,7 @@ async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle)
     publish_spool_metrics(spool, handle).await;
 }
 
+#[cfg(test)]
 async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandle) {
     let spool = spool.clone();
     if let Ok(Ok(metrics)) = tokio::task::spawn_blocking(move || spool.metrics()).await {
@@ -457,6 +535,7 @@ async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandl
     }
 }
 
+#[cfg(test)]
 async fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
     let spool = spool.clone();
     match tokio::task::spawn_blocking(move || spool.claim_next(unix_time_ms())).await {
@@ -468,6 +547,7 @@ async fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
     }
 }
 
+#[cfg(test)]
 async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionHandle) -> bool {
     match handle.ingest_spooled(claim.event().clone()).await {
         Ok(_) => {
