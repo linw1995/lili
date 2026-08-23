@@ -796,6 +796,7 @@ fn open_pet_context_menu(
     )
 }
 
+#[cfg(target_os = "macos")]
 fn open_pet_context_menu_from_native(app: &tauri::AppHandle) {
     let Some(source) = app.get_webview_window("pet") else {
         diagnostics::warn("context_menu", "open", "pet_window_unavailable");

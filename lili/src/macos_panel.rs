@@ -157,7 +157,7 @@ fn install_context_menu_monitor() {
         else {
             return event as *const NSEvent as *mut NSEvent;
         };
-        if event.windowNumber() as isize != window_number {
+        if event.windowNumber() != window_number {
             return event as *const NSEvent as *mut NSEvent;
         }
         handler();
