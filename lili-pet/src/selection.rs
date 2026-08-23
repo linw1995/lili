@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn missing_user_package_uses_embedded_fallback() {
         let temp = TempDir::new();
-        let catalog = PetCatalog::load(&temp.0);
+        let catalog = PetCatalog::load(&temp.0.join("pets"));
         assert_eq!(catalog.active().definition().id().as_str(), DEFAULT_PET_ID);
         assert_eq!(catalog.active().source(), &PetAssetSource::Embedded);
         assert!(catalog.active().embedded_atlas().is_some());
@@ -341,7 +341,7 @@ mod tests {
         fs::write(package_dir.join("pet.json"), FALLBACK_MANIFEST).unwrap();
         fs::write(package_dir.join("spritesheet.webp"), FALLBACK_ATLAS).unwrap();
 
-        let catalog = PetCatalog::load(&temp.0);
+        let catalog = PetCatalog::load(&temp.0.join("pets"));
 
         assert_eq!(catalog.active().definition().id().as_str(), DEFAULT_PET_ID);
         assert!(matches!(catalog.active().source(), PetAssetSource::File(_)));

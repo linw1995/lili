@@ -26,8 +26,8 @@ use lili_app_state::{
     resolve_window_placement,
 };
 use lili_core::PetId;
-use lili_integration::{IntegrationKind, inspect};
-use lili_pet::{PetCatalog, resolve_codex_home};
+use lili_integration::{IntegrationKind, inspect, resolve_codex_home};
+use lili_pet::PetCatalog;
 use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
@@ -100,7 +100,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         store: state_store.clone(),
     });
     app.manage(WindowDragState::default());
-    setup_tray(&app, state.clone(), codex_home.as_deref())
+    let pets_root = application_paths.pets_root();
+    setup_tray(&app, state.clone(), codex_home.as_deref(), &pets_root)
         .expect("failed to configure tray lifecycle");
     let diagnostics_refresh =
         native_ingestion
@@ -350,19 +351,23 @@ fn load_resolved_app_state(
     match store.load() {
         Ok(Some(state)) => {
             let window_placement = state.window_placement().cloned();
-            let pet_catalog = PetCatalog::load_with_selection(&codex_home, state.selected_pet_id());
+            let pet_catalog = PetCatalog::load_with_selection(
+                &application_paths.pets_root(),
+                state.selected_pet_id(),
+            );
             let state = AppState::with_persistent_state(pet_catalog, state)
                 .expect("validated application state must restore");
             (state, Some(store), Some(codex_home), window_placement)
         }
         Ok(None) => {
-            let state = AppState::with_pet_catalog(PetCatalog::load(&codex_home));
+            let state =
+                AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root()));
             (state, Some(store), Some(codex_home), None)
         }
         Err(_) => {
             diagnostics::warn("state", "restore", "invalid_state");
             (
-                AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
+                AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root())),
                 None,
                 Some(codex_home),
                 None,
@@ -803,8 +808,13 @@ async fn commit_window_position(
     Ok(true)
 }
 
-fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> tauri::Result<()> {
-    let tray_menu = build_tray_menu(app, &state, codex_home)?;
+fn setup_tray(
+    app: &tauri::App,
+    state: AppState,
+    codex_home: Option<&Path>,
+    pets_root: &Path,
+) -> tauri::Result<()> {
+    let tray_menu = build_tray_menu(app, &state, codex_home, pets_root)?;
     let icon = app
         .default_window_icon()
         .cloned()
@@ -817,13 +827,13 @@ fn setup_tray(app: &tauri::App, state: AppState, codex_home: Option<&Path>) -> t
         .menu(&tray_menu.menu)
         .on_tray_icon_event(handle_tray_icon_event)
         .on_menu_event({
-            let codex_home = codex_home.map(Path::to_path_buf);
+            let pets_root = pets_root.to_path_buf();
             move |app, event| {
                 handle_tray_menu_event(
                     app,
                     TrayAction::parse(event.id().as_ref()),
                     &state,
-                    codex_home.as_deref(),
+                    &pets_root,
                     &tray_menu.pet_items,
                     &tray_menu.always_on_top,
                 );
@@ -843,8 +853,9 @@ fn build_tray_menu(
     app: &tauri::App,
     state: &AppState,
     codex_home: Option<&Path>,
+    pets_root: &Path,
 ) -> tauri::Result<TrayMenu> {
-    let parts = TrayMenuParts::new(app, state, codex_home)?;
+    let parts = TrayMenuParts::new(app, state, codex_home, pets_root)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -874,7 +885,12 @@ struct TrayMenuParts {
 }
 
 impl TrayMenuParts {
-    fn new(app: &tauri::App, state: &AppState, codex_home: Option<&Path>) -> tauri::Result<Self> {
+    fn new(
+        app: &tauri::App,
+        state: &AppState,
+        codex_home: Option<&Path>,
+        _pets_root: &Path,
+    ) -> tauri::Result<Self> {
         Ok(Self {
             window: build_tray_window_items(app, state)?,
             pet: build_tray_pet_items(app, state)?,
@@ -992,7 +1008,7 @@ fn handle_tray_menu_event(
     app: &tauri::AppHandle,
     action: TrayAction,
     state: &AppState,
-    codex_home: Option<&Path>,
+    pets_root: &Path,
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
@@ -1001,7 +1017,7 @@ fn handle_tray_menu_event(
             handle_window_tray_action(app, action, state, always_on_top);
         }
         TrayAction::SelectPet(pet_id) => {
-            handle_pet_selection(app, state, codex_home, pet_items, &pet_id);
+            handle_pet_selection(app, state, pets_root, pet_items, &pet_id);
         }
         TrayAction::Settings | TrayAction::Diagnostics => handle_tray_view_action(app, action),
         TrayAction::IntegrationStatus | TrayAction::Quit | TrayAction::Unknown => {
@@ -1058,14 +1074,11 @@ fn update_always_on_top(
 fn handle_pet_selection(
     app: &tauri::AppHandle,
     state: &AppState,
-    codex_home: Option<&Path>,
+    pets_root: &Path,
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
     pet_id: &PetId,
 ) {
-    let Some(codex_home) = codex_home else {
-        return;
-    };
-    if select_pet(state, codex_home, pet_id).is_err() {
+    if select_pet(state, pets_root, pet_id).is_err() {
         return;
     }
     for (candidate, item) in pet_items {
@@ -1166,8 +1179,8 @@ impl TrayIntegrationStatus {
     }
 }
 
-fn select_pet(state: &AppState, codex_home: &Path, pet_id: &PetId) -> Result<(), String> {
-    let catalog = PetCatalog::load_with_selection(codex_home, Some(pet_id));
+fn select_pet(state: &AppState, pets_root: &Path, pet_id: &PetId) -> Result<(), String> {
+    let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
     if catalog.active().definition().id() != pet_id {
         return Err("selected pet is unavailable".to_owned());
     }

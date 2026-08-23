@@ -90,7 +90,7 @@ fn run_fixture(fixture: &CompatibilityFixture) {
     let spritesheet_path = fixture.manifest["spritesheetPath"].as_str().unwrap();
     write_atlas(&package_dir.join(spritesheet_path), fixture.atlas_kind);
 
-    let catalog = PetCatalog::load(temp.path());
+    let catalog = PetCatalog::load(&temp.path().join("pets"));
     let pet_id = fixture.manifest["id"].as_str().unwrap();
     let accepted = catalog
         .packages()

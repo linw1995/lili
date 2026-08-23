@@ -4,9 +4,8 @@ use lili_integration::{
     PluginMigrationAssessment, PluginMigrationEvidence, assess_plugin_migration,
     build_coexistence_install_plan, build_install_plan, cleanup_legacy_after_verification, inspect,
     inspect_plugin, install, install_plugin, load_plan, load_plugin_migration_assessment,
-    plugin_hooks_are_trusted, save_plugin_migration_verification, uninstall,
+    plugin_hooks_are_trusted, resolve_codex_home, save_plugin_migration_verification, uninstall,
 };
-use lili_pet::resolve_codex_home;
 use lili_session::{
     DESKTOP_VERSION, ForwardingAckDisposition, ForwardingCredentialStore,
     ProviderCapabilitiesInputV1, ProviderInputV1, deliver_forwarding_message,

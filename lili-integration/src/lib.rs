@@ -4,7 +4,7 @@ mod plan;
 mod uninstall;
 
 use std::{
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -69,6 +69,23 @@ const HOOK_SURFACES: [(&str, CodexIntegrationSurface); 5] = [
     ("Stop", CodexIntegrationSurface::Stop),
     ("SessionEnd", CodexIntegrationSurface::SessionEnd),
 ];
+
+pub fn resolve_codex_home() -> Result<PathBuf, IntegrationError> {
+    if let Some(value) = env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(value);
+        return path
+            .is_absolute()
+            .then_some(path)
+            .ok_or(IntegrationError::RelativeCodexHome);
+    }
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|home| home.join(".codex"))
+        .ok_or(IntegrationError::HomeDirectoryUnavailable)
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -785,6 +802,8 @@ fn classify_commands<'a>(commands: impl IntoIterator<Item = &'a str>) -> (usize,
 pub enum IntegrationError {
     #[error("the Codex home is not an absolute path")]
     RelativeCodexHome,
+    #[error("the current user's home directory is unavailable")]
+    HomeDirectoryUnavailable,
 }
 
 #[cfg(test)]

@@ -7,8 +7,7 @@ use std::{
     time::Duration,
 };
 
-use lili_integration::LILI_INTEGRATION_ID;
-use lili_pet::resolve_codex_home;
+use lili_integration::{LILI_INTEGRATION_ID, resolve_codex_home};
 use lili_session::{
     ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolStore,
     deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,

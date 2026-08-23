@@ -1,7 +1,5 @@
 use std::{
     collections::HashSet,
-    env,
-    ffi::OsString,
     fs::{self, File},
     io::Read,
     path::{Component, Path, PathBuf},
@@ -79,50 +77,18 @@ impl DiscoveryReport {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum CodexHomeError {
-    #[error("CODEX_HOME must be an absolute path")]
-    RelativeOverride,
-    #[error("unable to resolve the current user's home directory")]
-    MissingHome,
+pub fn default_pet_path(pets_root: &Path) -> PathBuf {
+    pets_root.join(DEFAULT_PET_ID)
 }
 
-pub fn resolve_codex_home() -> Result<PathBuf, CodexHomeError> {
-    resolve_codex_home_from(|name| env::var_os(name))
-}
-
-fn resolve_codex_home_from(
-    mut get_env: impl FnMut(&str) -> Option<OsString>,
-) -> Result<PathBuf, CodexHomeError> {
-    if let Some(value) = get_env("CODEX_HOME").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(value);
-        return path
-            .is_absolute()
-            .then_some(path)
-            .ok_or(CodexHomeError::RelativeOverride);
-    }
-
-    let home = get_env("HOME")
-        .or_else(|| get_env("USERPROFILE"))
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .ok_or(CodexHomeError::MissingHome)?;
-    Ok(home.join(".codex"))
-}
-
-pub fn default_pet_path(codex_home: &Path) -> PathBuf {
-    codex_home.join("pets").join(DEFAULT_PET_ID)
-}
-
-pub fn discover_pet_packages(codex_home: &Path) -> DiscoveryReport {
+pub fn discover_pet_packages(pets_root: &Path) -> DiscoveryReport {
     let mut candidates = Vec::new();
-    let default = default_pet_path(codex_home);
+    let default = default_pet_path(pets_root);
     if default.exists() {
         candidates.push((PackageOrigin::Default, default.clone()));
     }
 
-    let installed_root = codex_home.join("pets");
-    if let Ok(entries) = fs::read_dir(installed_root) {
+    if let Ok(entries) = fs::read_dir(pets_root) {
         let mut installed = entries
             .filter_map(Result::ok)
             .filter(|entry| entry.path() != default)
@@ -271,6 +237,7 @@ enum PackageLoadError {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -316,20 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_home_prefers_absolute_override() {
-        let result = resolve_codex_home_from(|name| match name {
-            "CODEX_HOME" => Some(OsString::from("/tmp/custom-codex")),
-            "HOME" => Some(OsString::from("/tmp/home")),
-            _ => None,
-        });
-        assert_eq!(result.unwrap(), PathBuf::from("/tmp/custom-codex"));
-    }
-
-    #[test]
     fn default_pet_uses_shared_pets_directory() {
         assert_eq!(
-            default_pet_path(Path::new("/tmp/codex")),
-            PathBuf::from("/tmp/codex/pets/lili")
+            default_pet_path(Path::new("/tmp/lili/pets")),
+            PathBuf::from("/tmp/lili/pets/lili")
         );
     }
 
@@ -345,7 +302,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = discover_pet_packages(temp.path());
+        let report = discover_pet_packages(&temp.path().join("pets"));
 
         assert!(report.packages().is_empty());
         assert!(report.issues().is_empty());
@@ -355,7 +312,7 @@ mod tests {
     fn discovers_valid_package() {
         let temp = TempDir::new();
         write_package(temp.path(), "valid", "valid", "spritesheet.webp");
-        let report = discover_pet_packages(temp.path());
+        let report = discover_pet_packages(&temp.path().join("pets"));
         assert_eq!(report.packages().len(), 1);
         assert!(report.issues().is_empty());
         assert_eq!(report.packages()[0].manifest().id(), "valid");
@@ -366,7 +323,7 @@ mod tests {
         let temp = TempDir::new();
         write_package(temp.path(), "absolute", "absolute", "/tmp/atlas.webp");
         write_package(temp.path(), "traversal", "traversal", "../atlas.webp");
-        let report = discover_pet_packages(temp.path());
+        let report = discover_pet_packages(&temp.path().join("pets"));
         assert!(report.packages().is_empty());
         assert_eq!(report.issues().len(), 2);
         assert!(
@@ -387,7 +344,7 @@ mod tests {
         fs::write(&outside, b"fixture").unwrap();
         let package = write_package(temp.path(), "linked", "linked", "linked.webp");
         symlink(outside, package.join("linked.webp")).unwrap();
-        let report = discover_pet_packages(temp.path());
+        let report = discover_pet_packages(&temp.path().join("pets"));
         assert!(report.packages().is_empty());
         assert_eq!(report.issues().len(), 1);
         assert!(report.issues()[0].message().contains("outside"));
@@ -398,7 +355,7 @@ mod tests {
         let temp = TempDir::new();
         write_package(temp.path(), "first", "duplicate", "spritesheet.webp");
         write_package(temp.path(), "second", "duplicate", "spritesheet.webp");
-        let report = discover_pet_packages(temp.path());
+        let report = discover_pet_packages(&temp.path().join("pets"));
         assert_eq!(report.packages().len(), 1);
         assert_eq!(report.issues().len(), 1);
         assert!(report.issues()[0].message().contains("duplicate"));
@@ -409,7 +366,7 @@ mod tests {
         let temp = TempDir::new();
         let package = write_package(temp.path(), "large", "large", "spritesheet.webp");
         fs::write(package.join("pet.json"), vec![b' '; 64 * 1024 + 1]).unwrap();
-        let report = discover_pet_packages(temp.path());
+        let report = discover_pet_packages(&temp.path().join("pets"));
         assert!(report.packages().is_empty());
         assert_eq!(report.issues().len(), 1);
         assert!(report.issues()[0].message().contains("64 KiB"));
