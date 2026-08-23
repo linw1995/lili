@@ -85,6 +85,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     .map(StaticAssets::new);
     let application_paths =
         ApplicationPaths::resolve().expect("failed to resolve Lili application storage paths");
+    diagnostics::info("storage", "initialize", "legacy_paths_ignored");
     let (state, state_store, saved_window_placement) = match load_app_state(&application_paths) {
         Ok(value) => value,
         Err(_) => {
