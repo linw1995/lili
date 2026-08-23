@@ -357,4 +357,47 @@ mod tests {
         assert!(results.iter().all(Result::is_ok), "{results:?}");
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
+
+    #[test]
+    fn concurrent_direct_and_plugin_events_deduplicate_by_identity() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let paths = paths();
+        let store = SqliteSpoolStore::for_application(paths.clone());
+        let barrier = Arc::new(Barrier::new(4));
+        let workers = [
+            ("event-shared", "hook:Stop"),
+            ("event-shared", "plugin:lili@lili-local:0.1.0:hook:Stop"),
+            ("event-unique-a", "hook:SessionStart"),
+            ("event-unique-b", "plugin:lili@lili-local:0.1.0:hook:Stop"),
+        ]
+        .map(|(event_id, source)| {
+            let barrier = barrier.clone();
+            let store = store.clone();
+            thread::spawn(move || {
+                let mut event = event(event_id, "turn_completed");
+                event.source_discriminator = source.to_owned();
+                barrier.wait();
+                store.enqueue(&event, 1)
+            })
+        });
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let mut database = open(&paths).unwrap();
+        let records = list_inbound_spool(database.connection()).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.event_id == "event-shared")
+                .count(),
+            1
+        );
+        drop(database);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
 }

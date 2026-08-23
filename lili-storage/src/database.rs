@@ -112,7 +112,14 @@ impl std::error::Error for DatabaseError {
 
 impl DatabaseError {
     fn is_retryable(&self) -> bool {
-        matches!(self, Self::Configuration(error) if error.to_string().contains("database is locked"))
+        match self {
+            Self::Configuration(error) => error.to_string().contains("database is locked"),
+            Self::Migration(error) => {
+                let message = error.to_string();
+                message.contains("database is locked") || message.contains("already exists")
+            }
+            _ => false,
+        }
     }
 }
 
