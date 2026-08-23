@@ -89,8 +89,12 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         load_app_state(&application_paths);
     app.state::<DesktopAcceptanceState>()
         .configure(codex_home.clone(), state.clone());
-    let native_ingestion =
-        configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
+    let native_ingestion = configure_native_runtime(
+        !smoke || acceptance,
+        state_store.clone(),
+        codex_home.as_deref(),
+        &state,
+    );
     app.manage(DesktopPersistence {
         state: state.clone(),
         store: state_store.clone(),
@@ -143,6 +147,7 @@ fn configure_desktop_companion_application(_app: &tauri::App) -> tauri::Result<(
 
 fn configure_native_runtime(
     enabled: bool,
+    state_store: Option<AppStateStore>,
     codex_home: Option<&Path>,
     state: &AppState,
 ) -> Option<NativeIngestionHandle> {
@@ -151,7 +156,7 @@ fn configure_native_runtime(
     }
     let codex_home = codex_home?;
     configure_native_actions(codex_home, state);
-    match start_native_ingestion(codex_home, state.clone()) {
+    match start_native_ingestion(codex_home, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
             diagnostics::warn("ingestion", "start", "transport_unavailable");
@@ -369,6 +374,7 @@ fn load_resolved_app_state(
 fn start_native_ingestion(
     codex_home: &Path,
     state: AppState,
+    state_store: Option<AppStateStore>,
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
     let runtime_dir = codex_home.join("lili").join("runtime");
     let previous_credentials = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
@@ -395,6 +401,10 @@ fn start_native_ingestion(
             Some(evidence_store),
         )
         .await;
+        let actor = match state_store {
+            Some(store) => actor.with_persistence_store(store),
+            None => actor,
+        };
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
     })?;
     tauri::async_runtime::spawn(actor.run());

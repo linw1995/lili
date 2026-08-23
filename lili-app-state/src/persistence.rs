@@ -1,12 +1,20 @@
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use lili_core::PetId;
-use lili_session::{ReducerRestoreError, SessionReducer, SessionReducerState};
+use lili_session::{
+    NormalizedSessionEvent, ReducerRestoreError, SessionEventKind, SessionReducer,
+    SessionReducerState,
+};
 use lili_storage::{
-    ApplicationPaths, DatabaseError, JsonDocument, open,
+    ApplicationPaths, DatabaseError, JsonDocument,
+    models::{AppStateRow, NewLifecycleEvent},
+    open,
     repository::{load_app_state, update_app_state},
+    transaction::with_short_transaction,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const PERSISTENCE_VERSION: u16 = 1;
@@ -276,49 +284,46 @@ impl AppStateStore {
 
     pub fn save(&self, state: &PersistentApplicationState) -> Result<(), PersistenceError> {
         state.validate()?;
-        let reducer_json = json_document(&state.reducer)?;
-        let reducer_value: serde_json::Value = serde_json::from_str(reducer_json.as_str())?;
-        let reducer_revision = reducer_value
-            .get("revision")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or(PersistenceError::InvalidReducerSnapshot)?;
-        let presentation_state = reducer_value
-            .get("presentation")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(PersistenceError::InvalidReducerSnapshot)?
-            .to_owned();
-        let presentation_since_ms = reducer_value
-            .get("presentationSinceMs")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or(PersistenceError::InvalidReducerSnapshot)?;
-        let minimum_dwell_ms = reducer_value
-            .get("minimumDwellMs")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or(PersistenceError::InvalidReducerSnapshot)?;
-        let window_placement_json = state
-            .window_placement
-            .as_ref()
-            .map(json_document)
-            .transpose()?;
-        let selected_pet_id = state
-            .selected_pet_id
-            .as_ref()
-            .map(|value| value.as_str().to_owned());
         let mut database = open(&self.paths)?;
-        update_app_state(
-            database.connection(),
-            &lili_storage::models::AppStateRow {
-                id: 1,
-                schema_version: STORAGE_SCHEMA_VERSION,
-                selected_pet_id,
-                window_placement_json,
-                reducer_json: Some(reducer_json),
-                reducer_revision,
-                presentation_state,
-                presentation_since_ms,
-                minimum_dwell_ms,
-            },
-        )?;
+        let existing = load_app_state(database.connection())?;
+        let row = app_state_row(state, existing.window_placement_json)?;
+        update_app_state(database.connection(), &row)?;
+        Ok(())
+    }
+
+    pub fn save_transition(
+        &self,
+        state: &PersistentApplicationState,
+        event: &NormalizedSessionEvent,
+    ) -> Result<(), PersistenceError> {
+        state.validate()?;
+        let mut database = open(&self.paths)?;
+        let existing = load_app_state(database.connection())?;
+        let row = app_state_row(state, existing.window_placement_json)?;
+        let details_json = json_document(event)?;
+        let lifecycle_event_id = lifecycle_event_id(event);
+        let event_type = event_type_name(event.event_type);
+        let source = event.source_discriminator.as_str();
+        let entity_id = event.session_id.as_str();
+        with_short_transaction(database.connection(), |connection| {
+            update_app_state(connection, &row)?;
+            lili_storage::repository::insert_lifecycle_event(
+                connection,
+                &NewLifecycleEvent {
+                    event_id: &lifecycle_event_id,
+                    entity_type: "session",
+                    entity_id,
+                    event_type,
+                    source,
+                    occurred_at_ms: i64::try_from(event.occurred_at_ms).unwrap_or(i64::MAX),
+                    previous_state: None,
+                    current_state: None,
+                    details_json: Some(&details_json),
+                    error_json: None,
+                },
+            )?;
+            Ok(())
+        })?;
         Ok(())
     }
 }
@@ -326,6 +331,77 @@ impl AppStateStore {
 fn json_document<T: Serialize>(value: &T) -> Result<JsonDocument, PersistenceError> {
     JsonDocument::parse(serde_json::to_string(value)?)
         .map_err(PersistenceError::InvalidJsonDocument)
+}
+
+fn app_state_row(
+    state: &PersistentApplicationState,
+    existing_window_placement: Option<JsonDocument>,
+) -> Result<AppStateRow, PersistenceError> {
+    let reducer_json = json_document(&state.reducer)?;
+    let reducer_value: serde_json::Value = serde_json::from_str(reducer_json.as_str())?;
+    let reducer_revision = reducer_value
+        .get("revision")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(PersistenceError::InvalidReducerSnapshot)?;
+    let presentation_state = reducer_value
+        .get("presentation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(PersistenceError::InvalidReducerSnapshot)?
+        .to_owned();
+    let presentation_since_ms = reducer_value
+        .get("presentationSinceMs")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(PersistenceError::InvalidReducerSnapshot)?;
+    let minimum_dwell_ms = reducer_value
+        .get("minimumDwellMs")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(PersistenceError::InvalidReducerSnapshot)?;
+    let window_placement_json = state
+        .window_placement
+        .as_ref()
+        .map(json_document)
+        .transpose()?
+        .or(existing_window_placement);
+    let selected_pet_id = state
+        .selected_pet_id
+        .as_ref()
+        .map(|value| value.as_str().to_owned());
+    Ok(AppStateRow {
+        id: 1,
+        schema_version: STORAGE_SCHEMA_VERSION,
+        selected_pet_id,
+        window_placement_json,
+        reducer_json: Some(reducer_json),
+        reducer_revision,
+        presentation_state,
+        presentation_since_ms,
+        minimum_dwell_ms,
+    })
+}
+
+const fn event_type_name(event_type: SessionEventKind) -> &'static str {
+    match event_type {
+        SessionEventKind::SessionStarted => "session_started",
+        SessionEventKind::TurnStarted => "turn_started",
+        SessionEventKind::AttentionRequired => "attention_required",
+        SessionEventKind::AttentionResolved => "attention_resolved",
+        SessionEventKind::TurnCompleted => "turn_completed",
+        SessionEventKind::TurnFailed => "turn_failed",
+        SessionEventKind::SessionEnded => "session_ended",
+    }
+}
+
+pub(crate) fn lifecycle_event_id(event: &NormalizedSessionEvent) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(event.provider.as_str().as_bytes());
+    hasher.update([0]);
+    hasher.update(event.event_id.as_str().as_bytes());
+    let digest = hasher.finalize();
+    let mut value = String::from("session-event-");
+    for byte in digest {
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
 }
 
 #[derive(Debug, Error)]
