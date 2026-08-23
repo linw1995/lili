@@ -37,7 +37,7 @@
 ## 6. Breaking Behavior and Failure Boundaries
 
 - [x] 6.1 Add clean-start tests that set `CODEX_HOME` to an existing sentinel or protected directory and assert that desktop startup, database initialization, Pet discovery, actions, and forwarding create no files below it.
-- [ ] 6.2 Add database-open, migration, permission, corruption, and storage-integrity diagnostics; verify Lili fails closed without trying `CODEX_HOME`, the project directory, Documents, or Desktop as a fallback.
+- [x] 6.2 Add database-open, migration, permission, corruption, and storage-integrity diagnostics; verify Lili fails closed without trying `CODEX_HOME`, the project directory, Documents, or Desktop as a fallback.
 - [ ] 6.3 Add explicit diagnostics and release behavior for ignored old data and required user-initiated integration reconfiguration; verify startup does not rewrite existing hook or plugin configuration.
 
 ## 7. Verification and Packaged Acceptance

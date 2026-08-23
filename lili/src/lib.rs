@@ -20,8 +20,8 @@ use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
 use lili_actions::{ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, load_actions_file};
 use lili_app_state::{
     AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, DEFAULT_VISIBLE_WINDOW_MARGIN,
-    DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, WindowPlacement,
-    resolve_window_placement,
+    DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, PersistenceError,
+    WindowPlacement, resolve_window_placement,
 };
 use lili_core::PetId;
 use lili_integration::IntegrationKind;
@@ -85,7 +85,13 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     .map(StaticAssets::new);
     let application_paths =
         ApplicationPaths::resolve().expect("failed to resolve Lili application storage paths");
-    let (state, state_store, saved_window_placement) = load_app_state(&application_paths);
+    let (state, state_store, saved_window_placement) = match load_app_state(&application_paths) {
+        Ok(value) => value,
+        Err(_) => {
+            diagnostics::error("storage", "open", "unavailable");
+            std::process::exit(1);
+        }
+    };
     app.state::<DesktopAcceptanceState>()
         .configure(application_paths.clone(), state.clone());
     let _native_ingestion = configure_native_runtime(
@@ -318,10 +324,12 @@ fn configure_native_actions(application_paths: &ApplicationPaths, state: &AppSta
 
 type LoadedAppState = (AppState, Option<AppStateStore>, Option<WindowPlacement>);
 
-fn load_app_state(application_paths: &ApplicationPaths) -> LoadedAppState {
+fn load_app_state(
+    application_paths: &ApplicationPaths,
+) -> Result<LoadedAppState, PersistenceError> {
     let store = AppStateStore::for_application(application_paths.clone());
-    match store.load() {
-        Ok(Some(state)) => {
+    match store.load()? {
+        Some(state) => {
             let window_placement = state.window_placement().cloned();
             let pet_catalog = PetCatalog::load_with_selection(
                 &application_paths.pets_root(),
@@ -329,21 +337,13 @@ fn load_app_state(application_paths: &ApplicationPaths) -> LoadedAppState {
             );
             let state = AppState::with_persistent_state(pet_catalog, state)
                 .expect("validated application state must restore");
-            (state, Some(store), window_placement)
+            Ok((state, Some(store), window_placement))
         }
-        Ok(None) => (
+        None => Ok((
             AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root())),
             Some(store),
             None,
-        ),
-        Err(_) => {
-            diagnostics::warn("state", "restore", "invalid_state");
-            (
-                AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root())),
-                None,
-                None,
-            )
-        }
+        )),
     }
 }
 
