@@ -16,7 +16,7 @@ This boundary protects Lili from page content and malformed inputs. It is not an
 
 ## Local data layout
 
-The desktop runtime and Hook use the platform-native Lili application root. `CODEX_HOME` is not a desktop storage root and is only accessed by explicitly invoked integration commands.
+The desktop runtime and Hook use the platform-native Lili application root. `CODEX_HOME` is not a desktop storage root. The paths below that use `CODEX_HOME` belong only to explicitly invoked integration commands that manage Codex configuration.
 
 | Path | Lifetime | Contents |
 | --- | --- | --- |
@@ -25,9 +25,9 @@ The desktop runtime and Hook use the platform-native Lili application root. `COD
 | `<LILI_DATA>/config/actions.toml` | User managed | Action identifiers, filters, executable argv, limits, working-directory policy, and explicit environment additions. |
 | `<LILI_DATA>/runtime/forwarding.json` | Current desktop instance | Instance identifier, local endpoint, and secret used to authenticate forwarding. Owner-only and removed on orderly shutdown. |
 | `<LILI_DATA>/runtime/forwarding.sock` | Current desktop instance on Unix | Owner-only local forwarding socket. Windows uses a user-scoped named pipe. |
-| `${CODEX_HOME}/lili/integration.json` | Until complete uninstall | Managed integration provenance, file hashes, owned hook commands, prior notify argv, backup paths, and install timestamp. |
-| `${CODEX_HOME}/config.toml.lili-backup-<timestamp>` | Until manually removed | Pre-install configuration backup when `config.toml` was updated. |
-| `${CODEX_HOME}/hooks.json.lili-backup-<timestamp>` | Until manually removed | Pre-install hook backup when `hooks.json` was updated. |
+| `${CODEX_HOME}/lili/integration.json` | Until complete uninstall; integration only | Managed integration provenance, file hashes, owned hook commands, prior notify argv, backup paths, and install timestamp. |
+| `${CODEX_HOME}/config.toml.lili-backup-<timestamp>` | Until manually removed; integration only | Pre-install configuration backup when `config.toml` was updated. |
+| `${CODEX_HOME}/hooks.json.lili-backup-<timestamp>` | Until manually removed; integration only | Pre-install configuration backup when `hooks.json` was updated. |
 
 `<LILI_DATA>` is `~/Library/Application Support/dev.linw1995.lili/` on macOS, `$XDG_STATE_HOME/dev.linw1995.lili/` or `~/.local/state/dev.linw1995.lili/` on Linux, and `%LOCALAPPDATA%\dev.linw1995.lili\` on Windows. Deleting `lili.sqlite3` while Lili is stopped resets application state; it does not touch Codex configuration or user Pet files.
 

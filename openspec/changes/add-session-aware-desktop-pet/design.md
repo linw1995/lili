@@ -2,7 +2,7 @@
 
 The repository is empty apart from Git and OpenSpec. Linw1995 provided a reference architecture with Rust domain crates, one Axum router, Leptos SSR with hydrated islands, a normal Web entry point, and a Tauri desktop entry point that serves the same router over an ephemeral signed HTTPS loopback origin. Lili needs that security boundary because session integration and local process execution are native capabilities that must not be exposed directly to WebView JavaScript.
 
-The compatibility target is the installed Codex v2 pet contract: a package under `${CODEX_HOME}/pets/<id>/`, `spriteVersionNumber: 2`, and a transparent `1536x2288` 8x11 atlas with `192x208` cells. The product wording uses ChatGPT/Codex sessions, but the first supported machine-readable inputs are the public Codex `notify` command and lifecycle hooks. Those contracts evolve independently, so provider payloads cannot become the internal model.
+The compatibility target is the installed Codex v2 pet contract: a package under the Lili application data root at `pets/<id>/`, `spriteVersionNumber: 2`, and a transparent `1536x2288` 8x11 atlas with `192x208` cells. The product wording uses ChatGPT/Codex sessions, but the first supported machine-readable inputs are the public Codex `notify` command and lifecycle hooks. Those contracts evolve independently, so provider payloads cannot become the internal model.
 
 ## Goals / Non-Goals
 

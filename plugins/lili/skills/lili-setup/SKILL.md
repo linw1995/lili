@@ -98,7 +98,7 @@ Keep Lili-owned legacy hooks and `notify` configuration active while the plugin 
 
 If verification fails, recommend preserving the legacy integration or rolling back the plugin. Plugin removal must not delete the desktop application, pet packages, actions, spool, unrelated configuration, or legacy configuration.
 
-Generate the cleanup assessment only with `lili integrate assess --plugin <plugin@marketplace> > lili-plugin-migration-assessment.json`. This command verifies synthetic delivery and overlap deduplication and saves a separate runtime-authenticated receipt. When cleanup is ready, show only the assessment's `lili integrate cleanup --assessment lili-plugin-migration-assessment.json` command. Do not hand-author the assessment or replace cleanup with raw `lili integrate uninstall`; cleanup must verify the receipt and freshly revalidate the selected Marketplace identity, Codex home, plugin state, real delivery, overlap, and provenance.
+Generate the cleanup assessment only with `lili integrate assess --plugin <plugin@marketplace> > lili-plugin-migration-assessment.json`. This command verifies synthetic delivery and overlap deduplication and saves a separate runtime-authenticated receipt. When cleanup is ready, show only the assessment's `lili integrate cleanup --assessment lili-plugin-migration-assessment.json` command. Do not hand-author the assessment or replace cleanup with raw `lili integrate uninstall`; cleanup must verify the receipt and freshly revalidate the selected Marketplace identity, explicitly selected Codex configuration root, plugin state, real delivery, overlap, and provenance. This integration-only command does not change the desktop storage boundary.
 
 ## Troubleshoot safely
 
