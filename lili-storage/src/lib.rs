@@ -1,7 +1,11 @@
 mod database;
+pub mod models;
+pub mod repository;
 pub mod schema;
+pub mod transaction;
 
 pub use database::{DatabaseError, EmbeddedDatabase, MIGRATIONS, connect, open};
+pub use models::JsonDocument;
 
 use std::{
     env, fmt, fs,
