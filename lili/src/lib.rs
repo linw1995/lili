@@ -814,18 +814,37 @@ fn open_pet_context_menu_at(
     navigation: &ContextMenuNavigation,
     fallback: Option<tauri::PhysicalPosition<i32>>,
 ) -> Result<(), String> {
-    let window = match app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
-        Some(window) => window,
-        None => create_context_menu_window(app, navigation)?,
-    };
-    let pointer = source
+    let window = context_menu_window(app, navigation)?;
+    let pointer = context_menu_pointer(source, fallback)?;
+    let position = context_menu_position(source, &window, pointer);
+    position_context_menu(&window, position)
+}
+
+fn context_menu_window(
+    app: &tauri::AppHandle,
+    navigation: &ContextMenuNavigation,
+) -> Result<tauri::WebviewWindow, String> {
+    app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL)
+        .map_or_else(|| create_context_menu_window(app, navigation), Ok)
+}
+
+fn context_menu_pointer(
+    source: &tauri::WebviewWindow,
+    fallback: Option<tauri::PhysicalPosition<i32>>,
+) -> Result<tauri::PhysicalPosition<i32>, String> {
+    source
         .cursor_position()
         .ok()
         .filter(|point| point.x.is_finite() && point.y.is_finite())
         .map(|point| tauri::PhysicalPosition::new(point.x.round() as i32, point.y.round() as i32))
         .or(fallback)
-        .ok_or_else(|| "current cursor position is unavailable".to_owned())?;
-    let position = context_menu_position(source, &window, pointer);
+        .ok_or_else(|| "current cursor position is unavailable".to_owned())
+}
+
+fn position_context_menu(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+) -> Result<(), String> {
     window
         .set_position(position)
         .map_err(|error| format!("failed to position pet context menu: {error}"))?;
