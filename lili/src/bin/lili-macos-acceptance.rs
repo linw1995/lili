@@ -172,14 +172,7 @@ mod macos {
                     .map_err(|error| error.to_string())?
                     .as_nanos()
             ));
-            let home = PathBuf::from(format!(
-                "/tmp/lili-macos-home-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|error| error.to_string())?
-                    .as_nanos()
-            ));
+            let home = PathBuf::from(format!("/tmp/lm-{}", std::process::id()));
             fs::create_dir_all(&path)
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
             fs::create_dir_all(&home)
