@@ -13,7 +13,7 @@ max_parallel = 1
 queue_capacity = 0
 
 [action.working_directory]
-policy = "codex_home"
+policy = "application_data"
 
 [[action]]
 id = "pet-double-click"
@@ -28,7 +28,7 @@ max_parallel = 1
 queue_capacity = 0
 
 [action.working_directory]
-policy = "codex_home"
+policy = "application_data"
 
 [[action]]
 id = "open-session-context"
@@ -47,4 +47,4 @@ max_parallel = 1
 queue_capacity = 0
 
 [action.working_directory]
-policy = "codex_home"
+policy = "application_data"

@@ -17,9 +17,7 @@ use std::time::Duration;
 use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
-use lili_actions::{
-    ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, action_config_path, load_actions_file,
-};
+use lili_actions::{ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, load_actions_file};
 use lili_app_state::{
     AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, DEFAULT_VISIBLE_WINDOW_MARGIN,
     DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, WindowPlacement,
@@ -92,6 +90,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     let native_ingestion = configure_native_runtime(
         !smoke || acceptance,
         state_store.clone(),
+        &application_paths,
         codex_home.as_deref(),
         &state,
     );
@@ -149,6 +148,7 @@ fn configure_desktop_companion_application(_app: &tauri::App) -> tauri::Result<(
 fn configure_native_runtime(
     enabled: bool,
     state_store: Option<AppStateStore>,
+    application_paths: &ApplicationPaths,
     codex_home: Option<&Path>,
     state: &AppState,
 ) -> Option<NativeIngestionHandle> {
@@ -156,7 +156,7 @@ fn configure_native_runtime(
         return None;
     }
     let codex_home = codex_home?;
-    configure_native_actions(codex_home, state);
+    configure_native_actions(application_paths, state);
     match start_native_ingestion(codex_home, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
@@ -305,9 +305,9 @@ fn persist_desktop_state(app: &tauri::AppHandle, state: &AppState, store: Option
     }
 }
 
-fn configure_native_actions(codex_home: &Path, state: &AppState) {
-    let context = ActionLoadContext::for_codex_home(codex_home);
-    let loaded = load_actions_file(&action_config_path(codex_home), &context);
+fn configure_native_actions(application_paths: &ApplicationPaths, state: &AppState) {
+    let context = ActionLoadContext::for_application(application_paths.root());
+    let loaded = load_actions_file(&application_paths.actions_path(), &context);
     let enabled_count = loaded.enabled().len();
     let diagnostic_count = loaded.effective().diagnostics.len();
     let configured =
