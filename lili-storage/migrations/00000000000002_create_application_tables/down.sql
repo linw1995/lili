@@ -1,0 +1,17 @@
+DROP TRIGGER lifecycle_events_immutable_delete;
+DROP TRIGGER lifecycle_events_immutable_update;
+DROP INDEX lifecycle_events_entity_time_idx;
+DROP INDEX inbound_spool_claim_idx;
+DROP INDEX recent_events_observed_idx;
+DROP INDEX notifications_session_time_idx;
+DROP INDEX turns_session_updated_idx;
+DROP INDEX sessions_updated_idx;
+DROP TABLE lifecycle_events;
+DROP TABLE plugin_evidence;
+DROP TABLE inbound_spool;
+DROP TABLE recent_events;
+DROP TABLE notifications;
+DROP TABLE turns;
+DROP TABLE sessions;
+DROP TABLE app_state;
+UPDATE storage_metadata SET schema_version = 1 WHERE id = 1;

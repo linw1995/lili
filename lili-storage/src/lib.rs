@@ -1,4 +1,5 @@
 mod database;
+pub mod schema;
 
 pub use database::{DatabaseError, EmbeddedDatabase, MIGRATIONS, connect, open};
 
