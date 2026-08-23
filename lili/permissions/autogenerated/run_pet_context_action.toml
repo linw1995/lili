@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-run-pet-context-action"
+description = "Enables the run_pet_context_action command without any pre-configured scope."
+commands.allow = ["run_pet_context_action"]
+
+[[permission]]
+identifier = "deny-run-pet-context-action"
+description = "Denies the run_pet_context_action command without any pre-configured scope."
+commands.deny = ["run_pet_context_action"]

@@ -24,6 +24,53 @@ use uuid::Uuid;
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 const MAX_FIXTURE_NOTIFICATIONS: usize = 32;
 const MAX_FIXTURE_TEXT_BYTES: usize = 4 * 1024;
+const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root { color-scheme: light dark; font-family: ui-rounded, system-ui, sans-serif; }
+    html, body { margin: 0; background: transparent; }
+    menu {
+      backdrop-filter: blur(14px);
+      background: rgb(24 28 36 / 96%);
+      border: 1px solid rgb(255 255 255 / 24%);
+      border-radius: 10px;
+      box-shadow: 0 10px 28px rgb(0 0 0 / 32%);
+      color: #fff;
+      display: grid;
+      gap: 3px;
+      list-style: none;
+      margin: 0;
+      min-width: 184px;
+      padding: 5px;
+    }
+    button {
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      color: inherit;
+      cursor: pointer;
+      font: 500 12px/1.35 system-ui, sans-serif;
+      padding: 7px 9px;
+      text-align: start;
+      width: 100%;
+    }
+    button:hover, button:focus-visible { background: rgb(120 215 255 / 20%); outline: none; }
+  </style>
+</head>
+<body>
+  <menu aria-label="Pet menu" role="menu">
+    <button type="button" role="menuitem" data-action="show">Show</button>
+    <button type="button" role="menuitem" data-action="hide">Hide</button>
+    <button type="button" role="menuitem" data-action="always-on-top">Always on Top</button>
+    <button type="button" role="menuitem" data-action="settings">Settings</button>
+    <button type="button" role="menuitem" data-action="diagnostics">Diagnostics</button>
+    <button type="button" role="menuitem" data-action="quit">Quit</button>
+  </menu>
+</body>
+</html>"#;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StaticAssets {
@@ -300,6 +347,7 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
 
     let mut router = Router::new()
         .route("/health", get(health))
+        .route("/context-menu", get(context_menu))
         .route("/pet-assets/{asset_id}", get(pet_asset))
         .route("/presentation-events", get(events))
         .nest("/api/v1", api)
@@ -337,6 +385,10 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+async fn context_menu() -> Html<&'static str> {
+    Html(CONTEXT_MENU_HTML)
 }
 
 async fn snapshot(State(state): State<ServerState>) -> Json<lili_app_state::ViewSnapshot> {
@@ -666,6 +718,28 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body, r#"{"status":"ok"}"#);
+    }
+
+    #[tokio::test]
+    async fn context_menu_contains_only_native_actions() {
+        let response = build_router(AppState::default(), None)
+            .oneshot(Request::get("/context-menu").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        for action in [
+            "show",
+            "hide",
+            "always-on-top",
+            "settings",
+            "diagnostics",
+            "quit",
+        ] {
+            assert!(body.contains(&format!("data-action=\"{action}\"")));
+        }
+        assert!(!body.contains("invoke("));
     }
 
     #[tokio::test]
