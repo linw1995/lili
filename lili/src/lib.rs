@@ -24,9 +24,9 @@ use lili_app_state::{
     resolve_window_placement,
 };
 use lili_core::PetId;
-use lili_integration::{IntegrationKind, inspect, resolve_codex_home};
+use lili_integration::IntegrationKind;
 use lili_pet::PetCatalog;
-use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
+use lili_server::{StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSqliteSpoolRecord, CodexPluginEvidenceStore,
     ForwardingCredentialStore, ForwardingTransportError, SqliteSpoolStore,
@@ -85,15 +85,13 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     .map(StaticAssets::new);
     let application_paths =
         ApplicationPaths::resolve().expect("failed to resolve Lili application storage paths");
-    let (state, state_store, codex_home, saved_window_placement) =
-        load_app_state(&application_paths);
+    let (state, state_store, saved_window_placement) = load_app_state(&application_paths);
     app.state::<DesktopAcceptanceState>()
-        .configure(codex_home.clone(), state.clone());
-    let native_ingestion = configure_native_runtime(
+        .configure(application_paths.clone(), state.clone());
+    let _native_ingestion = configure_native_runtime(
         !smoke || acceptance,
         state_store.clone(),
         &application_paths,
-        codex_home.as_deref(),
         &state,
     );
     app.manage(DesktopPersistence {
@@ -102,18 +100,11 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     });
     app.manage(WindowDragState::default());
     let pets_root = application_paths.pets_root();
-    setup_tray(&app, state.clone(), codex_home.as_deref(), &pets_root)
-        .expect("failed to configure tray lifecycle");
-    let diagnostics_refresh =
-        native_ingestion
-            .zip(codex_home.clone())
-            .map(|(ingestion, codex_home)| {
-                NativeDiagnosticsRefresh::new(ingestion, move || inspect(&codex_home).codex_adapter)
-            });
+    setup_tray(&app, state.clone(), &pets_root).expect("failed to configure tray lifecycle");
     let loopback = LoopbackServer::bind(build_native_router_with_diagnostics(
         state.clone(),
         assets,
-        diagnostics_refresh,
+        None,
     ))
     .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
@@ -151,15 +142,13 @@ fn configure_native_runtime(
     enabled: bool,
     state_store: Option<AppStateStore>,
     application_paths: &ApplicationPaths,
-    codex_home: Option<&Path>,
     state: &AppState,
 ) -> Option<NativeIngestionHandle> {
     if !enabled {
         return None;
     }
-    let codex_home = codex_home?;
     configure_native_actions(application_paths, state);
-    match start_native_ingestion(application_paths, codex_home, state.clone(), state_store) {
+    match start_native_ingestion(application_paths, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
             diagnostics::warn("ingestion", "start", "transport_unavailable");
@@ -327,28 +316,9 @@ fn configure_native_actions(application_paths: &ApplicationPaths, state: &AppSta
     }
 }
 
-type LoadedAppState = (
-    AppState,
-    Option<AppStateStore>,
-    Option<PathBuf>,
-    Option<WindowPlacement>,
-);
+type LoadedAppState = (AppState, Option<AppStateStore>, Option<WindowPlacement>);
 
 fn load_app_state(application_paths: &ApplicationPaths) -> LoadedAppState {
-    let codex_home = match resolve_codex_home() {
-        Ok(codex_home) => codex_home,
-        Err(_) => {
-            diagnostics::warn("configuration", "resolve_home", "invalid_home");
-            return (AppState::default(), None, None, None);
-        }
-    };
-    load_resolved_app_state(codex_home, application_paths)
-}
-
-fn load_resolved_app_state(
-    codex_home: PathBuf,
-    application_paths: &ApplicationPaths,
-) -> LoadedAppState {
     let store = AppStateStore::for_application(application_paths.clone());
     match store.load() {
         Ok(Some(state)) => {
@@ -359,19 +329,18 @@ fn load_resolved_app_state(
             );
             let state = AppState::with_persistent_state(pet_catalog, state)
                 .expect("validated application state must restore");
-            (state, Some(store), Some(codex_home), window_placement)
+            (state, Some(store), window_placement)
         }
-        Ok(None) => {
-            let state =
-                AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root()));
-            (state, Some(store), Some(codex_home), None)
-        }
+        Ok(None) => (
+            AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root())),
+            Some(store),
+            None,
+        ),
         Err(_) => {
             diagnostics::warn("state", "restore", "invalid_state");
             (
                 AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root())),
                 None,
-                Some(codex_home),
                 None,
             )
         }
@@ -380,7 +349,6 @@ fn load_resolved_app_state(
 
 fn start_native_ingestion(
     application_paths: &ApplicationPaths,
-    codex_home: &Path,
     state: AppState,
     state_store: Option<AppStateStore>,
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
@@ -389,7 +357,7 @@ fn start_native_ingestion(
         .load()
         .ok()
         .and_then(|record| record.credentials().ok());
-    let codex_adapter = inspect(codex_home).codex_adapter;
+    let codex_adapter = lili_session::CodexAdapterDiagnostics::default();
     let evidence_store = CodexPluginEvidenceStore::for_application(application_paths.clone());
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
         let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
@@ -873,13 +841,8 @@ async fn commit_window_position(
     Ok(true)
 }
 
-fn setup_tray(
-    app: &tauri::App,
-    state: AppState,
-    codex_home: Option<&Path>,
-    pets_root: &Path,
-) -> tauri::Result<()> {
-    let tray_menu = build_tray_menu(app, &state, codex_home, pets_root)?;
+fn setup_tray(app: &tauri::App, state: AppState, pets_root: &Path) -> tauri::Result<()> {
+    let tray_menu = build_tray_menu(app, &state, pets_root)?;
     let icon = app
         .default_window_icon()
         .cloned()
@@ -917,10 +880,9 @@ struct TrayMenu {
 fn build_tray_menu(
     app: &tauri::App,
     state: &AppState,
-    codex_home: Option<&Path>,
     pets_root: &Path,
 ) -> tauri::Result<TrayMenu> {
-    let parts = TrayMenuParts::new(app, state, codex_home, pets_root)?;
+    let parts = TrayMenuParts::new(app, state, pets_root)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -950,16 +912,11 @@ struct TrayMenuParts {
 }
 
 impl TrayMenuParts {
-    fn new(
-        app: &tauri::App,
-        state: &AppState,
-        codex_home: Option<&Path>,
-        _pets_root: &Path,
-    ) -> tauri::Result<Self> {
+    fn new(app: &tauri::App, state: &AppState, _pets_root: &Path) -> tauri::Result<Self> {
         Ok(Self {
             window: build_tray_window_items(app, state)?,
             pet: build_tray_pet_items(app, state)?,
-            integration: build_tray_integration_item(app, codex_home)?,
+            integration: build_tray_integration_item(app)?,
             utility: build_tray_utility_items(app)?,
         })
     }
@@ -1017,13 +974,8 @@ fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<Tra
     })
 }
 
-fn build_tray_integration_item(
-    app: &tauri::App,
-    codex_home: Option<&Path>,
-) -> tauri::Result<MenuItem<tauri::Wry>> {
-    let integration_status = codex_home.map_or(TrayIntegrationStatus::Unavailable, |codex_home| {
-        TrayIntegrationStatus::from_inspection(&inspect(codex_home))
-    });
+fn build_tray_integration_item(app: &tauri::App) -> tauri::Result<MenuItem<tauri::Wry>> {
+    let integration_status = TrayIntegrationStatus::Unavailable;
     MenuItem::with_id(
         app,
         "integration-status",
@@ -1200,6 +1152,7 @@ impl TrayAction {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrayIntegrationStatus {
     Installed,
@@ -1209,6 +1162,7 @@ enum TrayIntegrationStatus {
     Unavailable,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl TrayIntegrationStatus {
     fn from_inspection(inspection: &lili_integration::IntegrationInspection) -> Self {
         let notify_installed = inspection.notify.kind == IntegrationKind::Lili;

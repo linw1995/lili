@@ -1,13 +1,11 @@
-use std::{
-    path::PathBuf,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 use lili_actions::ActionExecutionOutcome;
 use lili_app_state::AppState;
+use lili_storage::ApplicationPaths;
 use serde::Deserialize;
 use tauri::{AppHandle, WebviewWindow};
 
@@ -76,17 +74,17 @@ pub struct BrowserAcceptanceReport {
 
 #[derive(Default)]
 pub struct DesktopAcceptanceState {
-    codex_home: Mutex<Option<PathBuf>>,
+    application_paths: Mutex<Option<ApplicationPaths>>,
     app_state: Mutex<Option<AppState>>,
     completed: AtomicBool,
 }
 
 impl DesktopAcceptanceState {
-    pub fn configure(&self, codex_home: Option<PathBuf>, app_state: AppState) {
+    pub fn configure(&self, application_paths: ApplicationPaths, app_state: AppState) {
         *self
-            .codex_home
+            .application_paths
             .lock()
-            .expect("desktop acceptance state must not be poisoned") = codex_home;
+            .expect("desktop acceptance state must not be poisoned") = Some(application_paths);
         *self
             .app_state
             .lock()
@@ -105,7 +103,11 @@ pub async fn complete_desktop_acceptance(
     if state.completed.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    let codex_home = state.codex_home.lock().ok().and_then(|path| path.clone());
+    let application_paths = state
+        .application_paths
+        .lock()
+        .ok()
+        .and_then(|paths| paths.clone());
     let app_state = state.app_state.lock().ok().and_then(|state| state.clone());
     let action_audit = match app_state {
         Some(state) => state.action_audit().await,
@@ -137,7 +139,9 @@ pub async fn complete_desktop_acceptance(
     let show_contract = hidden_contract && window.show().is_ok();
     let shown_contract = show_contract && window.is_visible().is_ok_and(|visible| visible);
     let visibility_contract = hide_contract && hidden_contract && show_contract && shown_contract;
-    let transport_contract = codex_home.as_deref().is_some_and(private_transport_is_live);
+    let transport_contract = application_paths
+        .as_ref()
+        .is_some_and(private_transport_is_live);
     let absolute_position_contract = absolute_position_contract(&window, &drag_state);
     eprintln!(
         "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={native_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract}"
@@ -159,15 +163,17 @@ pub async fn complete_desktop_acceptance(
         && visibility_contract
         && transport_contract
         && absolute_position_contract;
-    let result_recorded = match codex_home {
-        Some(codex_home) => std::fs::write(
-            codex_home.join("lili").join("desktop-acceptance-result"),
+    let result_recorded = match application_paths {
+        Some(application_paths) => std::fs::write(
+            application_paths.root().join("desktop-acceptance-result"),
             if passed { "passed\n" } else { "failed\n" },
         )
         .inspect_err(|error| eprintln!("desktop acceptance result could not be recorded: {error}"))
         .is_ok(),
         None => {
-            eprintln!("desktop acceptance result could not be recorded: CODEX_HOME is unavailable");
+            eprintln!(
+                "desktop acceptance result could not be recorded: application storage is unavailable"
+            );
             false
         }
     };
@@ -219,10 +225,10 @@ fn native_window_contract(_window: &WebviewWindow) -> bool {
 }
 
 #[cfg(unix)]
-fn private_transport_is_live(codex_home: &std::path::Path) -> bool {
+fn private_transport_is_live(application_paths: &ApplicationPaths) -> bool {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
-    let runtime_dir = codex_home.join("lili").join("runtime");
+    let runtime_dir = application_paths.runtime_root();
     let current_uid = rustix::process::geteuid().as_raw();
     let Ok(runtime_metadata) = std::fs::symlink_metadata(&runtime_dir) else {
         return false;
@@ -246,8 +252,8 @@ fn private_transport_is_live(codex_home: &std::path::Path) -> bool {
 }
 
 #[cfg(windows)]
-fn private_transport_is_live(codex_home: &std::path::Path) -> bool {
-    let runtime_dir = codex_home.join("lili").join("runtime");
+fn private_transport_is_live(application_paths: &ApplicationPaths) -> bool {
+    let runtime_dir = application_paths.runtime_root();
     let store = lili_session::ForwardingCredentialStore::for_runtime_dir(&runtime_dir);
     store
         .load()

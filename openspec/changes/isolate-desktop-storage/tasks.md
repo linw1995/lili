@@ -30,7 +30,7 @@
 
 ## 5. Explicit Codex Integration Boundary
 
-- [ ] 5.1 Isolate `resolve_codex_home` and Codex inspection/configuration access inside explicit integration CLI paths; verify desktop launch, tray diagnostics, background ingestion, and hook forwarding do not invoke those functions.
+- [x] 5.1 Isolate `resolve_codex_home` and Codex inspection/configuration access inside explicit integration CLI paths; verify desktop launch, tray diagnostics, background ingestion, and hook forwarding do not invoke those functions.
 - [ ] 5.2 Update direct integration and Marketplace hook commands for the new forwarder contract without adding runtime `CODEX_HOME` access; verify explicit `lili integrate inspect` remains the only normal path that reads Codex configuration.
 - [ ] 5.3 Remove automatic migration, cleanup, fallback, and legacy-path probing from desktop startup and storage repositories; verify old `${CODEX_HOME}/lili`, `${CODEX_HOME}/pets`, and `${CODEX_HOME}/pet` trees remain byte-for-byte unchanged.
 
