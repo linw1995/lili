@@ -42,7 +42,7 @@
 
 ## 7. Verification and Packaged Acceptance
 
-- [ ] 7.1 Add unit and integration coverage for schema migrations, transaction rollback, immutable lifecycle records, JSON constraints, retention bounds, cross-process claims, and restart recovery.
+- [x] 7.1 Add unit and integration coverage for schema migrations, transaction rollback, immutable lifecycle records, JSON constraints, retention bounds, cross-process claims, and restart recovery.
 - [x] 7.2 Update macOS, Windows, and Linux desktop acceptance fixtures to provision isolated Lili application roots and SQLite stores while keeping Codex configuration in a separate sentinel root; verify platform-native paths, permissions, WAL sidecars, and hook delivery.
 - [ ] 7.3 Run the complete Flake-provided Rust checks, tests, Web tests, packaged desktop smoke/acceptance, plugin checks, and `openspec validate --changes --strict --no-interactive`; verify all gates pass without modifying lockfiles or user Codex data.
 
