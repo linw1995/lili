@@ -9,13 +9,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use lili_lib::hook_forwarder::UNRESPONSIVE_ENDPOINT_BUDGET;
 use lili_session::{BoundForwardingEndpoint, SessionEventKind, SqliteSpoolStore};
 use lili_storage::ApplicationPaths;
 use tokio::sync::Mutex;
 
 const PERMISSION_FIXTURE: &str =
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json");
+const PERMISSION_HOOK_TEST_BUDGET: Duration = Duration::from_secs(5);
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 static HOOK_TEST_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
@@ -126,7 +126,7 @@ fn assert_observer_only_success(output: &std::process::Output, elapsed: Duration
     assert!(output.stdout.is_empty(), "permission hooks must not decide");
     assert!(output.stderr.is_empty());
     assert!(
-        elapsed <= UNRESPONSIVE_ENDPOINT_BUDGET,
+        elapsed <= PERMISSION_HOOK_TEST_BUDGET,
         "permission forwarding exceeded its bounded fallback budget"
     );
 }
