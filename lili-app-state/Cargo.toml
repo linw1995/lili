@@ -5,10 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+diesel.workspace = true
 lili-actions = { path = "../lili-actions" }
 lili-core = { path = "../lili-core" }
 lili-pet = { path = "../lili-pet" }
 lili-session = { path = "../lili-session" }
+lili-storage = { path = "../lili-storage" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

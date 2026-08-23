@@ -78,6 +78,7 @@ pub struct AppStateRow {
     pub schema_version: i32,
     pub selected_pet_id: Option<String>,
     pub window_placement_json: Option<JsonDocument>,
+    pub reducer_json: Option<JsonDocument>,
     pub reducer_revision: i64,
     pub presentation_state: String,
     pub presentation_since_ms: i64,

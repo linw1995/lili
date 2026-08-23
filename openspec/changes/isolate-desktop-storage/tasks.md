@@ -14,7 +14,7 @@
 
 ## 3. Persisted Application State and Pet Resources
 
-- [ ] 3.1 Replace `AppStateStore` JSON persistence with a SQLite repository for application metadata, selected Pet, window placement, reducer revision, session/turn state, notifications, and recent event identities; verify the restored reducer snapshot matches the pre-restart state.
+- [x] 3.1 Replace `AppStateStore` JSON persistence with a SQLite repository for application metadata, selected Pet, window placement, reducer revision, session/turn state, notifications, and recent event identities; verify the restored reducer snapshot matches the pre-restart state.
 - [ ] 3.2 Persist reducer transitions and lifecycle records in one short transaction; verify a simulated failure rolls back both the state mutation and its lifecycle record.
 - [ ] 3.3 Remove the separate legacy selection-file path and make selected Pet state database-backed while retaining only the embedded fallback when the selected app-owned package is unavailable; verify `${CODEX_HOME}/lili/selected-pet.json` is ignored and untouched.
 - [ ] 3.4 Refactor Pet catalog discovery to scan only the application-owned `pets/<id>` file tree while preserving Pet v2 validation; verify packages under `${CODEX_HOME}/pets` and `${CODEX_HOME}/pet` are ignored and untouched.

@@ -19,6 +19,25 @@ pub fn load_app_state(connection: &mut SqliteConnection) -> QueryResult<AppState
         .first(connection)
 }
 
+pub fn update_app_state(
+    connection: &mut SqliteConnection,
+    value: &AppStateRow,
+) -> QueryResult<AppStateRow> {
+    diesel::update(app_state::table.find(value.id))
+        .set((
+            app_state::schema_version.eq(value.schema_version),
+            app_state::selected_pet_id.eq(&value.selected_pet_id),
+            app_state::window_placement_json.eq(&value.window_placement_json),
+            app_state::reducer_json.eq(&value.reducer_json),
+            app_state::reducer_revision.eq(value.reducer_revision),
+            app_state::presentation_state.eq(&value.presentation_state),
+            app_state::presentation_since_ms.eq(value.presentation_since_ms),
+            app_state::minimum_dwell_ms.eq(value.minimum_dwell_ms),
+        ))
+        .execute(connection)?;
+    load_app_state(connection)
+}
+
 pub fn insert_session(
     connection: &mut SqliteConnection,
     value: &NewSession<'_>,

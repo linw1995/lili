@@ -4,6 +4,7 @@ diesel::table! {
         schema_version -> Integer,
         selected_pet_id -> Nullable<Text>,
         window_placement_json -> Nullable<Text>,
+        reducer_json -> Nullable<Text>,
         reducer_revision -> BigInt,
         presentation_state -> Text,
         presentation_since_ms -> BigInt,

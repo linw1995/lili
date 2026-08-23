@@ -2753,10 +2753,12 @@ dependencies = [
 name = "lili-app-state"
 version = "0.1.0"
 dependencies = [
+ "diesel",
  "lili-actions",
  "lili-core",
  "lili-pet",
  "lili-session",
+ "lili-storage",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

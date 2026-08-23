@@ -1,23 +1,21 @@
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::PathBuf;
 
 use lili_core::PetId;
 use lili_session::{ReducerRestoreError, SessionReducer, SessionReducerState};
+use lili_storage::{
+    ApplicationPaths, DatabaseError, JsonDocument, open,
+    repository::{load_app_state, update_app_state},
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const PERSISTENCE_VERSION: u16 = 1;
-const MAX_PERSISTED_STATE_BYTES: u64 = 2 * 1024 * 1024;
+const STORAGE_SCHEMA_VERSION: i32 = 3;
 const MAX_DISPLAY_ID_CHARS: usize = 256;
 const MAX_LOGICAL_COORDINATE: i32 = 1_000_000;
 const MIN_SCALE_MILLI: u32 = 250;
 const MAX_SCALE_MILLI: u32 = 8_000;
 pub const DEFAULT_VISIBLE_WINDOW_MARGIN: u32 = 48;
-static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisplayWorkArea {
@@ -244,135 +242,94 @@ impl PersistentApplicationState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppStateStore {
-    path: PathBuf,
+    paths: ApplicationPaths,
 }
 
 impl AppStateStore {
-    pub fn for_codex_home(codex_home: &Path) -> Self {
-        Self {
-            path: codex_home.join("lili").join("state.json"),
-        }
+    pub fn for_application(paths: ApplicationPaths) -> Self {
+        Self { paths }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn database_path(&self) -> PathBuf {
+        self.paths.database_path()
     }
 
     pub fn load(&self) -> Result<Option<PersistentApplicationState>, PersistenceError> {
-        let metadata = match fs::symlink_metadata(&self.path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let mut database = open(&self.paths)?;
+        let row = load_app_state(database.connection())?;
+        let Some(reducer_json) = row.reducer_json else {
+            return Ok(None);
         };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(PersistenceError::InvalidFile);
-        }
-        if metadata.len() > MAX_PERSISTED_STATE_BYTES {
-            return Err(PersistenceError::TooLarge);
-        }
-        let mut payload = Vec::with_capacity(metadata.len() as usize);
-        File::open(&self.path)?
-            .take(MAX_PERSISTED_STATE_BYTES + 1)
-            .read_to_end(&mut payload)?;
-        if payload.len() as u64 > MAX_PERSISTED_STATE_BYTES {
-            return Err(PersistenceError::TooLarge);
-        }
-        let header: VersionHeader = serde_json::from_slice(&payload)?;
-        if header.version != PERSISTENCE_VERSION {
-            return Err(PersistenceError::UnsupportedVersion(header.version));
-        }
-        let state: PersistentApplicationState = serde_json::from_slice(&payload)?;
+        let reducer = serde_json::from_str::<SessionReducerState>(reducer_json.as_str())?;
+        let selected_pet_id = row
+            .selected_pet_id
+            .map(|value| PetId::parse(value).ok_or(PersistenceError::InvalidSelectedPet))
+            .transpose()?;
+        let window_placement = row
+            .window_placement_json
+            .map(|value| serde_json::from_str(value.as_str()))
+            .transpose()?;
+        let state = PersistentApplicationState::new(selected_pet_id, window_placement, reducer);
         state.validate()?;
         Ok(Some(state))
     }
 
     pub fn save(&self, state: &PersistentApplicationState) -> Result<(), PersistenceError> {
         state.validate()?;
-        let mut payload = serde_json::to_vec(state)?;
-        payload.push(b'\n');
-        if payload.len() as u64 > MAX_PERSISTED_STATE_BYTES {
-            return Err(PersistenceError::TooLarge);
-        }
-
-        let directory = self
-            .path
-            .parent()
-            .expect("application state path must have a parent");
-        fs::create_dir_all(directory)?;
-        let metadata = fs::symlink_metadata(directory)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(PersistenceError::InvalidDirectory);
-        }
-
-        let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".state-{}-{sequence}.tmp", std::process::id()));
-        let mut guard = TemporaryFileGuard::new(temporary.clone());
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary)?;
-        file.write_all(&payload)?;
-        file.sync_all()?;
-        fs::rename(&temporary, &self.path)?;
-        guard.commit();
-        sync_directory(directory)?;
+        let reducer_json = json_document(&state.reducer)?;
+        let reducer_value: serde_json::Value = serde_json::from_str(reducer_json.as_str())?;
+        let reducer_revision = reducer_value
+            .get("revision")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(PersistenceError::InvalidReducerSnapshot)?;
+        let presentation_state = reducer_value
+            .get("presentation")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(PersistenceError::InvalidReducerSnapshot)?
+            .to_owned();
+        let presentation_since_ms = reducer_value
+            .get("presentationSinceMs")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(PersistenceError::InvalidReducerSnapshot)?;
+        let minimum_dwell_ms = reducer_value
+            .get("minimumDwellMs")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(PersistenceError::InvalidReducerSnapshot)?;
+        let window_placement_json = state
+            .window_placement
+            .as_ref()
+            .map(json_document)
+            .transpose()?;
+        let selected_pet_id = state
+            .selected_pet_id
+            .as_ref()
+            .map(|value| value.as_str().to_owned());
+        let mut database = open(&self.paths)?;
+        update_app_state(
+            database.connection(),
+            &lili_storage::models::AppStateRow {
+                id: 1,
+                schema_version: STORAGE_SCHEMA_VERSION,
+                selected_pet_id,
+                window_placement_json,
+                reducer_json: Some(reducer_json),
+                reducer_revision,
+                presentation_state,
+                presentation_since_ms,
+                minimum_dwell_ms,
+            },
+        )?;
         Ok(())
     }
 }
 
-#[derive(Deserialize)]
-struct VersionHeader {
-    version: u16,
-}
-
-struct TemporaryFileGuard {
-    path: PathBuf,
-    committed: bool,
-}
-
-impl TemporaryFileGuard {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            committed: false,
-        }
-    }
-
-    fn commit(&mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for TemporaryFileGuard {
-    fn drop(&mut self) {
-        if !self.committed {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> Result<(), std::io::Error> {
-    File::open(directory)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> Result<(), std::io::Error> {
-    Ok(())
+fn json_document<T: Serialize>(value: &T) -> Result<JsonDocument, PersistenceError> {
+    JsonDocument::parse(serde_json::to_string(value)?)
+        .map_err(PersistenceError::InvalidJsonDocument)
 }
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {
-    #[error("application state must be a regular file")]
-    InvalidFile,
-    #[error("application state directory must not be a symlink")]
-    InvalidDirectory,
-    #[error("application state exceeds 2 MiB")]
-    TooLarge,
     #[error("application state version {0} is unsupported")]
     UnsupportedVersion(u16),
     #[error("application state contains an invalid selected pet")]
@@ -383,6 +340,14 @@ pub enum PersistenceError {
     InvalidDisplayWorkArea,
     #[error("application state contains invalid reducer metadata: {0}")]
     Reducer(#[from] ReducerRestoreError),
+    #[error("application state contains an invalid reducer snapshot")]
+    InvalidReducerSnapshot,
+    #[error("application state contains invalid JSON: {0}")]
+    InvalidJsonDocument(lili_storage::models::JsonDocumentError),
+    #[error("application database operation failed: {0}")]
+    Database(#[from] DatabaseError),
+    #[error("application database query failed: {0}")]
+    DatabaseQuery(#[from] diesel::result::Error),
     #[error("application state I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("application state is malformed: {0}")]
@@ -391,6 +356,7 @@ pub enum PersistenceError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -426,44 +392,14 @@ mod tests {
     #[test]
     fn state_round_trip_replaces_atomically() {
         let temp = TempDir::new();
-        let store = AppStateStore::for_codex_home(&temp.0);
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
         store.save(&state("lili", 10)).unwrap();
         let replacement = state("custom-pet", 30);
         store.save(&replacement).unwrap();
         assert_eq!(store.load().unwrap(), Some(replacement));
-        let directory = store.path().parent().unwrap();
-        assert!(fs::read_dir(directory).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".tmp")
-        }));
-    }
-
-    #[test]
-    fn unsupported_version_is_rejected_before_state_restore() {
-        let temp = TempDir::new();
-        let store = AppStateStore::for_codex_home(&temp.0);
-        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
-        fs::write(store.path(), br#"{"version":2}"#).unwrap();
-        assert!(matches!(
-            store.load(),
-            Err(PersistenceError::UnsupportedVersion(2))
-        ));
-    }
-
-    #[test]
-    fn oversized_state_is_rejected_before_json_parsing() {
-        let temp = TempDir::new();
-        let store = AppStateStore::for_codex_home(&temp.0);
-        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
-        fs::write(
-            store.path(),
-            vec![b'x'; MAX_PERSISTED_STATE_BYTES as usize + 1],
-        )
-        .unwrap();
-        assert!(matches!(store.load(), Err(PersistenceError::TooLarge)));
+        assert!(store.database_path().is_file());
+        assert!(paths.root().is_dir());
     }
 
     #[test]

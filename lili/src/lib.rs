@@ -83,7 +83,10 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         cfg!(debug_assertions),
     )
     .map(StaticAssets::new);
-    let (state, state_store, codex_home, saved_window_placement) = load_app_state();
+    let application_paths =
+        ApplicationPaths::resolve().expect("failed to resolve Lili application storage paths");
+    let (state, state_store, codex_home, saved_window_placement) =
+        load_app_state(&application_paths);
     app.state::<DesktopAcceptanceState>()
         .configure(codex_home.clone(), state.clone());
     let native_ingestion =
@@ -323,7 +326,7 @@ type LoadedAppState = (
     Option<WindowPlacement>,
 );
 
-fn load_app_state() -> LoadedAppState {
+fn load_app_state(application_paths: &ApplicationPaths) -> LoadedAppState {
     let codex_home = match resolve_codex_home() {
         Ok(codex_home) => codex_home,
         Err(_) => {
@@ -331,11 +334,14 @@ fn load_app_state() -> LoadedAppState {
             return (AppState::default(), None, None, None);
         }
     };
-    load_resolved_app_state(codex_home)
+    load_resolved_app_state(codex_home, application_paths)
 }
 
-fn load_resolved_app_state(codex_home: PathBuf) -> LoadedAppState {
-    let store = AppStateStore::for_codex_home(&codex_home);
+fn load_resolved_app_state(
+    codex_home: PathBuf,
+    application_paths: &ApplicationPaths,
+) -> LoadedAppState {
+    let store = AppStateStore::for_application(application_paths.clone());
     match store.load() {
         Ok(Some(state)) => {
             let window_placement = state.window_placement().cloned();
