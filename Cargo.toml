@@ -15,6 +15,7 @@ members = [
   "lili-pet",
   "lili-server",
   "lili-session",
+  "lili-storage",
   "lili-ui",
   "lili-web",
 ]

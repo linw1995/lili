@@ -2715,6 +2715,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lili-storage"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "lili-ui"
 version = "0.1.0"
 dependencies = [
