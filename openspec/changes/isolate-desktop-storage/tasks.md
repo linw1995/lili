@@ -22,7 +22,7 @@
 
 ## 4. Runtime, Spool, and Forwarder Storage
 
-- [ ] 4.1 Keep rotating transport credentials and endpoint metadata in owner-only runtime files while moving plugin evidence into the SQLite repository; verify atomic credential replacement and authenticated evidence reload.
+- [x] 4.1 Keep rotating transport credentials and endpoint metadata in owner-only runtime files while moving plugin evidence into the SQLite repository; verify atomic credential replacement and authenticated evidence reload.
 - [ ] 4.2 Implement the inbound spool as a SQLite repository with normalized event payloads, priority/age bounds, claim leases, acknowledgements, and eviction; verify crash recovery and bounded retention.
 - [ ] 4.3 Update the desktop runtime to share one database connection/repository composition with the ingestion actor and recover pending spool claims on startup; verify no transaction remains open during socket or WebView I/O.
 - [ ] 4.4 Update `lili-hook` to resolve only Lili application paths, insert or claim spool records through SQLite, and pass plugin attribution explicitly from the hook launcher; verify forwarding works when `CODEX_HOME` is absent or inaccessible.

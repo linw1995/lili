@@ -281,7 +281,8 @@ fn load_authenticated_codex_evidence(codex_home: &Path) -> Option<CodexAdapterDi
         .load()
         .ok()?;
     let credentials = record.credentials().ok()?;
-    CodexPluginEvidenceStore::for_codex_home(codex_home)
+    let application_paths = lili_storage::ApplicationPaths::resolve().ok()?;
+    CodexPluginEvidenceStore::for_application(application_paths)
         .load(&credentials)
         .ok()
 }

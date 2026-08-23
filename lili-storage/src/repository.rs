@@ -4,8 +4,8 @@ use diesel::sqlite::SqliteConnection;
 
 use crate::models::{
     AppStateRow, InboundSpoolRow, LifecycleEventRow, NewInboundSpool, NewLifecycleEvent,
-    NewNotification, NewRecentEvent, NewSession, NewTurn, NotificationRow, PluginEvidenceRow,
-    RecentEventRow, SessionRow, TurnRow,
+    NewNotification, NewPluginEvidence, NewRecentEvent, NewSession, NewTurn, NotificationRow,
+    PluginEvidenceRow, RecentEventRow, SessionRow, TurnRow,
 };
 use crate::schema::{
     app_state, inbound_spool, lifecycle_events, notifications, plugin_evidence, recent_events,
@@ -121,4 +121,23 @@ pub fn load_plugin_evidence(
         .select(PluginEvidenceRow::as_select())
         .first(connection)
         .optional()
+}
+
+pub fn save_plugin_evidence(
+    connection: &mut SqliteConnection,
+    value: &NewPluginEvidence<'_>,
+) -> QueryResult<PluginEvidenceRow> {
+    diesel::insert_into(plugin_evidence::table)
+        .values(value)
+        .on_conflict(plugin_evidence::id)
+        .do_update()
+        .set((
+            plugin_evidence::evidence_json.eq(value.evidence_json),
+            plugin_evidence::updated_at_ms.eq(value.updated_at_ms),
+        ))
+        .execute(connection)?;
+    plugin_evidence::table
+        .find(value.id)
+        .select(PluginEvidenceRow::as_select())
+        .first(connection)
 }

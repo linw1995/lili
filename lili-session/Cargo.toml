@@ -8,6 +8,7 @@ license.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
 lili-core = { path = "../lili-core" }
+lili-storage = { path = "../lili-storage" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -19,3 +20,6 @@ rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[dev-dependencies]
+diesel.workspace = true

@@ -157,7 +157,7 @@ fn configure_native_runtime(
     }
     let codex_home = codex_home?;
     configure_native_actions(application_paths, state);
-    match start_native_ingestion(codex_home, state.clone(), state_store) {
+    match start_native_ingestion(application_paths, codex_home, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
             diagnostics::warn("ingestion", "start", "transport_unavailable");
@@ -377,6 +377,7 @@ fn load_resolved_app_state(
 }
 
 fn start_native_ingestion(
+    application_paths: &ApplicationPaths,
     codex_home: &Path,
     state: AppState,
     state_store: Option<AppStateStore>,
@@ -387,7 +388,7 @@ fn start_native_ingestion(
         .ok()
         .and_then(|record| record.credentials().ok());
     let codex_adapter = inspect(codex_home).codex_adapter;
-    let evidence_store = CodexPluginEvidenceStore::for_codex_home(codex_home);
+    let evidence_store = CodexPluginEvidenceStore::for_application(application_paths.clone());
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
         let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
             &runtime_dir,

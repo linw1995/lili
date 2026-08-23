@@ -2781,6 +2781,7 @@ name = "lili-integration"
 version = "0.1.0"
 dependencies = [
  "lili-session",
+ "lili-storage",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2827,9 +2828,11 @@ dependencies = [
 name = "lili-session"
 version = "0.1.0"
 dependencies = [
+ "diesel",
  "getrandom 0.4.3",
  "hmac",
  "lili-core",
+ "lili-storage",
  "rustix",
  "serde",
  "serde_json",

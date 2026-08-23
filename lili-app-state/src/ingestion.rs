@@ -809,7 +809,9 @@ mod tests {
         let temp = TempDir::new();
         let state = AppState::default();
         let credentials = ForwardingCredentials::generate().unwrap();
-        let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let store = CodexPluginEvidenceStore::for_application(
+            lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap(),
+        );
         let plugin = CodexPluginDiagnostics::discovered(
             Some(lili_session::TESTED_CODEX_VERSION),
             CodexPluginAvailability::Installed,

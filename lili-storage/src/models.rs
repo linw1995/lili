@@ -227,6 +227,14 @@ pub struct PluginEvidenceRow {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Insertable)]
+#[diesel(table_name = plugin_evidence)]
+pub struct NewPluginEvidence<'a> {
+    pub id: i32,
+    pub evidence_json: &'a JsonDocument,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = lifecycle_events)]
 #[diesel(primary_key(event_id))]
