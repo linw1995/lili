@@ -1,3 +1,7 @@
+mod database;
+
+pub use database::{DatabaseError, EmbeddedDatabase, MIGRATIONS, connect, open};
+
 use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
