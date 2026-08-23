@@ -17,8 +17,11 @@ use std::ptr::NonNull;
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 
 type ContextMenuHandler = Arc<dyn Fn() + Send + Sync>;
+type ContextMenuTarget = Arc<AtomicBool>;
 
-static CONTEXT_MENU_HANDLER: OnceLock<Mutex<Option<(isize, ContextMenuHandler)>>> = OnceLock::new();
+static CONTEXT_MENU_HANDLER: OnceLock<
+    Mutex<Option<(isize, ContextMenuTarget, ContextMenuHandler)>>,
+> = OnceLock::new();
 thread_local! {
     static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
         const { std::cell::RefCell::new(None) };
@@ -26,6 +29,7 @@ thread_local! {
 
 pub fn configure(
     window: &tauri::WebviewWindow,
+    context_menu_target: ContextMenuTarget,
     context_menu_handler: impl Fn() + Send + Sync + 'static,
 ) -> tauri::Result<()> {
     let raw_window = window.ns_window()?;
@@ -38,8 +42,11 @@ pub fn configure(
     let handler = CONTEXT_MENU_HANDLER.get_or_init(|| Mutex::new(None));
     *handler
         .lock()
-        .map_err(|_| tauri::Error::AssetNotFound("context menu handler".to_owned()))? =
-        Some((window_number, Arc::clone(&context_menu_handler)));
+        .map_err(|_| tauri::Error::AssetNotFound("context menu handler".to_owned()))? = Some((
+        window_number,
+        context_menu_target,
+        Arc::clone(&context_menu_handler),
+    ));
     let panel_class = panel_class();
     let old_class = native_window.class();
     assert!(
@@ -151,13 +158,13 @@ fn install_context_menu_monitor() {
     }
     let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
         let event = unsafe { event.as_ref() };
-        let Some((window_number, handler)) = CONTEXT_MENU_HANDLER
+        let Some((window_number, target, handler)) = CONTEXT_MENU_HANDLER
             .get()
             .and_then(|handler| handler.lock().ok().and_then(|handler| handler.clone()))
         else {
             return event as *const NSEvent as *mut NSEvent;
         };
-        if event.windowNumber() != window_number {
+        if event.windowNumber() != window_number || !target.load(Ordering::Acquire) {
             return event as *const NSEvent as *mut NSEvent;
         }
         handler();

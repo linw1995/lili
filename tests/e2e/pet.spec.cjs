@@ -195,7 +195,11 @@ test("pet owns the context menu gesture", async ({ page }) => {
   expect(box).not.toBeNull();
   await page.mouse.click(box.x + 80, box.y + 90, { button: "right" });
   await expect
-    .poll(() => page.evaluate(() => window.__LILI_INVOKES__))
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__.filter((call) => call.name === "open_pet_context_menu"),
+      ),
+    )
     .toEqual([
       {
         name: "open_pet_context_menu",

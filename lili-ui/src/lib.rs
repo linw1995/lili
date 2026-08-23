@@ -1088,6 +1088,12 @@ export function openNativePetContextMenu(screenX, screenY) {
   if (!invoke) return;
   void invoke('open_pet_context_menu', { screenX, screenY }).catch(() => {});
 }
+
+export function setNativePetContextTarget(target) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('set_pet_context_menu_target', { target }).catch(() => {});
+}
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
@@ -1101,6 +1107,9 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = openNativePetContextMenu)]
     fn open_native_pet_context_menu(screen_x: i32, screen_y: i32);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = setNativePetContextTarget)]
+    fn set_native_pet_context_target(target: bool);
 }
 
 #[cfg(feature = "hydrate")]
@@ -1119,6 +1128,7 @@ struct AnimationClock {
 #[cfg(feature = "hydrate")]
 struct ContextMenuHandlers {
     _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
+    _pointermove: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::PointerEvent)>,
 }
 
 #[cfg(feature = "hydrate")]
@@ -1160,20 +1170,35 @@ pub fn hydrate() {
 
 #[cfg(feature = "hydrate")]
 fn install_context_menu_handlers() {
+    use std::{cell::Cell, rc::Rc};
+
     use wasm_bindgen::{JsCast, closure::Closure};
-    use web_sys::{Element, MouseEvent};
+    use web_sys::{Element, MouseEvent, PointerEvent};
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
+    let last_context_target = Rc::new(Cell::new(None::<bool>));
+    let observed_context_target = Rc::clone(&last_context_target);
+    let pointermove = Closure::<dyn FnMut(PointerEvent)>::new(move |event: PointerEvent| {
+        let target = is_pet_context_target(event.target());
+        if observed_context_target.replace(Some(target)) != Some(target) {
+            set_native_pet_context_target(target);
+        }
+    });
     let contextmenu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
-        if event.button() != 2 || !is_pet_context_target(&event) {
+        if event.button() != 2 || !is_pet_context_target(event.target()) {
             return;
         }
         event.prevent_default();
         event.stop_immediate_propagation();
         open_native_pet_context_menu(event.screen_x(), event.screen_y());
     });
+    let _ = document.add_event_listener_with_callback_and_bool(
+        "pointermove",
+        pointermove.as_ref().unchecked_ref(),
+        true,
+    );
     let _ = document.add_event_listener_with_callback_and_bool(
         "contextmenu",
         contextmenu.as_ref().unchecked_ref(),
@@ -1182,12 +1207,12 @@ fn install_context_menu_handlers() {
     CONTEXT_MENU_HANDLERS.with(|handlers| {
         handlers.borrow_mut().replace(ContextMenuHandlers {
             _contextmenu: contextmenu,
+            _pointermove: pointermove,
         });
     });
 
-    fn is_pet_context_target(event: &MouseEvent) -> bool {
-        event
-            .target()
+    fn is_pet_context_target(target: Option<web_sys::EventTarget>) -> bool {
+        target
             .and_then(|target| target.dyn_into::<Element>().ok())
             .and_then(|target| target.closest(".pet-sprite").ok().flatten())
             .is_some()

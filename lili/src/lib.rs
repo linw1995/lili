@@ -74,6 +74,9 @@ struct PetContextActions {
     pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
 }
 
+#[derive(Clone, Default)]
+struct PetContextMenuTarget(Arc<AtomicBool>);
+
 #[derive(Clone)]
 struct ContextMenuNavigation {
     url: tauri::Url,
@@ -104,6 +107,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             move_window_to,
             commit_window_position,
             open_pet_context_menu,
+            set_pet_context_menu_target,
             run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -129,6 +133,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         store: state_store.clone(),
     });
     app.manage(WindowDragState::default());
+    app.manage(PetContextMenuTarget::default());
     let tray_menu = setup_tray(&app, state.clone(), codex_home.as_deref())
         .expect("failed to configure tray lifecycle");
     app.manage(PetContextActions {
@@ -223,7 +228,8 @@ fn register_loopback_capability(
         .permission("allow-begin-window-drag")
         .permission("allow-move-window-to")
         .permission("allow-commit-window-position")
-        .permission("allow-open-pet-context-menu");
+        .permission("allow-open-pet-context-menu")
+        .permission("allow-set-pet-context-menu-target");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
     } else if smoke {
@@ -339,7 +345,8 @@ fn configure_desktop_companion_window(
     window: &tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> tauri::Result<()> {
-    macos_panel::configure(window, move || {
+    let context_menu_target = app.state::<PetContextMenuTarget>().0.clone();
+    macos_panel::configure(window, context_menu_target, move || {
         open_pet_context_menu_from_native(&app);
     })
 }
@@ -794,6 +801,15 @@ fn open_pet_context_menu(
         &navigation,
         Some(tauri::PhysicalPosition::new(screen_x, screen_y)),
     )
+}
+
+#[tauri::command]
+fn set_pet_context_menu_target(
+    target: bool,
+    state: tauri::State<'_, PetContextMenuTarget>,
+) -> Result<(), String> {
+    state.0.store(target, Ordering::Release);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
