@@ -60,6 +60,16 @@ Structured state replacement, spool claims, acknowledgements, and retention deci
 - **WHEN** persisting a reducer transition fails after the projection update is attempted
 - **THEN** the database leaves the prior projection visible, and the in-memory reducer restores its previous state
 
+#### Scenario: Notification acknowledgement is interrupted
+
+- **WHEN** the user acknowledges a notification while the desktop is running and the reducer snapshot cannot be persisted
+- **THEN** the request fails, the in-memory acknowledgement is rolled back, and a restart does not resurrect a mutation that was reported as successful
+
+#### Scenario: Notification acknowledgement succeeds
+
+- **WHEN** the user acknowledges a notification and the reducer snapshot is persisted successfully
+- **THEN** the acknowledgement is durable before the mutation reports success and the notification remains acknowledged after restart
+
 #### Scenario: Two hooks claim one spool record
 
 - **WHEN** two forwarder or recovery processes attempt to claim the same offline event concurrently
@@ -82,7 +92,7 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 #### Scenario: Retention limit is reached
 
 - **WHEN** offline spool records exceed their configured bound
-- **THEN** retention removes only records allowed by the priority and age policy and never allows unbounded database growth
+- **THEN** retention counts all rows toward the byte bound, removes only pending records allowed by the priority and age policy, preserves claimed rows for lease recovery, and never allows pending data to grow without a bound
 
 #### Scenario: A caller supplies a spool limit above the SQLite hard bound
 

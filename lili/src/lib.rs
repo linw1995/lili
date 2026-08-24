@@ -31,7 +31,7 @@ use lili_app_state::{
 };
 use lili_core::PetId;
 use lili_pet::PetCatalog;
-use lili_server::{StaticAssets, build_native_router_with_diagnostics};
+use lili_server::{StaticAssets, build_native_router_with_diagnostics_and_persistence};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSqliteSpoolRecord, CodexPluginEvidenceStore,
     ForwardingCredentialStore, ForwardingTransportError, SqliteSpoolStore,
@@ -156,10 +156,11 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         always_on_top: tray_menu.always_on_top.clone(),
         pet_items: tray_menu.pet_items.clone(),
     });
-    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics(
+    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics_and_persistence(
         state.clone(),
         assets,
         None,
+        state_store.clone(),
     ))
     .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();

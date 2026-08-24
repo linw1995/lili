@@ -11,7 +11,9 @@ use axum::{
 };
 use leptos::prelude::*;
 use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
-use lili_app_state::{AppState, IngestionDiagnostics, NativeIngestionHandle, UserSettings};
+use lili_app_state::{
+    AppState, AppStateStore, IngestionDiagnostics, NativeIngestionHandle, UserSettings,
+};
 use lili_core::{DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
 use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
 use lili_ui::App;
@@ -121,6 +123,7 @@ struct ServerState {
     app: AppState,
     fixture: Option<FixturePresentationStore>,
     diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+    persistence_store: Option<AppStateStore>,
 }
 
 type CodexDiagnosticsInspector = Arc<dyn Fn() -> CodexAdapterDiagnostics + Send + Sync>;
@@ -225,10 +228,19 @@ impl FixturePresentationStore {
 
 impl ServerState {
     fn native(app: AppState, diagnostics_refresh: Option<NativeDiagnosticsRefresh>) -> Self {
+        Self::native_with_persistence(app, diagnostics_refresh, None)
+    }
+
+    fn native_with_persistence(
+        app: AppState,
+        diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+        persistence_store: Option<AppStateStore>,
+    ) -> Self {
         Self {
             app,
             fixture: None,
             diagnostics_refresh,
+            persistence_store,
         }
     }
 
@@ -238,6 +250,7 @@ impl ServerState {
             app,
             fixture: Some(FixturePresentationStore::new(initial)),
             diagnostics_refresh: None,
+            persistence_store: None,
         }
     }
 
@@ -311,6 +324,19 @@ pub fn build_native_router_with_diagnostics(
     diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
 ) -> Router {
     build_router_with_diagnostics(state, assets, diagnostics_refresh)
+}
+
+pub fn build_native_router_with_diagnostics_and_persistence(
+    state: AppState,
+    assets: Option<StaticAssets>,
+    diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+    persistence_store: Option<AppStateStore>,
+) -> Router {
+    build_server_router(
+        ServerState::native_with_persistence(state, diagnostics_refresh, persistence_store),
+        assets,
+        false,
+    )
 }
 
 pub fn build_fixture_router(assets: Option<StaticAssets>) -> Router {
@@ -507,13 +533,27 @@ async fn dismiss_notification(
             Json(NotificationMutationResponse { accepted: false }),
         );
     };
-    let accepted = matches!(
+    let outcome = if let Some(store) = &state.persistence_store {
+        match state
+            .app
+            .acknowledge_notification_persisted(&notification_id, unix_time_ms(), store)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(NotificationMutationResponse { accepted: false }),
+                );
+            }
+        }
+    } else {
         state
             .app
             .acknowledge_notification(&notification_id, unix_time_ms())
-            .await,
-        ReductionOutcome::Applied { .. }
-    );
+            .await
+    };
+    let accepted = matches!(outcome, ReductionOutcome::Applied { .. });
     (
         if accepted {
             StatusCode::OK
