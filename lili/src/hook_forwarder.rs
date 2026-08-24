@@ -176,7 +176,7 @@ async fn process_payload_with_source(
         return HookResult::success(HookOutcome::Delivered);
     }
 
-    match SqliteSpoolStore::for_application(application_paths.clone()).enqueue(&event, now_ms) {
+    match SqliteSpoolStore::for_hook(application_paths.clone()).enqueue(&event, now_ms) {
         Ok(SpoolEnqueueOutcome::Stored) => HookResult::success(HookOutcome::Spooled),
         Ok(SpoolEnqueueOutcome::DroppedByLimit) => HookResult::failure(
             HookExitCode::DeliveryFailed,

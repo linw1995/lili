@@ -61,13 +61,14 @@ class PluginLauncherContractTests(unittest.TestCase):
             "Get-Content",
         ):
             self.assertNotIn(forbidden, windows)
+        self.assertIn('plugin_selector="lili@$plugin_marketplace"', posix)
         self.assertIn(
-            'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
+            'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook "$plugin_selector" --json-stdin',
             posix,
         )
         self.assertIn("$OutputEncoding = [Text.UTF8Encoding]::new($false)", windows)
         self.assertIn(
-            '$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
+            '$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook $pluginSelector --json-stdin',
             windows,
         )
 
@@ -90,13 +91,15 @@ class PluginLauncherContractTests(unittest.TestCase):
                 'test "$1" = "--integration-id" || exit 91\n'
                 'test "$2" = "lili-session-v1" || exit 92\n'
                 'test "$3" = "--plugin-hook" || exit 93\n'
-                'test "$4" = "--json-stdin" || exit 94\n'
+                'test "$4" = "lili@lili-local" || exit 94\n'
+                'test "$5" = "--json-stdin" || exit 95\n'
                 "/bin/cat\n",
                 encoding="utf-8",
             )
             forwarder.chmod(0o755)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
             payload = b'{"text":"$(touch should-not-exist)"}\n'
             result = subprocess.run(
                 [str(launcher)],
@@ -142,6 +145,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PATH"] = str(utility_root)
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
             payload = b"{}\n"
             result = subprocess.run(
                 [str(launcher)],
@@ -169,6 +173,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             launcher.chmod(0o755)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
             started = time.monotonic()
             result = subprocess.run(
                 [str(launcher)],
@@ -205,6 +210,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             forwarder.symlink_to(external)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
             result = subprocess.run(
                 [str(launcher)],
                 input=b"{}\n",

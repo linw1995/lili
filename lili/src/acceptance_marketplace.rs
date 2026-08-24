@@ -271,6 +271,13 @@ pub fn invoke_installed_plugin_hook(
 
         command
             .env("PLUGIN_ROOT", &plugin.root)
+            .env(
+                "PLUGIN_DATA",
+                codex_home
+                    .join("plugins")
+                    .join("data")
+                    .join("lili-lili-local"),
+            )
             .env("CODEX_HOME", codex_home)
             .env("HOME", application_home)
             .env("LOCALAPPDATA", application_home)

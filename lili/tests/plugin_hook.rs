@@ -270,6 +270,13 @@ fn invoke(
 ) -> std::process::Output {
     let mut child = Command::new(launcher)
         .env("PLUGIN_ROOT", plugin_root)
+        .env(
+            "PLUGIN_DATA",
+            codex_home
+                .join("plugins")
+                .join("data")
+                .join("lili-lili-local"),
+        )
         .env("CODEX_HOME", codex_home)
         .env("HOME", home)
         .env("XDG_STATE_HOME", home.join("state"))

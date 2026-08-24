@@ -40,6 +40,21 @@ if [ "$provided_root" != "$plugin_root" ]; then
     fail "Lili plugin root does not match the active package" 65
 fi
 
+plugin_data=${PLUGIN_DATA:-}
+case "$plugin_data" in
+    /*) ;;
+    *) fail "Lili plugin data root is unavailable" 65 ;;
+esac
+plugin_data_name=${plugin_data##*/}
+case "$plugin_data_name" in
+    lili-?*) plugin_marketplace=${plugin_data_name#lili-} ;;
+    *) fail "Lili plugin data root does not identify the active package" 65 ;;
+esac
+case "$plugin_marketplace" in
+    *[!A-Za-z0-9._-]*|'') fail "Lili plugin marketplace identity is invalid" 65 ;;
+esac
+plugin_selector="lili@$plugin_marketplace"
+
 kernel=$("$uname_path" -s 2>/dev/null) \
     || fail "Lili plugin host could not be identified" 64
 machine=$("$uname_path" -m 2>/dev/null) \
@@ -63,4 +78,4 @@ if [ ! -f "$forwarder" ] || [ -L "$forwarder" ] || [ ! -x "$forwarder" ]; then
     fail "Lili plugin forwarder is missing or invalid" 66
 fi
 
-exec "$forwarder" --integration-id lili-session-v1 --plugin-hook lili@lili-local --json-stdin
+exec "$forwarder" --integration-id lili-session-v1 --plugin-hook "$plugin_selector" --json-stdin

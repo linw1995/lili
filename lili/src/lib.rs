@@ -30,7 +30,6 @@ use lili_app_state::{
     WindowPlacement, resolve_window_placement,
 };
 use lili_core::PetId;
-use lili_integration::IntegrationKind;
 use lili_pet::PetCatalog;
 use lili_server::{StaticAssets, build_native_router_with_diagnostics};
 use lili_session::{
@@ -487,12 +486,15 @@ fn start_native_ingestion(
     state_store: Option<AppStateStore>,
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
     let runtime_dir = application_paths.runtime_root();
+    let evidence_store = CodexPluginEvidenceStore::for_application(application_paths.clone());
     let previous_credentials = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
         .load()
         .ok()
         .and_then(|record| record.credentials().ok());
-    let codex_adapter = lili_session::CodexAdapterDiagnostics::default();
-    let evidence_store = CodexPluginEvidenceStore::for_application(application_paths.clone());
+    let codex_adapter = previous_credentials
+        .as_ref()
+        .and_then(|credentials| evidence_store.load(credentials).ok())
+        .unwrap_or_default();
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
         let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
             &runtime_dir,
@@ -1168,7 +1170,6 @@ fn build_tray_menu(
             &parts.window.hide,
             &parts.window.always_on_top,
             &parts.pet.menu,
-            &parts.integration,
             &parts.utility.settings,
             &parts.utility.diagnostics,
             &parts.utility.separator,
@@ -1185,7 +1186,6 @@ fn build_tray_menu(
 struct TrayMenuParts {
     window: TrayWindowItems,
     pet: TrayPetItems,
-    integration: MenuItem<tauri::Wry>,
     utility: TrayUtilityItems,
 }
 
@@ -1194,7 +1194,6 @@ impl TrayMenuParts {
         Ok(Self {
             window: build_tray_window_items(app, state)?,
             pet: build_tray_pet_items(app, state)?,
-            integration: build_tray_integration_item(app)?,
             utility: build_tray_utility_items(app)?,
         })
     }
@@ -1252,17 +1251,6 @@ fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<Tra
     })
 }
 
-fn build_tray_integration_item(app: &tauri::App) -> tauri::Result<MenuItem<tauri::Wry>> {
-    let integration_status = TrayIntegrationStatus::Unavailable;
-    MenuItem::with_id(
-        app,
-        "integration-status",
-        integration_status.label(),
-        false,
-        None::<&str>,
-    )
-}
-
 struct TrayUtilityItems {
     settings: MenuItem<tauri::Wry>,
     diagnostics: MenuItem<tauri::Wry>,
@@ -1315,7 +1303,7 @@ fn handle_tray_menu_event(
             handle_pet_selection(app, state, pets_root, pet_items, &pet_id);
         }
         TrayAction::Settings | TrayAction::Diagnostics => handle_tray_view_action(app, action),
-        TrayAction::IntegrationStatus | TrayAction::Quit | TrayAction::Unknown => {
+        TrayAction::Quit | TrayAction::Unknown => {
             handle_application_tray_action(app, action);
         }
     }
@@ -1383,7 +1371,8 @@ fn handle_pet_selection(
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
     pet_id: &PetId,
 ) {
-    if select_pet(state, pets_root, pet_id).is_err() {
+    let persistence = app.state::<DesktopPersistence>();
+    if select_pet(state, pets_root, pet_id, persistence.store.as_ref()).is_err() {
         return;
     }
     for (candidate, item) in pet_items {
@@ -1415,7 +1404,6 @@ enum TrayAction {
     Hide,
     AlwaysOnTop,
     SelectPet(PetId),
-    IntegrationStatus,
     Settings,
     Diagnostics,
     Quit,
@@ -1428,7 +1416,6 @@ impl TrayAction {
             "show" => Self::Show,
             "hide" => Self::Hide,
             "always-on-top" => Self::AlwaysOnTop,
-            "integration-status" => Self::IntegrationStatus,
             "settings" => Self::Settings,
             "diagnostics" => Self::Diagnostics,
             "quit" => Self::Quit,
@@ -1440,56 +1427,22 @@ impl TrayAction {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TrayIntegrationStatus {
-    Installed,
-    Partial,
-    NotConfigured,
-    NeedsAttention,
-    Unavailable,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-impl TrayIntegrationStatus {
-    fn from_inspection(inspection: &lili_integration::IntegrationInspection) -> Self {
-        let notify_installed = inspection.notify.kind == IntegrationKind::Lili;
-        let installed_hooks = inspection
-            .hook_surfaces
-            .iter()
-            .filter(|surface| surface.lili_handlers > 0)
-            .count();
-        if notify_installed && installed_hooks == inspection.hook_surfaces.len() {
-            Self::Installed
-        } else if notify_installed || installed_hooks > 0 {
-            Self::Partial
-        } else if inspection.notify.kind == IntegrationKind::Missing
-            && inspection
-                .hook_surfaces
-                .iter()
-                .all(|surface| surface.other_handlers == 0)
-        {
-            Self::NotConfigured
-        } else {
-            Self::NeedsAttention
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Installed => "Integration: Installed",
-            Self::Partial => "Integration: Partial",
-            Self::NotConfigured => "Integration: Not Configured",
-            Self::NeedsAttention => "Integration: Needs Attention",
-            Self::Unavailable => "Integration: Unavailable",
-        }
-    }
-}
-
-fn select_pet(state: &AppState, pets_root: &Path, pet_id: &PetId) -> Result<(), String> {
+fn select_pet(
+    state: &AppState,
+    pets_root: &Path,
+    pet_id: &PetId,
+    store: Option<&AppStateStore>,
+) -> Result<(), String> {
     let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
     if catalog.active().definition().id() != pet_id {
         return Err("selected pet is unavailable".to_owned());
+    }
+    if let Some(store) = store {
+        let persistent = tauri::async_runtime::block_on(state.persistent_state(None))
+            .with_selected_pet_id(Some(pet_id.clone()));
+        store
+            .save(&persistent)
+            .map_err(|error| format!("selected pet could not be saved: {error}"))?;
     }
     tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));
     Ok(())
@@ -1655,19 +1608,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_configuration_reports_not_configured_in_tray() {
-        let root =
-            std::env::temp_dir().join(format!("lili-tray-integration-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let inspection = lili_integration::inspect_with_version(&root, Some("0.147.0".to_owned()));
-        assert_eq!(
-            TrayIntegrationStatus::from_inspection(&inspection),
-            TrayIntegrationStatus::NotConfigured
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn desktop_state_loading_does_not_touch_codex_home() {
         let root = std::env::temp_dir().join(format!(
             "lili-desktop-storage-isolation-{}",
@@ -1687,21 +1627,6 @@ mod tests {
         assert!(!codex_home.join("lili").exists());
         assert!(!codex_home.join("pets").exists());
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn tray_integration_statuses_have_stable_labels() {
-        let statuses = [
-            TrayIntegrationStatus::Installed,
-            TrayIntegrationStatus::Partial,
-            TrayIntegrationStatus::NotConfigured,
-            TrayIntegrationStatus::NeedsAttention,
-            TrayIntegrationStatus::Unavailable,
-        ];
-
-        for status in statuses {
-            assert!(status.label().starts_with("Integration: "));
-        }
     }
 
     #[test]

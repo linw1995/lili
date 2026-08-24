@@ -221,6 +221,11 @@ impl PersistentApplicationState {
         self.window_placement.as_ref()
     }
 
+    pub fn with_selected_pet_id(mut self, selected_pet_id: Option<PetId>) -> Self {
+        self.selected_pet_id = selected_pet_id;
+        self
+    }
+
     pub(crate) fn into_reducer_state(self) -> SessionReducerState {
         self.reducer
     }
@@ -326,6 +331,9 @@ fn app_state_row(
         reducer_json: Some(reducer_json),
         reducer_revision: i64::try_from(state.reducer.revision())
             .map_err(|_| PersistenceError::InvalidReducerSnapshot)?,
+        spool_expired_drops: 0,
+        spool_limit_drops: 0,
+        spool_malformed_drops: 0,
     })
 }
 
