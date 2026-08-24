@@ -36,15 +36,26 @@ CREATE TABLE plugin_evidence (
 CREATE INDEX inbound_spool_claim_idx ON inbound_spool (status, lease_expires_at_ms, priority, occurred_at_ms);
 CREATE INDEX inbound_spool_retention_idx ON inbound_spool (status, priority, inserted_at_ms);
 
-CREATE TRIGGER inbound_spool_default_retention
+CREATE TRIGGER inbound_spool_expired_retention
 AFTER INSERT ON inbound_spool
+WHEN EXISTS (
+    SELECT 1
+    FROM inbound_spool
+    WHERE status = 'pending'
+      AND inserted_at_ms < NEW.inserted_at_ms - 86400000
+)
 BEGIN
     DELETE FROM inbound_spool
     WHERE status = 'pending'
       AND inserted_at_ms < NEW.inserted_at_ms - 86400000;
     UPDATE app_state
     SET spool_expired_drops = spool_expired_drops + changes();
+END;
 
+CREATE TRIGGER inbound_spool_count_retention
+AFTER INSERT ON inbound_spool
+WHEN (SELECT COUNT(*) FROM inbound_spool) > 256
+BEGIN
     DELETE FROM inbound_spool
     WHERE rowid IN (
         SELECT rowid
@@ -59,7 +70,13 @@ BEGIN
     );
     UPDATE app_state
     SET spool_limit_drops = spool_limit_drops + changes();
+END;
 
+CREATE TRIGGER inbound_spool_bytes_retention
+AFTER INSERT ON inbound_spool
+WHEN (SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0)
+      FROM inbound_spool) > 4194304
+BEGIN
     DELETE FROM inbound_spool
     WHERE rowid IN (
         SELECT rowid
