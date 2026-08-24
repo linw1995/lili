@@ -7,8 +7,8 @@ use std::{
 
 use lili_integration::LILI_INTEGRATION_ID;
 use lili_session::{
-    ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SqliteSpoolStore,
-    deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,
+    ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolError,
+    SqliteSpoolStore, deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,
 };
 use lili_storage::ApplicationPaths;
 
@@ -189,10 +189,14 @@ async fn process_payload_with_source(
             HookExitCode::DeliveryFailed,
             "hook event was dropped by the offline spool limit",
         ),
-        Err(_) => HookResult::failure(
-            HookExitCode::DeliveryFailed,
-            "hook event could not be delivered or spooled",
-        ),
+        Err(error) => {
+            let diagnostic = match error {
+                SpoolError::Database(_) => "hook SQLite spool was unavailable",
+                SpoolError::Io(_) => "hook local spool I/O failed",
+                _ => "hook event could not be delivered or spooled",
+            };
+            HookResult::failure(HookExitCode::DeliveryFailed, diagnostic)
+        }
     }
 }
 
