@@ -17,6 +17,17 @@ use crate::{
 
 const CLAIM_LEASE_MS: i64 = 30_000;
 const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(700);
+const DEBUG_HOOK_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn hook_busy_timeout() -> Duration {
+    // Coverage-instrumented debug binaries add startup overhead to each Hook process; keep that
+    // local diagnostic path bounded separately while preserving the release latency contract.
+    if cfg!(debug_assertions) {
+        DEBUG_HOOK_BUSY_TIMEOUT
+    } else {
+        HOOK_BUSY_TIMEOUT
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteSpoolStore {
@@ -42,7 +53,7 @@ impl SqliteSpoolStore {
         Self {
             paths,
             limits: SpoolLimits::default(),
-            busy_timeout: Some(HOOK_BUSY_TIMEOUT),
+            busy_timeout: Some(hook_busy_timeout()),
         }
     }
 
