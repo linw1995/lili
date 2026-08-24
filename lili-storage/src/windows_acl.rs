@@ -13,8 +13,8 @@ use windows_sys::Win32::{
             EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
             SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
         },
-        DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSID,
-        TOKEN_QUERY, TOKEN_USER, TokenUser,
+        DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Security::{
         NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
@@ -74,7 +74,7 @@ fn validate_owner(path: &Path) -> io::Result<()> {
     let expected_owner = current_user.sid()?;
     let wide_path = wide_path(path);
     let mut owner: PSID = null_mut();
-    let mut descriptor: *mut c_void = null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
     // SAFETY: wide_path is NUL-terminated and all output pointers refer to writable storage.
     let status = unsafe {
         GetNamedSecurityInfoW(
