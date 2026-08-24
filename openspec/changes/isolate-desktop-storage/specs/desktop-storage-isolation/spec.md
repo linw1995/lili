@@ -28,6 +28,11 @@ The desktop runtime and event forwarder MUST resolve persistent, configuration, 
 - **WHEN** an integration inspection loads authenticated plugin evidence bound to a different selected `CODEX_HOME`
 - **THEN** the evidence is rejected and cannot satisfy real-delivery or cleanup verification for the current home
 
+#### Scenario: Plugin evidence has no delivery-time Codex-home identity
+
+- **WHEN** authenticated plugin evidence lacks the home identity recorded by the packaged Hook at delivery time
+- **THEN** inspection rejects it for home-specific verification and never retroactively assigns it to the selected `CODEX_HOME`
+
 ### Requirement: Keep desktop-owned data separated by purpose
 
 The desktop runtime MUST store application metadata, a compact latest per-Session state projection, offline spool records, and latest plugin evidence in a versioned SQLite database under the Lili application data root. Pet assets MUST remain in the Lili-owned Pet file tree, action configuration MUST remain in the Lili-owned configuration root, and credentials and endpoint metadata MUST remain in owner-only runtime storage where the platform supports it.

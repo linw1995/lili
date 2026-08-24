@@ -99,6 +99,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
             environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             payload = b'{"text":"$(touch should-not-exist)"}\n'
             result = subprocess.run(
                 [str(launcher)],
@@ -145,6 +146,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment["PATH"] = str(utility_root)
             environment["PLUGIN_ROOT"] = str(plugin_root)
             environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             payload = b"{}\n"
             result = subprocess.run(
                 [str(launcher)],
@@ -173,6 +175,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
             environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             started = time.monotonic()
             result = subprocess.run(
                 [str(launcher)],
@@ -210,6 +213,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
             environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             result = subprocess.run(
                 [str(launcher)],
                 input=b"{}\n",

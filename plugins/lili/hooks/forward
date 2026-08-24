@@ -57,6 +57,14 @@ if [ "${#plugin_marketplace}" -gt 123 ]; then
     fail "Lili plugin marketplace identity is invalid" 65
 fi
 
+codex_home=${CODEX_HOME:-}
+case "$codex_home" in
+    /*) ;;
+    *) fail "Lili plugin Codex home is unavailable" 65 ;;
+esac
+LILI_PLUGIN_CODEX_HOME=$codex_home
+export LILI_PLUGIN_CODEX_HOME
+
 kernel=$("$uname_path" -s 2>/dev/null) \
     || fail "Lili plugin host could not be identified" 64
 machine=$("$uname_path" -m 2>/dev/null) \

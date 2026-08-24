@@ -13,7 +13,8 @@ pub use codex::{
     CodexAdapterDiagnostics, CodexHookSource, CodexIntegrationSurface, CodexPluginAvailability,
     CodexPluginDiagnostics, CodexPluginIpcCompatibility, CodexPluginSupport, CodexPluginTrustState,
     DESKTOP_VERSION, LastAcceptedCodexEvent, MissingLifecycleCoverage, TESTED_CODEX_VERSION,
-    mark_plugin_hook_event, normalize_hook_json, normalize_lifecycle_json, normalize_notify_json,
+    codex_home_identity, mark_plugin_hook_event, mark_plugin_hook_event_with_home,
+    normalize_hook_json, normalize_lifecycle_json, normalize_notify_json,
 };
 pub use forwarding::{
     DEFAULT_NONCE_CAPACITY, DEFAULT_REPLAY_WINDOW_MS, FORWARDING_PROTOCOL_VERSION, ForwardingAck,

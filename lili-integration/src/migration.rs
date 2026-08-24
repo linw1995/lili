@@ -843,6 +843,7 @@ mod tests {
             occurred_at_ms: 42,
             surface: lili_session::CodexIntegrationSurface::Stop,
             plugin_id: Some("lili@test-marketplace".to_owned()),
+            codex_home_identity: None,
             plugin_version: Some(DESKTOP_VERSION.to_owned()),
         });
         diagnostics

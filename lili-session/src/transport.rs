@@ -16,12 +16,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{
     CodexAdapterDiagnostics, ForwardingAck, ForwardingCredentialRecord, ForwardingCredentials,
     ForwardingMessage, ForwardingProtocolError, MAX_FORWARDING_FRAME_BYTES, PlatformEndpoint,
+    codex_home_identity,
 };
 
 const CREDENTIAL_FILE_NAME: &str = "forwarding.json";
 const MAX_CREDENTIAL_FILE_BYTES: u64 = 16 * 1024;
 const MAX_CODEX_EVIDENCE_BYTES: usize = 64 * 1024;
-const MAX_CODEX_HOME_IDENTITY_BYTES: usize = 4 * 1024;
 const CODEX_EVIDENCE_SIGNATURE_DOMAIN: &str = "codex-plugin-diagnostics";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -114,33 +114,14 @@ impl CodexPluginEvidenceStore {
         codex_home: &Path,
         credentials: &ForwardingCredentials,
     ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
-        let codex_home = codex_home_identity(codex_home)?;
+        let codex_home = codex_home_identity(codex_home)
+            .ok_or(ForwardingTransportError::MalformedEvidenceFile)?;
         let evidence = self.load_record()?;
         self.verify_record(&evidence, credentials)?;
         if evidence.codex_home.as_deref() != Some(codex_home.as_str()) {
             return Err(ForwardingTransportError::EvidenceHomeMismatch);
         }
         Ok(evidence.diagnostics)
-    }
-
-    pub fn bind_codex_home(
-        &self,
-        codex_home: &Path,
-        credentials: &ForwardingCredentials,
-    ) -> Result<(), ForwardingTransportError> {
-        let codex_home = codex_home_identity(codex_home)?;
-        let evidence = self.load_record()?;
-        self.verify_record(&evidence, credentials)?;
-        if let Some(existing) = evidence.codex_home.as_deref()
-            && existing != codex_home
-        {
-            return Err(ForwardingTransportError::EvidenceHomeMismatch);
-        }
-        self.save_with_codex_home(
-            Some(codex_home.as_str()),
-            &evidence.diagnostics,
-            credentials,
-        )
     }
 
     fn load_record(&self) -> Result<AuthenticatedCodexPluginEvidence, ForwardingTransportError> {
@@ -182,21 +163,24 @@ impl CodexPluginEvidenceStore {
         diagnostics: &CodexAdapterDiagnostics,
         credentials: &ForwardingCredentials,
     ) -> Result<(), ForwardingTransportError> {
-        let codex_home = self
+        let existing_codex_home = self
             .load_record()
             .ok()
             .and_then(|evidence| evidence.codex_home);
+        let observed_codex_home = diagnostics
+            .plugin
+            .last_accepted_plugin_event
+            .as_ref()
+            .and_then(|event| event.codex_home_identity.clone());
+        if existing_codex_home
+            .as_deref()
+            .zip(observed_codex_home.as_deref())
+            .is_some_and(|(existing, observed)| existing != observed)
+        {
+            return Ok(());
+        }
+        let codex_home = existing_codex_home.or(observed_codex_home);
         self.save_with_codex_home(codex_home.as_deref(), diagnostics, credentials)
-    }
-
-    pub fn save_for_codex_home(
-        &self,
-        codex_home: &Path,
-        diagnostics: &CodexAdapterDiagnostics,
-        credentials: &ForwardingCredentials,
-    ) -> Result<(), ForwardingTransportError> {
-        let codex_home = codex_home_identity(codex_home)?;
-        self.save_with_codex_home(Some(codex_home.as_str()), diagnostics, credentials)
     }
 
     fn save_with_codex_home(
@@ -237,19 +221,6 @@ impl CodexPluginEvidenceStore {
         .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?;
         Ok(())
     }
-}
-
-fn codex_home_identity(path: &Path) -> Result<String, ForwardingTransportError> {
-    let value = path
-        .to_str()
-        .filter(|value| {
-            path.is_absolute()
-                && !value.is_empty()
-                && value.len() <= MAX_CODEX_HOME_IDENTITY_BYTES
-                && !value.chars().any(char::is_control)
-        })
-        .ok_or(ForwardingTransportError::MalformedEvidenceFile)?;
-    Ok(value.to_owned())
 }
 
 fn unix_time_ms() -> i64 {
@@ -924,8 +895,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{
-        ForwardingAckDisposition, ProviderCapabilitiesInputV1, ProviderInputV1,
-        normalize_provider_input,
+        CodexIntegrationSurface, DESKTOP_VERSION, ForwardingAckDisposition, LastAcceptedCodexEvent,
+        ProviderCapabilitiesInputV1, ProviderInputV1, SessionEventKind, normalize_provider_input,
     };
     use diesel::prelude::*;
 
@@ -1157,16 +1128,21 @@ mod tests {
         let paths = lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap();
         let store = CodexPluginEvidenceStore::for_application(paths);
         let credentials = ForwardingCredentials::generate().unwrap();
-        let diagnostics = CodexAdapterDiagnostics::default();
+        let codex_home = Path::new("/tmp/codex-home-a");
+        let mut diagnostics = CodexAdapterDiagnostics::default();
+        diagnostics.plugin.last_accepted_plugin_event = Some(LastAcceptedCodexEvent {
+            event_id: "plugin-event".to_owned(),
+            event_type: SessionEventKind::TurnCompleted,
+            occurred_at_ms: 1,
+            surface: CodexIntegrationSurface::Stop,
+            plugin_id: Some("lili@test-marketplace".to_owned()),
+            codex_home_identity: codex_home_identity(codex_home),
+            plugin_version: Some(DESKTOP_VERSION.to_owned()),
+        });
         store.save(&diagnostics, &credentials).unwrap();
-        store
-            .bind_codex_home(Path::new("/tmp/codex-home-a"), &credentials)
-            .unwrap();
 
         assert_eq!(
-            store
-                .load_for_codex_home(Path::new("/tmp/codex-home-a"), &credentials)
-                .unwrap(),
+            store.load_for_codex_home(codex_home, &credentials).unwrap(),
             diagnostics
         );
         assert!(matches!(

@@ -207,7 +207,7 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
         assert!(
             event
                 .source_discriminator
-                .starts_with("plugin:lili@lili-local:0.1.0:hook:")
+                .starts_with("plugin:lili@lili-local:0.1.0:home:codex-home-")
         );
         assert!(serde_json::to_vec(event).unwrap().len() <= 64 * 1024);
         *identity_counts

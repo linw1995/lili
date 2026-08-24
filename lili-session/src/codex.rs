@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use std::{fmt::Write as _, path::Path};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -99,6 +99,8 @@ pub struct LastAcceptedCodexEvent {
     pub surface: CodexIntegrationSurface,
     #[serde(default)]
     pub plugin_id: Option<String>,
+    #[serde(default)]
+    pub codex_home_identity: Option<String>,
     pub plugin_version: Option<String>,
 }
 
@@ -365,6 +367,10 @@ impl CodexAdapterDiagnostics {
                 .then(|| plugin_identity_from_source(&event.source_discriminator))
                 .flatten()
                 .map(|(plugin_id, _)| plugin_id.to_owned()),
+            codex_home_identity: trust_plugin_attribution
+                .then(|| plugin_home_identity_from_source(&event.source_discriminator))
+                .flatten()
+                .map(str::to_owned),
             plugin_version: trust_plugin_attribution
                 .then(|| plugin_version_from_source(&event.source_discriminator))
                 .flatten()
@@ -447,15 +453,35 @@ pub fn normalize_hook_json(
 }
 
 pub fn mark_plugin_hook_event(event: &mut NormalizedSessionEvent, plugin_id: &str) -> bool {
+    mark_plugin_hook_event_with_home(event, plugin_id, None)
+}
+
+pub fn mark_plugin_hook_event_with_home(
+    event: &mut NormalizedSessionEvent,
+    plugin_id: &str,
+    codex_home_identity: Option<&str>,
+) -> bool {
     if event.provider.as_str() != "codex" || !event.source_discriminator.starts_with("hook:") {
         return false;
     }
-    if bounded_plugin_id(plugin_id).is_none() {
+    if bounded_plugin_id(plugin_id).is_none()
+        || codex_home_identity.is_some_and(|identity| !valid_codex_home_identity(identity))
+    {
         return false;
     }
-    let source = format!(
-        "{PLUGIN_SOURCE_PREFIX}{plugin_id}:{DESKTOP_VERSION}:{}",
-        event.source_discriminator
+    let source = codex_home_identity.map_or_else(
+        || {
+            format!(
+                "{PLUGIN_SOURCE_PREFIX}{plugin_id}:{DESKTOP_VERSION}:{}",
+                event.source_discriminator
+            )
+        },
+        |identity| {
+            format!(
+                "{PLUGIN_SOURCE_PREFIX}{plugin_id}:{DESKTOP_VERSION}:home:{identity}:{}",
+                event.source_discriminator
+            )
+        },
     );
     if source.chars().count() > MAX_SOURCE_DISCRIMINATOR_CHARS {
         return false;
@@ -673,7 +699,7 @@ fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
         return Some(CodexIntegrationSurface::Notify);
     }
     let source = plugin_source_parts(source)
-        .map(|(_, _, nested_source)| nested_source)
+        .map(|(_, _, _, nested_source)| nested_source)
         .unwrap_or(source);
     match source.split(':').nth(1) {
         Some(SESSION_START_HOOK) => Some(CodexIntegrationSurface::SessionStart),
@@ -686,24 +712,57 @@ fn surface_from_source(source: &str) -> Option<CodexIntegrationSurface> {
 }
 
 fn plugin_version_from_source(source: &str) -> Option<&str> {
-    plugin_identity_from_source(source).map(|(_, version)| version)
+    plugin_source_parts(source).map(|(_, version, _, _)| version)
 }
 
 fn plugin_identity_from_source(source: &str) -> Option<(&str, &str)> {
-    plugin_source_parts(source).map(|(plugin_id, version, _)| (plugin_id, version))
+    plugin_source_parts(source).map(|(plugin_id, version, _, _)| (plugin_id, version))
 }
 
-fn plugin_source_parts(source: &str) -> Option<(&str, &str, &str)> {
+fn plugin_home_identity_from_source(source: &str) -> Option<&str> {
+    plugin_source_parts(source).and_then(|(_, _, home_identity, _)| home_identity)
+}
+
+fn plugin_source_parts(source: &str) -> Option<(&str, &str, Option<&str>, &str)> {
     let remainder = source.strip_prefix(PLUGIN_SOURCE_PREFIX)?;
     let (plugin_id, remainder) = remainder.split_once(':')?;
     let (version, nested_source) = remainder.split_once(':')?;
+    let (home_identity, nested_source) = nested_source
+        .strip_prefix("home:")
+        .and_then(|value| value.split_once(':'))
+        .map_or((None, nested_source), |(identity, nested_source)| {
+            (Some(identity), nested_source)
+        });
     if bounded_plugin_id(plugin_id).is_none()
         || !release_version(version)
+        || home_identity.is_some_and(|identity| !valid_codex_home_identity(identity))
         || !nested_source.starts_with("hook:")
     {
         return None;
     }
-    Some((plugin_id, version, nested_source))
+    Some((plugin_id, version, home_identity, nested_source))
+}
+
+pub fn codex_home_identity(path: &Path) -> Option<String> {
+    let value = path.to_str().filter(|value| {
+        path.is_absolute()
+            && !value.is_empty()
+            && value.len() <= 4 * 1024
+            && !value.chars().any(char::is_control)
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(value.as_bytes());
+    let mut identity = String::from("codex-home-");
+    for byte in digest.finalize().iter().take(16) {
+        write!(&mut identity, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    Some(identity)
+}
+
+fn valid_codex_home_identity(identity: &str) -> bool {
+    identity.len() == 43
+        && identity.starts_with("codex-home-")
+        && identity[11..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn supported_release_version(version: &str) -> bool {

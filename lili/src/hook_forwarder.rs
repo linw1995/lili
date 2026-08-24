@@ -9,7 +9,8 @@ use std::{
 use lili_integration::LILI_INTEGRATION_ID;
 use lili_session::{
     ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolError,
-    SqliteSpoolStore, deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,
+    SqliteSpoolStore, codex_home_identity, deliver_forwarding_message, mark_plugin_hook_event,
+    mark_plugin_hook_event_with_home, normalize_hook_json,
 };
 use lili_storage::ApplicationPaths;
 
@@ -109,6 +110,19 @@ pub async fn run_from_environment() -> HookResult {
             } else {
                 None
             };
+            let plugin_home = if plugin_hook {
+                match plugin_home_identity_from_environment() {
+                    Some(plugin_home) => Some(plugin_home),
+                    None => {
+                        return HookResult::failure(
+                            HookExitCode::InvalidInput,
+                            "plugin Codex home identity is unavailable",
+                        );
+                    }
+                }
+            } else {
+                None
+            };
             let application_paths = match ApplicationPaths::resolve() {
                 Ok(application_paths) => application_paths,
                 Err(_) => return application_storage_failure(),
@@ -118,6 +132,7 @@ pub async fn run_from_environment() -> HookResult {
                 &payload,
                 unix_time_ms(),
                 plugin_id.as_deref(),
+                plugin_home.as_deref(),
             )
             .await
         }
@@ -149,7 +164,7 @@ pub async fn process_payload(
     payload: &[u8],
     now_ms: u64,
 ) -> HookResult {
-    process_payload_with_source(application_paths, payload, now_ms, None).await
+    process_payload_with_source(application_paths, payload, now_ms, None, None).await
 }
 
 async fn process_payload_with_source(
@@ -157,6 +172,7 @@ async fn process_payload_with_source(
     payload: &[u8],
     now_ms: u64,
     plugin_id: Option<&str>,
+    plugin_home: Option<&str>,
 ) -> HookResult {
     let mut event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
@@ -167,11 +183,19 @@ async fn process_payload_with_source(
             );
         }
     };
-    if plugin_id.is_some_and(|plugin_id| !mark_plugin_hook_event(&mut event, plugin_id)) {
-        return HookResult::failure(
-            HookExitCode::InvalidInput,
-            "plugin invocation requires a supported Codex lifecycle event",
-        );
+    if let Some(plugin_id) = plugin_id {
+        let marked = match plugin_home {
+            Some(plugin_home) => {
+                mark_plugin_hook_event_with_home(&mut event, plugin_id, Some(plugin_home))
+            }
+            None => mark_plugin_hook_event(&mut event, plugin_id),
+        };
+        if !marked {
+            return HookResult::failure(
+                HookExitCode::InvalidInput,
+                "plugin invocation requires a supported Codex lifecycle event",
+            );
+        }
     }
 
     let credential_store =
@@ -302,6 +326,11 @@ fn read_hook_invocation<R: Read>(
 fn plugin_identity_from_environment() -> Option<String> {
     let data_root = std::env::var_os("PLUGIN_DATA")?;
     plugin_identity_from_data_root(Path::new(&data_root))
+}
+
+fn plugin_home_identity_from_environment() -> Option<String> {
+    let codex_home = std::env::var_os("LILI_PLUGIN_CODEX_HOME")?;
+    codex_home_identity(Path::new(&codex_home))
 }
 
 fn plugin_identity_from_data_root(data_root: &Path) -> Option<String> {
@@ -571,7 +600,8 @@ mod tests {
             br#"{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1"}"#;
         let legacy = normalize_hook_json(lifecycle, 1_000).unwrap();
         let result =
-            process_payload_with_source(&paths, lifecycle, 1_000, Some("lili@lili-local")).await;
+            process_payload_with_source(&paths, lifecycle, 1_000, Some("lili@lili-local"), None)
+                .await;
         assert_eq!(result, HookResult::success(HookOutcome::Spooled));
         let spool = SqliteSpoolStore::for_application(paths);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
