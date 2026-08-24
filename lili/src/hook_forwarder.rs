@@ -12,7 +12,7 @@ use lili_session::{
 };
 use lili_storage::ApplicationPaths;
 
-pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(50);
+pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(25);
 pub const ONLINE_FORWARDING_BUDGET: Duration = Duration::from_millis(250);
 pub const OFFLINE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 pub const UNRESPONSIVE_ENDPOINT_BUDGET: Duration = Duration::from_millis(750);

@@ -16,7 +16,7 @@ use crate::{
 };
 
 const CLAIM_LEASE_MS: i64 = 30_000;
-const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(650);
+const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(700);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteSpoolStore {
