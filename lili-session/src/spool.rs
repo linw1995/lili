@@ -32,6 +32,10 @@ pub struct SpoolLimits {
 }
 
 impl SpoolLimits {
+    pub const HARD_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
+    pub const HARD_MAX_BYTES: u64 = 4 * 1024 * 1024;
+    pub const HARD_MAX_COUNT: usize = 256;
+
     pub const fn new(max_count: usize, max_bytes: u64, max_age_ms: u64) -> Self {
         Self {
             max_count,
@@ -51,11 +55,24 @@ impl SpoolLimits {
     pub const fn max_age_ms(self) -> u64 {
         self.max_age_ms
     }
+
+    pub const fn within_hard_bounds(self) -> bool {
+        self.max_count > 0
+            && self.max_count <= Self::HARD_MAX_COUNT
+            && self.max_bytes > 0
+            && self.max_bytes <= Self::HARD_MAX_BYTES
+            && self.max_age_ms > 0
+            && self.max_age_ms <= Self::HARD_MAX_AGE_MS
+    }
 }
 
 impl Default for SpoolLimits {
     fn default() -> Self {
-        Self::new(256, 4 * 1024 * 1024, 24 * 60 * 60 * 1_000)
+        Self::new(
+            Self::HARD_MAX_COUNT,
+            Self::HARD_MAX_BYTES,
+            Self::HARD_MAX_AGE_MS,
+        )
     }
 }
 
@@ -473,7 +490,7 @@ impl Drop for SpoolLock {
 }
 
 fn validate_limits(limits: SpoolLimits) -> Result<(), SpoolError> {
-    if limits.max_count == 0 || limits.max_bytes == 0 || limits.max_age_ms == 0 {
+    if !limits.within_hard_bounds() {
         return Err(SpoolError::InvalidLimits);
     }
     Ok(())

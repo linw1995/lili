@@ -325,7 +325,7 @@ fn enforce_limits(
 }
 
 fn validate_limits(limits: SpoolLimits) -> Result<(), SpoolError> {
-    if limits.max_count() == 0 || limits.max_bytes() == 0 || limits.max_age_ms() == 0 {
+    if !limits.within_hard_bounds() {
         return Err(SpoolError::InvalidLimits);
     }
     Ok(())
@@ -372,6 +372,22 @@ mod tests {
             source_discriminator: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn limits_above_sqlite_hard_bounds_are_rejected() {
+        let event = event("event-1", "turn_completed");
+        for limits in [
+            SpoolLimits::new(SpoolLimits::HARD_MAX_COUNT + 1, 1, 1),
+            SpoolLimits::new(1, SpoolLimits::HARD_MAX_BYTES + 1, 1),
+            SpoolLimits::new(1, 1, SpoolLimits::HARD_MAX_AGE_MS + 1),
+        ] {
+            let store = SqliteSpoolStore::new(paths(), limits);
+            assert!(matches!(
+                store.enqueue(&event, 1),
+                Err(SpoolError::InvalidLimits)
+            ));
+        }
     }
 
     #[test]

@@ -61,7 +61,7 @@ Alternatives considered:
 
 ### Use SQLite as the authoritative structured storage layer
 
-Create one SQLite database under the Lili application data root. Use Diesel's generated schema and query builder for repository operations, `diesel_migrations` for embedded schema migrations, and the bundled SQLite library so the desktop and hook binaries do not depend on a system SQLite installation.
+Create one SQLite database under the Lili application data root. Use Diesel's generated schema and query builder for repository operations, `diesel_migrations` for embedded schema migrations, and the bundled SQLite library so the desktop and hook binaries do not depend on a system SQLite installation. The resolved application root must be absolute and representable as UTF-8 because the supported Diesel SQLite connection contract accepts a UTF-8 database path; path resolution rejects non-UTF-8 roots before creating storage.
 
 Normal desktop connections enable foreign keys, WAL mode for writable connections, and a 5-second `busy_timeout`. Hook connections use a separate short busy timeout and a bounded initialization deadline so a blocked SQLite writer cannot consume the Hook's lifecycle budget. The database is owner-only, and its WAL/SHM sidecars remain inside the same protected application data directory.
 
@@ -71,7 +71,7 @@ The schema follows the reference storage pattern: stable query fields use typed 
 - `inbound_spool`: normalized offline events with priority, lease/claim metadata, and retention timestamps; rows exist only until delivery is committed or retention evicts them;
 - `plugin_evidence`: the latest authenticated plugin diagnostics and bounded metadata.
 
-The reducer remains the in-memory authority for rendering. A reducer transition replaces the current application projection in one short database update. Event history, a persisted deduplication log, and separate session/turn/notification tables are intentionally excluded because they duplicate the reducer projection and are not required after restart. Hook claims, acknowledgements, and spool eviction also use short transactions. No transaction may remain open while waiting for a socket, process, WebView, or external command.
+The reducer remains the in-memory authority for rendering. A reducer transition replaces the current application projection in one short database update. Event history, a persisted deduplication log, and separate session/turn/notification tables are intentionally excluded because they duplicate the reducer projection and are not required after restart. SQLite spool triggers enforce hard upper bounds of 256 records, 4 MiB, and 24 hours; `SpoolLimits` rejects configurations above those bounds so Hook and desktop retention semantics cannot diverge. Hook claims, acknowledgements, and spool eviction also use short transactions. No transaction may remain open while waiting for a socket, process, WebView, or external command.
 
 Business CRUD uses Diesel repositories rather than handwritten SQL. Raw SQL is limited to embedded migration files and the fixed connection PRAGMAs. Schema constraints enforce valid identities, JSON validity, state values, unique spool identities, and bounded timestamps. The only multi-row retention policy applies to the temporary inbound spool; the durable application projection is replaced rather than appended.
 

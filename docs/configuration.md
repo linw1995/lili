@@ -40,7 +40,7 @@ Typical application roots are:
 | Linux | `$XDG_STATE_HOME/dev.linw1995.lili/`, or `~/.local/state/dev.linw1995.lili/` |
 | Windows | `%LOCALAPPDATA%\dev.linw1995.lili\` |
 
-The root contains the SQLite database `lili.sqlite3`, the application-owned `pets/` directory, `config/actions.toml`, owner-only runtime credentials and endpoint metadata, and SQLite WAL/SHM sidecars. The latest per-Session state projection, plugin evidence, and unconsumed offline spool are stored in SQLite with one embedded initial schema, WAL, and bounded transactions.
+The root contains the SQLite database `lili.sqlite3`, the application-owned `pets/` directory, `config/actions.toml`, owner-only runtime credentials and endpoint metadata, and SQLite WAL/SHM sidecars. The latest per-Session state projection, plugin evidence, and unconsumed offline spool are stored in SQLite with one embedded initial schema, WAL, and bounded transactions. The application root must be an absolute UTF-8 path; Lili rejects other roots before opening SQLite. Offline spool limits are hard-capped at 256 records, 4 MiB, and 24 hours so Hook and desktop retention remain identical.
 
 Existing `${CODEX_HOME}/lili`, `${CODEX_HOME}/pets`, and `${CODEX_HOME}/pet` paths are intentionally ignored. This release does not migrate, delete, or read them.
 

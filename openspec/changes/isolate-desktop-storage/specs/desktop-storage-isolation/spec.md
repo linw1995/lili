@@ -18,6 +18,11 @@ The desktop runtime and event forwarder MUST resolve persistent, configuration, 
 - **WHEN** the platform application directory cannot be created or fails ownership/permission validation
 - **THEN** Lili reports a bounded storage diagnostic and fails closed or enters only the explicitly supported embedded fallback mode without trying another user directory
 
+#### Scenario: Application root is not representable as UTF-8
+
+- **WHEN** the platform resolves an absolute application root containing bytes outside UTF-8
+- **THEN** path resolution rejects the root with a bounded explicit diagnostic before creating or opening the SQLite database
+
 ### Requirement: Keep desktop-owned data separated by purpose
 
 The desktop runtime MUST store application metadata, a compact latest per-Session state projection, offline spool records, and latest plugin evidence in a versioned SQLite database under the Lili application data root. Pet assets MUST remain in the Lili-owned Pet file tree, action configuration MUST remain in the Lili-owned configuration root, and credentials and endpoint metadata MUST remain in owner-only runtime storage where the platform supports it.
@@ -78,6 +83,11 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 
 - **WHEN** offline spool records exceed their configured bound
 - **THEN** retention removes only records allowed by the priority and age policy and never allows unbounded database growth
+
+#### Scenario: A caller supplies a spool limit above the SQLite hard bound
+
+- **WHEN** a spool store is configured above 256 records, 4 MiB, or 24 hours
+- **THEN** the store rejects the configuration instead of allowing Rust and SQLite retention policies to diverge
 
 ### Requirement: Preserve Pet v2 format without Codex location compatibility
 
