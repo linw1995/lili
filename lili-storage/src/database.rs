@@ -96,7 +96,18 @@ fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection,
             "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {busy_timeout_ms};"
         ))
         .map_err(DatabaseError::Configuration)?;
-    if !database_exists {
+    let journal_mode = if database_exists {
+        diesel::sql_query("PRAGMA journal_mode")
+            .get_result::<JournalModeRow>(&mut connection)
+            .ok()
+            .map(|row| row.journal_mode)
+    } else {
+        None
+    };
+    if !journal_mode
+        .as_deref()
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("wal"))
+    {
         connection
             .batch_execute("PRAGMA journal_mode = WAL;")
             .map_err(DatabaseError::Configuration)?;
@@ -139,6 +150,12 @@ fn apply_pending_migrations(connection: &mut SqliteConnection) -> Result<(), Dat
             .map_err(DatabaseError::Migration)?;
     }
     Ok(())
+}
+
+#[derive(diesel::QueryableByName)]
+struct JournalModeRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    journal_mode: String,
 }
 
 #[derive(diesel::QueryableByName)]
