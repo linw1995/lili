@@ -471,6 +471,72 @@ mod tests {
     }
 
     #[test]
+    fn byte_retention_accounts_for_claimed_payloads() {
+        let paths = paths();
+        let store = SqliteSpoolStore::for_hook(paths.clone());
+        let large_payload = |event_id: &str| {
+            let mut value = serde_json::to_value(event(event_id, "turn_completed")).unwrap();
+            value["padding"] = serde_json::Value::String("x".repeat(64_000));
+            JsonDocument::parse(serde_json::to_string(&value).unwrap()).unwrap()
+        };
+        {
+            let mut database = open(&paths).unwrap();
+            for index in 0..65 {
+                let event_id = format!("large-{index}");
+                let payload_json = large_payload(&event_id);
+                let record = NewInboundSpool {
+                    provider: "codex",
+                    event_id: &event_id,
+                    payload_json: &payload_json,
+                    priority: 1,
+                    occurred_at_ms: index,
+                    inserted_at_ms: index,
+                    status: "pending",
+                    claim_token: None,
+                    claimed_at_ms: None,
+                    lease_expires_at_ms: None,
+                    attempts: 0,
+                };
+                insert_inbound_spool(database.connection(), &record).unwrap();
+            }
+        }
+
+        let claimed = store.claim_next(1_000).unwrap().unwrap();
+        let claimed_event_id = claimed.event().event_id.as_str().to_owned();
+        {
+            let mut database = open(&paths).unwrap();
+            let event_id = "large-new";
+            let payload_json = large_payload(event_id);
+            let record = NewInboundSpool {
+                provider: "codex",
+                event_id,
+                payload_json: &payload_json,
+                priority: 1,
+                occurred_at_ms: 1_000,
+                inserted_at_ms: 1_000,
+                status: "pending",
+                claim_token: None,
+                claimed_at_ms: None,
+                lease_expires_at_ms: None,
+                attempts: 0,
+            };
+            insert_inbound_spool(database.connection(), &record).unwrap();
+            let rows = list_inbound_spool(database.connection()).unwrap();
+            let total_bytes = rows
+                .iter()
+                .map(|row| row.payload_json.as_str().len() as u64)
+                .sum::<u64>();
+            assert!(total_bytes <= SpoolLimits::HARD_MAX_BYTES);
+            assert!(
+                rows.iter()
+                    .any(|row| row.event_id == claimed_event_id && row.status == "claimed")
+            );
+        }
+        claimed.commit().unwrap();
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
     fn retention_preserves_claimed_records_for_lease_recovery() {
         let paths = paths();
         let limits = SpoolLimits::new(1, 64 * 1024, 1_000);

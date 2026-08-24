@@ -79,19 +79,21 @@ WHEN (SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0)
 BEGIN
     DELETE FROM inbound_spool
     WHERE rowid IN (
+        WITH pending_ordered AS (
+            SELECT rowid,
+                   length(CAST(payload_json AS BLOB)) AS payload_bytes,
+                   SUM(length(CAST(payload_json AS BLOB))) OVER (
+                       ORDER BY priority ASC, inserted_at_ms ASC, rowid ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS cumulative_pending_bytes,
+                   (SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0)
+                    FROM inbound_spool) AS total_bytes
+            FROM inbound_spool
+            WHERE status = 'pending'
+        )
         SELECT rowid
-        FROM inbound_spool
-        WHERE status = 'pending'
-        ORDER BY priority ASC, inserted_at_ms ASC
-        LIMIT CASE
-            WHEN (SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0)
-                  FROM inbound_spool) > 4194304
-            THEN MAX(
-                0,
-                (SELECT COUNT(*) FROM inbound_spool WHERE status = 'pending') - 64
-            )
-            ELSE 0
-        END
+        FROM pending_ordered
+        WHERE total_bytes - (cumulative_pending_bytes - payload_bytes) > 4194304
     );
     UPDATE app_state
     SET spool_limit_drops = spool_limit_drops + changes();
