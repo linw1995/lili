@@ -114,7 +114,7 @@ fn apply_pending_migrations(connection: &mut SqliteConnection) -> Result<(), Dat
     let expected = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&MIGRATIONS)
         .map_err(DatabaseError::Migration)?
         .into_iter()
-        .map(|migration| migration.name().to_string())
+        .map(|migration| migration.name().version().to_string())
         .collect::<Vec<_>>();
     let applied =
         diesel::sql_query("SELECT version FROM __diesel_schema_migrations ORDER BY version ASC")
