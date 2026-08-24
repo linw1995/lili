@@ -3,9 +3,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use diesel::Connection;
 use diesel::connection::SimpleConnection;
 use diesel::sqlite::SqliteConnection;
+use diesel::{
+    Connection, RunQueryDsl,
+    migration::{Migration, MigrationSource},
+};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use crate::{ApplicationPaths, PathError, StorageError};
@@ -89,13 +92,57 @@ fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection,
     let busy_timeout_ms = busy_timeout.as_millis().min(i64::MAX as u128);
     connection
         .batch_execute(&format!(
-            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {busy_timeout_ms}; PRAGMA journal_mode = WAL;"
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {busy_timeout_ms};"
         ))
         .map_err(DatabaseError::Configuration)?;
-    connection
-        .run_pending_migrations(MIGRATIONS)
-        .map_err(DatabaseError::Migration)?;
+    let journal_mode = diesel::sql_query("PRAGMA journal_mode")
+        .get_result::<JournalModeRow>(&mut connection)
+        .map(|row| row.journal_mode);
+    if !journal_mode
+        .as_deref()
+        .is_ok_and(|mode| mode.eq_ignore_ascii_case("wal"))
+    {
+        connection
+            .batch_execute("PRAGMA journal_mode = WAL;")
+            .map_err(DatabaseError::Configuration)?;
+    }
+    apply_pending_migrations(&mut connection)?;
     Ok(connection)
+}
+
+fn apply_pending_migrations(connection: &mut SqliteConnection) -> Result<(), DatabaseError> {
+    let expected = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&MIGRATIONS)
+        .map_err(DatabaseError::Migration)?
+        .into_iter()
+        .map(|migration| migration.name().to_string())
+        .collect::<Vec<_>>();
+    let applied =
+        diesel::sql_query("SELECT version FROM __diesel_schema_migrations ORDER BY version ASC")
+            .load::<MigrationVersionRow>(connection);
+    let is_current = applied.is_ok_and(|applied| {
+        applied
+            .iter()
+            .map(|migration| migration.version.as_str())
+            .eq(expected.iter().map(String::as_str))
+    });
+    if !is_current {
+        connection
+            .run_pending_migrations(MIGRATIONS)
+            .map_err(DatabaseError::Migration)?;
+    }
+    Ok(())
+}
+
+#[derive(diesel::QueryableByName)]
+struct JournalModeRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    journal_mode: String,
+}
+
+#[derive(diesel::QueryableByName)]
+struct MigrationVersionRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    version: String,
 }
 
 #[derive(Debug)]
