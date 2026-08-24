@@ -227,7 +227,11 @@ impl SessionReducer {
             .collect();
 
         let mut latest_notifications = BTreeMap::new();
-        for notification in self.notifications.values() {
+        for notification in self
+            .notifications
+            .values()
+            .filter(|notification| notification.state == NotificationState::Unread)
+        {
             let key = (
                 notification.provider.clone(),
                 notification.session_id.clone(),
@@ -241,10 +245,7 @@ impl SessionReducer {
                 latest_notifications.insert(key, notification.clone());
             }
         }
-        let mut notifications = latest_notifications
-            .into_values()
-            .filter(|notification| notification.state == NotificationState::Unread)
-            .collect::<Vec<_>>();
+        let mut notifications = latest_notifications.into_values().collect::<Vec<_>>();
         notifications.sort_by(|left, right| {
             notification_priority(right)
                 .cmp(&notification_priority(left))
@@ -1132,6 +1133,44 @@ mod tests {
             )),
             ReductionOutcome::IgnoredStale
         );
+    }
+
+    #[test]
+    fn persistence_keeps_an_older_unread_notification_when_newer_one_is_acknowledged() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "completed-1",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "started-2",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            20,
+        ));
+        reducer.reduce(event(
+            "completed-2",
+            "turn_completed",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+        let newer_notification = reducer
+            .snapshot()
+            .notifications
+            .iter()
+            .find(|notification| notification.event_id.as_str() == "completed-2")
+            .map(|notification| notification.id.clone())
+            .unwrap();
+        reducer.acknowledge_notification(&newer_notification, 31);
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.notifications.len(), 1);
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "completed-1");
     }
 
     #[test]
