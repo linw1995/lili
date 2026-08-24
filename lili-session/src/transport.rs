@@ -443,6 +443,23 @@ fn sync_directory(_directory: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
+fn unix_socket_path(runtime_dir: &Path) -> PathBuf {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(runtime_dir.to_string_lossy().as_bytes());
+    digest.update(rustix::process::geteuid().as_raw().to_be_bytes());
+    let mut name = String::from("lili-");
+    for byte in digest.finalize() {
+        write!(&mut name, "{byte:02x}").expect("writing a socket name cannot fail");
+    }
+    name.push_str(".sock");
+    PathBuf::from("/tmp").join(name)
+}
+
+#[cfg(unix)]
 struct PlatformListener {
     listener: tokio::net::UnixListener,
     endpoint: PlatformEndpoint,
@@ -454,7 +471,7 @@ impl PlatformListener {
     fn bind(runtime_dir: &Path, _instance_id: &str) -> Result<Self, ForwardingTransportError> {
         use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
-        let path = runtime_dir.join("forwarding.sock");
+        let path = unix_socket_path(runtime_dir);
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink()
@@ -1078,7 +1095,7 @@ mod tests {
         use std::os::unix::{fs::symlink, net::UnixListener};
 
         let temp = TempDir::new();
-        let socket_path = temp.0.join("forwarding.sock");
+        let socket_path = unix_socket_path(&temp.0);
 
         fs::write(&socket_path, b"not a socket").unwrap();
         assert!(matches!(
@@ -1105,6 +1122,15 @@ mod tests {
         ));
         drop(live);
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn unix_socket_path_is_bounded_for_long_runtime_roots() {
+        let runtime_dir = PathBuf::from("/").join("runtime".repeat(256));
+        let socket_path = unix_socket_path(&runtime_dir);
+
+        assert_eq!(socket_path.parent(), Some(Path::new("/tmp")));
+        assert!(socket_path.to_string_lossy().len() < 100);
     }
 
     #[test]
