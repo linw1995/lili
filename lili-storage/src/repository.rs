@@ -108,7 +108,12 @@ pub fn insert_inbound_spool(
 pub fn insert_inbound_spool_if_retained(
     connection: &mut SqliteConnection,
     value: &NewInboundSpool<'_>,
+    cutoff_ms: i64,
 ) -> QueryResult<Option<InboundSpoolRow>> {
+    let expired = delete_expired_pending_inbound_spool(connection, cutoff_ms)?;
+    if expired > 0 {
+        increment_spool_metrics(connection, expired as i64, 0, 0)?;
+    }
     diesel::insert_into(inbound_spool::table)
         .values(value)
         .on_conflict((inbound_spool::provider, inbound_spool::event_id))
@@ -119,6 +124,20 @@ pub fn insert_inbound_spool_if_retained(
         .select(InboundSpoolRow::as_select())
         .first(connection)
         .optional()
+}
+
+pub fn delete_expired_pending_inbound_spool(
+    connection: &mut SqliteConnection,
+    cutoff_ms: i64,
+) -> QueryResult<usize> {
+    diesel::delete(
+        inbound_spool::table.filter(
+            inbound_spool::status
+                .eq("pending")
+                .and(inbound_spool::inserted_at_ms.lt(cutoff_ms)),
+        ),
+    )
+    .execute(connection)
 }
 
 pub fn find_inbound_spool(

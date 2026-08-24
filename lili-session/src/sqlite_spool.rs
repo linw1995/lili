@@ -95,7 +95,10 @@ impl SqliteSpoolStore {
             // The database trigger applies the default Hook retention limits in this same
             // transaction; the desktop drain repeats policy enforcement before claiming.
             with_short_transaction(database.connection(), |connection| {
-                Ok(insert_inbound_spool_if_retained(connection, &new_record)?.is_some())
+                let cutoff_ms = enqueued_at_ms.saturating_sub(
+                    i64::try_from(SpoolLimits::HARD_MAX_AGE_MS).unwrap_or(i64::MAX),
+                );
+                Ok(insert_inbound_spool_if_retained(connection, &new_record, cutoff_ms)?.is_some())
             })
             .map_err(database_query_error)?
         } else {
@@ -590,6 +593,35 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        drop(database);
+        assert_eq!(store.metrics().unwrap().expired_drops, 1);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn duplicate_hook_insert_refreshes_an_expired_pending_record() {
+        let paths = paths();
+        let store = SqliteSpoolStore::for_hook(paths.clone());
+        let event = event("event-expired-duplicate", "turn_completed");
+        assert_eq!(
+            store.enqueue(&event, 1).unwrap(),
+            SpoolEnqueueOutcome::Stored
+        );
+
+        let retry_at = SpoolLimits::HARD_MAX_AGE_MS + 2;
+        assert_eq!(
+            store.enqueue(&event, retry_at).unwrap(),
+            SpoolEnqueueOutcome::Stored
+        );
+        let mut database = open(&paths).unwrap();
+        let row = find_inbound_spool(
+            database.connection(),
+            event.provider.as_str(),
+            event.event_id.as_str(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.inserted_at_ms, i64::try_from(retry_at).unwrap());
         drop(database);
         assert_eq!(store.metrics().unwrap().expired_drops, 1);
         std::fs::remove_dir_all(paths.root()).unwrap();

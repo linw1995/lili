@@ -94,6 +94,11 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 - **WHEN** offline spool records exceed their configured bound
 - **THEN** retention counts all rows toward the byte bound, removes only pending records allowed by the priority and age policy, preserves claimed rows for lease recovery, and never allows pending data to grow without a bound
 
+#### Scenario: A duplicate hook event is already expired
+
+- **WHEN** a Hook retries an event identity whose existing pending spool row is older than the age bound
+- **THEN** the expired pending row is removed and counted before the conflict-safe insert, so the retry stores a current bounded record rather than bypassing age retention
+
 #### Scenario: A caller supplies a spool limit above the SQLite hard bound
 
 - **WHEN** a spool store is configured above 256 records, 4 MiB, or 24 hours
