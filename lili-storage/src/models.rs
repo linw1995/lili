@@ -76,6 +76,9 @@ pub struct AppStateRow {
     pub window_placement_json: Option<JsonDocument>,
     pub reducer_revision: i64,
     pub reducer_json: Option<String>,
+    pub spool_expired_drops: i64,
+    pub spool_limit_drops: i64,
+    pub spool_malformed_drops: i64,
 }
 
 #[derive(Clone, Debug, Queryable, Selectable, Identifiable)]

@@ -3,8 +3,12 @@ pub mod models;
 pub mod repository;
 pub mod schema;
 pub mod transaction;
+#[cfg(windows)]
+mod windows_acl;
 
-pub use database::{DatabaseError, EmbeddedDatabase, MIGRATIONS, connect, open};
+pub use database::{
+    DatabaseError, EmbeddedDatabase, MIGRATIONS, connect, open, open_with_busy_timeout,
+};
 pub use models::JsonDocument;
 
 use std::{
@@ -155,8 +159,16 @@ fn set_private_directory_mode(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(not(unix))]
-fn set_private_directory_mode(_path: &Path) -> Result<(), std::io::Error> {
-    Ok(())
+fn set_private_directory_mode(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(windows)]
+    {
+        return windows_acl::enforce_owner_only(path, true);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -169,8 +181,16 @@ fn set_private_file_mode(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(not(unix))]
-fn set_private_file_mode(_path: &Path) -> Result<(), std::io::Error> {
-    Ok(())
+fn set_private_file_mode(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(windows)]
+    {
+        return windows_acl::enforce_owner_only(path, false);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 fn platform_application_root() -> Result<PathBuf, PathError> {

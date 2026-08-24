@@ -40,6 +40,9 @@ mod tests {
                     window_placement_json: None,
                     reducer_revision: 1,
                     reducer_json: Some(r#"{"revision":1}"#.to_owned()),
+                    spool_expired_drops: 0,
+                    spool_limit_drops: 0,
+                    spool_malformed_drops: 0,
                 },
             )?;
             Err(diesel::result::Error::RollbackTransaction)

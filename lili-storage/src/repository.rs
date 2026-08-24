@@ -49,6 +49,22 @@ pub fn update_app_state_if_newer(
     Ok(updated == 1)
 }
 
+pub fn increment_spool_metrics(
+    connection: &mut SqliteConnection,
+    expired_drops: i64,
+    limit_drops: i64,
+    malformed_drops: i64,
+) -> QueryResult<()> {
+    diesel::update(app_state::table.find(1))
+        .set((
+            app_state::spool_expired_drops.eq(app_state::spool_expired_drops + expired_drops),
+            app_state::spool_limit_drops.eq(app_state::spool_limit_drops + limit_drops),
+            app_state::spool_malformed_drops.eq(app_state::spool_malformed_drops + malformed_drops),
+        ))
+        .execute(connection)?;
+    Ok(())
+}
+
 pub fn insert_inbound_spool(
     connection: &mut SqliteConnection,
     value: &NewInboundSpool<'_>,

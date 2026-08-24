@@ -12,10 +12,11 @@ use crate::{ApplicationPaths, PathError, StorageError};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
-const CONNECTION_PRAGMAS: &str =
-    "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;";
+const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const INITIALIZATION_RETRY_COUNT: usize = 100;
 const INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(25);
+// Keep this source dependency near the embedded migration so schema edits rebuild the binary.
+const BOUNDED_INITIALIZATION_RETRY_COUNT: usize = 2;
 
 pub struct EmbeddedDatabase {
     connection: SqliteConnection,
@@ -28,18 +29,41 @@ impl EmbeddedDatabase {
 }
 
 pub fn open(paths: &ApplicationPaths) -> Result<EmbeddedDatabase, DatabaseError> {
+    open_with_options(paths, DEFAULT_BUSY_TIMEOUT, INITIALIZATION_RETRY_COUNT)
+}
+
+pub fn open_with_busy_timeout(
+    paths: &ApplicationPaths,
+    busy_timeout: Duration,
+) -> Result<EmbeddedDatabase, DatabaseError> {
+    open_with_options(paths, busy_timeout, BOUNDED_INITIALIZATION_RETRY_COUNT)
+}
+
+fn open_with_options(
+    paths: &ApplicationPaths,
+    busy_timeout: Duration,
+    retry_count: usize,
+) -> Result<EmbeddedDatabase, DatabaseError> {
     paths.ensure_layout().map_err(DatabaseError::Storage)?;
-    let connection = connect(&paths.database_path())?;
+    let connection = connect_with_options(&paths.database_path(), busy_timeout, retry_count)?;
     paths.ensure_layout().map_err(DatabaseError::Storage)?;
     Ok(EmbeddedDatabase { connection })
 }
 
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
+    connect_with_options(path, DEFAULT_BUSY_TIMEOUT, INITIALIZATION_RETRY_COUNT)
+}
+
+fn connect_with_options(
+    path: &Path,
+    busy_timeout: Duration,
+    retry_count: usize,
+) -> Result<SqliteConnection, DatabaseError> {
     let mut last_error = None;
-    for attempt in 0..=INITIALIZATION_RETRY_COUNT {
-        match connect_once(path) {
+    for attempt in 0..=retry_count {
+        match connect_once(path, busy_timeout) {
             Ok(connection) => return Ok(connection),
-            Err(error) if error.is_retryable() && attempt < INITIALIZATION_RETRY_COUNT => {
+            Err(error) if error.is_retryable() && attempt < retry_count => {
                 last_error = Some(error);
                 thread::sleep(INITIALIZATION_RETRY_DELAY);
             }
@@ -49,14 +73,17 @@ pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
     Err(last_error.expect("database initialization must produce an error"))
 }
 
-fn connect_once(path: &Path) -> Result<SqliteConnection, DatabaseError> {
+fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection, DatabaseError> {
     let path_text = path
         .to_str()
         .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
     let mut connection =
         SqliteConnection::establish(path_text).map_err(DatabaseError::Connection)?;
+    let busy_timeout_ms = busy_timeout.as_millis().min(i64::MAX as u128);
     connection
-        .batch_execute(CONNECTION_PRAGMAS)
+        .batch_execute(&format!(
+            "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {busy_timeout_ms}; PRAGMA journal_mode = WAL;"
+        ))
         .map_err(DatabaseError::Configuration)?;
     connection
         .run_pending_migrations(MIGRATIONS)
@@ -201,6 +228,9 @@ mod tests {
             window_placement_json: None,
             reducer_json: Some(r#"{"revision":2}"#.to_owned()),
             reducer_revision: 2,
+            spool_expired_drops: 0,
+            spool_limit_drops: 0,
+            spool_malformed_drops: 0,
         };
         update_app_state(database.connection(), &current).unwrap();
 
@@ -210,6 +240,9 @@ mod tests {
             window_placement_json: None,
             reducer_json: Some(r#"{"revision":1}"#.to_owned()),
             reducer_revision: 1,
+            spool_expired_drops: 0,
+            spool_limit_drops: 0,
+            spool_malformed_drops: 0,
         };
         assert!(!update_app_state_if_newer(database.connection(), &stale).unwrap());
 

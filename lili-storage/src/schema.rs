@@ -5,6 +5,9 @@ diesel::table! {
         window_placement_json -> Nullable<Text>,
         reducer_revision -> BigInt,
         reducer_json -> Nullable<Text>,
+        spool_expired_drops -> BigInt,
+        spool_limit_drops -> BigInt,
+        spool_malformed_drops -> BigInt,
     }
 }
 

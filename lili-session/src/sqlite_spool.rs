@@ -1,11 +1,12 @@
 use lili_storage::models::NewInboundSpool;
 use lili_storage::repository::{
     claim_inbound_spool, delete_claimed_inbound_spool, delete_inbound_spool, find_inbound_spool,
-    insert_inbound_spool, list_inbound_spool, recover_expired_inbound_spool_claims,
-    release_claimed_inbound_spool,
+    increment_spool_metrics, insert_inbound_spool, list_inbound_spool, load_app_state,
+    recover_expired_inbound_spool_claims, release_claimed_inbound_spool,
 };
 use lili_storage::transaction::with_short_transaction;
-use lili_storage::{ApplicationPaths, JsonDocument, open};
+use lili_storage::{ApplicationPaths, JsonDocument, open, open_with_busy_timeout};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::spool::event_priority;
@@ -15,20 +16,34 @@ use crate::{
 };
 
 const CLAIM_LEASE_MS: i64 = 30_000;
+const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteSpoolStore {
     paths: ApplicationPaths,
     limits: SpoolLimits,
+    busy_timeout: Option<Duration>,
 }
 
 impl SqliteSpoolStore {
     pub fn new(paths: ApplicationPaths, limits: SpoolLimits) -> Self {
-        Self { paths, limits }
+        Self {
+            paths,
+            limits,
+            busy_timeout: None,
+        }
     }
 
     pub fn for_application(paths: ApplicationPaths) -> Self {
         Self::new(paths, SpoolLimits::default())
+    }
+
+    pub fn for_hook(paths: ApplicationPaths) -> Self {
+        Self {
+            paths,
+            limits: SpoolLimits::default(),
+            busy_timeout: Some(HOOK_BUSY_TIMEOUT),
+        }
     }
 
     pub fn database_path(&self) -> std::path::PathBuf {
@@ -50,7 +65,7 @@ impl SqliteSpoolStore {
             return Err(SpoolError::RecordTooLarge);
         }
         let enqueued_at_ms = i64::try_from(enqueued_at_ms).unwrap_or(i64::MAX);
-        let mut database = open(&self.paths).map_err(database_error)?;
+        let mut database = self.open_database().map_err(database_error)?;
         let retained = with_short_transaction(database.connection(), |connection| {
             insert_inbound_spool(
                 connection,
@@ -68,7 +83,13 @@ impl SqliteSpoolStore {
                     attempts: 0,
                 },
             )?;
-            enforce_limits(connection, self.limits, enqueued_at_ms)?;
+            let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
+            increment_spool_metrics(
+                connection,
+                delta.expired_drops,
+                delta.limit_drops,
+                delta.malformed_drops,
+            )?;
             Ok(
                 find_inbound_spool(connection, event.provider.as_str(), event.event_id.as_str())?
                     .is_some(),
@@ -83,7 +104,7 @@ impl SqliteSpoolStore {
     }
 
     pub fn recover_claims(&self, now_ms: u64) -> Result<usize, SpoolError> {
-        let mut database = open(&self.paths).map_err(database_error)?;
+        let mut database = self.open_database().map_err(database_error)?;
         recover_expired_inbound_spool_claims(
             database.connection(),
             i64::try_from(now_ms).unwrap_or(i64::MAX),
@@ -94,31 +115,71 @@ impl SqliteSpoolStore {
     pub fn claim_next(&self, now_ms: u64) -> Result<Option<ClaimedSqliteSpoolRecord>, SpoolError> {
         validate_limits(self.limits)?;
         let now_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
-        let mut database = open(&self.paths).map_err(database_error)?;
+        let mut database = self.open_database().map_err(database_error)?;
         recover_expired_inbound_spool_claims(database.connection(), now_ms)
             .map_err(database_query_error)?;
-        let claim_token = Uuid::new_v4().to_string();
-        let row = claim_inbound_spool(database.connection(), now_ms, CLAIM_LEASE_MS, &claim_token)
-            .map_err(database_query_error)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let event = serde_json::from_str(row.payload_json.as_str())
-            .map_err(|_| SpoolError::MalformedRecord)?;
-        Ok(Some(ClaimedSqliteSpoolRecord {
-            store: self.clone(),
-            provider: row.provider,
-            event_id: row.event_id,
-            claim_token,
-            event,
-            committed: false,
-        }))
+        with_short_transaction(database.connection(), |connection| {
+            let delta = enforce_limits(connection, self.limits, now_ms)?;
+            increment_spool_metrics(
+                connection,
+                delta.expired_drops,
+                delta.limit_drops,
+                delta.malformed_drops,
+            )
+        })
+        .map_err(database_query_error)?;
+        loop {
+            let claim_token = Uuid::new_v4().to_string();
+            let row =
+                claim_inbound_spool(database.connection(), now_ms, CLAIM_LEASE_MS, &claim_token)
+                    .map_err(database_query_error)?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            let event =
+                match serde_json::from_str::<NormalizedSessionEvent>(row.payload_json.as_str()) {
+                    Ok(event) if event.validate().is_ok() => event,
+                    Ok(_) | Err(_) => {
+                        with_short_transaction(database.connection(), |connection| {
+                            delete_claimed_inbound_spool(
+                                connection,
+                                &row.provider,
+                                &row.event_id,
+                                &claim_token,
+                            )?;
+                            increment_spool_metrics(connection, 0, 0, 1)
+                        })
+                        .map_err(database_query_error)?;
+                        continue;
+                    }
+                };
+            return Ok(Some(ClaimedSqliteSpoolRecord {
+                store: self.clone(),
+                provider: row.provider,
+                event_id: row.event_id,
+                claim_token,
+                event,
+                committed: false,
+            }));
+        }
     }
 
     pub fn metrics(&self) -> Result<SpoolMetrics, SpoolError> {
-        let mut database = open(&self.paths).map_err(database_error)?;
+        let mut database = self.open_database().map_err(database_error)?;
         let _ = list_inbound_spool(database.connection()).map_err(database_query_error)?;
-        Ok(SpoolMetrics::default())
+        let row = load_app_state(database.connection()).map_err(database_query_error)?;
+        let mut metrics = SpoolMetrics::default();
+        metrics.expired_drops = u64::try_from(row.spool_expired_drops).unwrap_or(u64::MAX);
+        metrics.limit_drops = u64::try_from(row.spool_limit_drops).unwrap_or(u64::MAX);
+        metrics.malformed_drops = u64::try_from(row.spool_malformed_drops).unwrap_or(u64::MAX);
+        Ok(metrics)
+    }
+
+    fn open_database(&self) -> Result<lili_storage::EmbeddedDatabase, lili_storage::DatabaseError> {
+        self.busy_timeout.map_or_else(
+            || open(&self.paths),
+            |busy_timeout| open_with_busy_timeout(&self.paths, busy_timeout),
+        )
     }
 }
 
@@ -137,7 +198,7 @@ impl ClaimedSqliteSpoolRecord {
     }
 
     pub fn commit(mut self) -> Result<(), SpoolError> {
-        let mut database = open(&self.store.paths).map_err(database_error)?;
+        let mut database = self.store.open_database().map_err(database_error)?;
         let deleted = delete_claimed_inbound_spool(
             database.connection(),
             &self.provider,
@@ -159,7 +220,7 @@ impl ClaimedSqliteSpoolRecord {
     }
 
     fn release_inner(&self) -> Result<(), SpoolError> {
-        let mut database = open(&self.store.paths).map_err(database_error)?;
+        let mut database = self.store.open_database().map_err(database_error)?;
         release_claimed_inbound_spool(
             database.connection(),
             &self.provider,
@@ -179,17 +240,26 @@ impl Drop for ClaimedSqliteSpoolRecord {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct RetentionDelta {
+    expired_drops: i64,
+    limit_drops: i64,
+    malformed_drops: i64,
+}
+
 fn enforce_limits(
     connection: &mut diesel::sqlite::SqliteConnection,
     limits: SpoolLimits,
     now_ms: i64,
-) -> diesel::QueryResult<()> {
+) -> diesel::QueryResult<RetentionDelta> {
     let records = list_inbound_spool(connection)?;
     let max_age_ms = i64::try_from(limits.max_age_ms()).unwrap_or(i64::MAX);
+    let mut delta = RetentionDelta::default();
     let mut retained = Vec::with_capacity(records.len());
     for record in records {
         if record.status == "pending" && now_ms.saturating_sub(record.inserted_at_ms) > max_age_ms {
             delete_inbound_spool(connection, &record.provider, &record.event_id)?;
+            delta.expired_drops = delta.expired_drops.saturating_add(1);
         } else {
             retained.push(record);
         }
@@ -216,8 +286,9 @@ fn enforce_limits(
         total_count = total_count.saturating_sub(1);
         total_bytes = total_bytes.saturating_sub(record.payload_json.as_str().len() as u64);
         delete_inbound_spool(connection, &record.provider, &record.event_id)?;
+        delta.limit_drops = delta.limit_drops.saturating_add(1);
     }
-    Ok(())
+    Ok(delta)
 }
 
 fn validate_limits(limits: SpoolLimits) -> Result<(), SpoolError> {
@@ -319,6 +390,7 @@ mod tests {
                 .is_some()
         );
         drop(database);
+        assert_eq!(store.metrics().unwrap().limit_drops, 1);
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
 
@@ -357,6 +429,68 @@ mod tests {
             .unwrap();
         assert_eq!(second.event().event_id.as_str(), "event-lease");
         second.commit().unwrap();
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn expired_pending_records_are_removed_before_claiming() {
+        let paths = paths();
+        let limits = SpoolLimits::new(8, 64 * 1024, 10);
+        let store = SqliteSpoolStore::new(paths.clone(), limits);
+        store
+            .enqueue(&event("expired", "turn_completed"), 1)
+            .unwrap();
+
+        assert!(store.claim_next(12).unwrap().is_none());
+        let mut database = open(&paths).unwrap();
+        assert!(
+            list_inbound_spool(database.connection())
+                .unwrap()
+                .is_empty()
+        );
+        drop(database);
+        assert_eq!(store.metrics().unwrap().expired_drops, 1);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn invalid_spool_records_are_removed_without_blocking_valid_records() {
+        let paths = paths();
+        let store = SqliteSpoolStore::for_application(paths.clone());
+        let invalid_payload = JsonDocument::parse(r#"{"version":1}"#).unwrap();
+        let mut database = open(&paths).unwrap();
+        insert_inbound_spool(
+            database.connection(),
+            &NewInboundSpool {
+                provider: "codex",
+                event_id: "invalid",
+                payload_json: &invalid_payload,
+                priority: 2,
+                occurred_at_ms: 1,
+                inserted_at_ms: 1,
+                status: "pending",
+                claim_token: None,
+                claimed_at_ms: None,
+                lease_expires_at_ms: None,
+                attempts: 0,
+            },
+        )
+        .unwrap();
+        drop(database);
+        store.enqueue(&event("valid", "turn_completed"), 2).unwrap();
+
+        let claimed = store.claim_next(3).unwrap().unwrap();
+        assert_eq!(claimed.event().event_id.as_str(), "valid");
+        claimed.commit().unwrap();
+
+        let mut database = open(&paths).unwrap();
+        assert!(
+            find_inbound_spool(database.connection(), "codex", "invalid")
+                .unwrap()
+                .is_none()
+        );
+        drop(database);
+        assert_eq!(store.metrics().unwrap().malformed_drops, 1);
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
 

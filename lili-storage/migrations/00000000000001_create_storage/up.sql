@@ -3,7 +3,10 @@ CREATE TABLE app_state (
     selected_pet_id TEXT,
     window_placement_json TEXT CHECK (window_placement_json IS NULL OR json_valid(window_placement_json)),
     reducer_revision INTEGER NOT NULL CHECK (reducer_revision >= 0),
-    reducer_json TEXT CHECK (reducer_json IS NULL OR json_valid(reducer_json))
+    reducer_json TEXT CHECK (reducer_json IS NULL OR json_valid(reducer_json)),
+    spool_expired_drops INTEGER NOT NULL DEFAULT 0 CHECK (spool_expired_drops >= 0),
+    spool_limit_drops INTEGER NOT NULL DEFAULT 0 CHECK (spool_limit_drops >= 0),
+    spool_malformed_drops INTEGER NOT NULL DEFAULT 0 CHECK (spool_malformed_drops >= 0)
 );
 
 INSERT INTO app_state (id, reducer_revision)
