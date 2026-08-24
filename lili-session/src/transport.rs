@@ -21,6 +21,7 @@ use crate::{
 const CREDENTIAL_FILE_NAME: &str = "forwarding.json";
 const MAX_CREDENTIAL_FILE_BYTES: u64 = 16 * 1024;
 const MAX_CODEX_EVIDENCE_BYTES: usize = 64 * 1024;
+const MAX_CODEX_HOME_IDENTITY_BYTES: usize = 4 * 1024;
 const CODEX_EVIDENCE_SIGNATURE_DOMAIN: &str = "codex-plugin-diagnostics";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -81,8 +82,17 @@ pub struct CodexPluginEvidenceStore {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthenticatedCodexPluginEvidence {
+    #[serde(default)]
+    codex_home: Option<String>,
     diagnostics: CodexAdapterDiagnostics,
     authentication: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPluginEvidenceSigningPayload<'a> {
+    codex_home: Option<&'a str>,
+    diagnostics: &'a CodexAdapterDiagnostics,
 }
 
 impl CodexPluginEvidenceStore {
@@ -94,6 +104,46 @@ impl CodexPluginEvidenceStore {
         &self,
         credentials: &ForwardingCredentials,
     ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
+        let evidence = self.load_record()?;
+        self.verify_record(&evidence, credentials)?;
+        Ok(evidence.diagnostics)
+    }
+
+    pub fn load_for_codex_home(
+        &self,
+        codex_home: &Path,
+        credentials: &ForwardingCredentials,
+    ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
+        let codex_home = codex_home_identity(codex_home)?;
+        let evidence = self.load_record()?;
+        self.verify_record(&evidence, credentials)?;
+        if evidence.codex_home.as_deref() != Some(codex_home.as_str()) {
+            return Err(ForwardingTransportError::EvidenceHomeMismatch);
+        }
+        Ok(evidence.diagnostics)
+    }
+
+    pub fn bind_codex_home(
+        &self,
+        codex_home: &Path,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let codex_home = codex_home_identity(codex_home)?;
+        let evidence = self.load_record()?;
+        self.verify_record(&evidence, credentials)?;
+        if let Some(existing) = evidence.codex_home.as_deref()
+            && existing != codex_home
+        {
+            return Err(ForwardingTransportError::EvidenceHomeMismatch);
+        }
+        self.save_with_codex_home(
+            Some(codex_home.as_str()),
+            &evidence.diagnostics,
+            credentials,
+        )
+    }
+
+    fn load_record(&self) -> Result<AuthenticatedCodexPluginEvidence, ForwardingTransportError> {
         let mut database = open(&self.paths)
             .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?;
         let row = load_plugin_evidence(database.connection())
@@ -104,8 +154,19 @@ impl CodexPluginEvidenceStore {
         let evidence: AuthenticatedCodexPluginEvidence =
             serde_json::from_str(row.evidence_json.as_str())
                 .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
-        let diagnostics_payload = serde_json::to_vec(&evidence.diagnostics)
-            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        Ok(evidence)
+    }
+
+    fn verify_record(
+        &self,
+        evidence: &AuthenticatedCodexPluginEvidence,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let diagnostics_payload = serde_json::to_vec(&CodexPluginEvidenceSigningPayload {
+            codex_home: evidence.codex_home.as_deref(),
+            diagnostics: &evidence.diagnostics,
+        })
+        .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
         credentials
             .verify_evidence(
                 CODEX_EVIDENCE_SIGNATURE_DOMAIN,
@@ -113,7 +174,7 @@ impl CodexPluginEvidenceStore {
                 &evidence.authentication,
             )
             .map_err(|_| ForwardingTransportError::UnauthenticatedEvidenceFile)?;
-        Ok(evidence.diagnostics)
+        Ok(())
     }
 
     pub fn save(
@@ -121,11 +182,38 @@ impl CodexPluginEvidenceStore {
         diagnostics: &CodexAdapterDiagnostics,
         credentials: &ForwardingCredentials,
     ) -> Result<(), ForwardingTransportError> {
-        let diagnostics_payload = serde_json::to_vec(diagnostics)
-            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let codex_home = self
+            .load_record()
+            .ok()
+            .and_then(|evidence| evidence.codex_home);
+        self.save_with_codex_home(codex_home.as_deref(), diagnostics, credentials)
+    }
+
+    pub fn save_for_codex_home(
+        &self,
+        codex_home: &Path,
+        diagnostics: &CodexAdapterDiagnostics,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let codex_home = codex_home_identity(codex_home)?;
+        self.save_with_codex_home(Some(codex_home.as_str()), diagnostics, credentials)
+    }
+
+    fn save_with_codex_home(
+        &self,
+        codex_home: Option<&str>,
+        diagnostics: &CodexAdapterDiagnostics,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let diagnostics_payload = serde_json::to_vec(&CodexPluginEvidenceSigningPayload {
+            codex_home,
+            diagnostics,
+        })
+        .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
         let authentication = credentials
             .authenticate_evidence(CODEX_EVIDENCE_SIGNATURE_DOMAIN, &diagnostics_payload)?;
         let evidence = AuthenticatedCodexPluginEvidence {
+            codex_home: codex_home.map(str::to_owned),
             diagnostics: diagnostics.clone(),
             authentication,
         };
@@ -149,6 +237,19 @@ impl CodexPluginEvidenceStore {
         .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?;
         Ok(())
     }
+}
+
+fn codex_home_identity(path: &Path) -> Result<String, ForwardingTransportError> {
+    let value = path
+        .to_str()
+        .filter(|value| {
+            path.is_absolute()
+                && !value.is_empty()
+                && value.len() <= MAX_CODEX_HOME_IDENTITY_BYTES
+                && !value.chars().any(char::is_control)
+        })
+        .ok_or(ForwardingTransportError::MalformedEvidenceFile)?;
+    Ok(value.to_owned())
 }
 
 fn unix_time_ms() -> i64 {
@@ -794,6 +895,8 @@ pub enum ForwardingTransportError {
     MalformedEvidenceFile,
     #[error("Codex plugin evidence record could not be authenticated")]
     UnauthenticatedEvidenceFile,
+    #[error("Codex plugin evidence belongs to another Codex home")]
+    EvidenceHomeMismatch,
     #[error("Codex plugin evidence storage failed: {0}")]
     EvidenceStorage(String),
     #[error("forwarding endpoint is unsafe")]
@@ -1045,6 +1148,30 @@ mod tests {
         assert!(matches!(
             store.load(&unrelated),
             Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
+        ));
+    }
+
+    #[test]
+    fn codex_plugin_evidence_is_bound_to_the_selected_codex_home() {
+        let temp = TempDir::new();
+        let paths = lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap();
+        let store = CodexPluginEvidenceStore::for_application(paths);
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let diagnostics = CodexAdapterDiagnostics::default();
+        store.save(&diagnostics, &credentials).unwrap();
+        store
+            .bind_codex_home(Path::new("/tmp/codex-home-a"), &credentials)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .load_for_codex_home(Path::new("/tmp/codex-home-a"), &credentials)
+                .unwrap(),
+            diagnostics
+        );
+        assert!(matches!(
+            store.load_for_codex_home(Path::new("/tmp/codex-home-b"), &credentials),
+            Err(ForwardingTransportError::EvidenceHomeMismatch)
         ));
     }
 

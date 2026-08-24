@@ -7,7 +7,7 @@ use lili_integration::{
     plugin_hooks_are_trusted, resolve_codex_home, save_plugin_migration_verification, uninstall,
 };
 use lili_session::{
-    DESKTOP_VERSION, ForwardingAckDisposition, ForwardingCredentialStore,
+    CodexPluginEvidenceStore, DESKTOP_VERSION, ForwardingAckDisposition, ForwardingCredentialStore,
     ProviderCapabilitiesInputV1, ProviderInputV1, deliver_forwarding_message,
     normalize_provider_input,
 };
@@ -127,6 +127,7 @@ fn build_runtime_assessment(
     codex_home: &std::path::Path,
     selector: &str,
 ) -> Result<PluginMigrationAssessment, lili_integration::PluginMigrationError> {
+    bind_runtime_evidence(codex_home);
     let inspection = inspect_plugin(codex_home, selector);
     let (evidence, synthetic_event_id, credentials) =
         collect_runtime_verification(codex_home, selector, &inspection);
@@ -139,6 +140,22 @@ fn build_runtime_assessment(
         &synthetic_event_id,
     )?;
     Ok(assessment)
+}
+
+fn bind_runtime_evidence(codex_home: &std::path::Path) {
+    let Ok(application_paths) = ApplicationPaths::resolve() else {
+        return;
+    };
+    let Ok(record) =
+        ForwardingCredentialStore::for_runtime_dir(&application_paths.runtime_root()).load()
+    else {
+        return;
+    };
+    let Ok(credentials) = record.credentials() else {
+        return;
+    };
+    let _ = CodexPluginEvidenceStore::for_application(application_paths)
+        .bind_codex_home(codex_home, &credentials);
 }
 
 fn collect_runtime_verification(
