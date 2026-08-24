@@ -287,10 +287,36 @@ impl AppStateStore {
     }
 
     pub fn save(&self, state: &PersistentApplicationState) -> Result<(), PersistenceError> {
+        self.save_with_selected_pet_policy(state, false)
+    }
+
+    pub fn save_selected_pet(
+        &self,
+        state: &PersistentApplicationState,
+    ) -> Result<(), PersistenceError> {
+        self.save_with_selected_pet_policy(state, true)
+    }
+
+    fn save_with_selected_pet_policy(
+        &self,
+        state: &PersistentApplicationState,
+        replace_selected_pet: bool,
+    ) -> Result<(), PersistenceError> {
         state.validate()?;
         let mut database = open(&self.paths)?;
         let existing = load_app_state(database.connection())?;
-        let row = app_state_row(state, existing.window_placement_json)?;
+        let selected_pet_id = replace_selected_pet
+            .then_some(state.selected_pet_id.as_ref())
+            .flatten()
+            .map(|value| value.as_str().to_owned())
+            .or(existing.selected_pet_id)
+            .or_else(|| {
+                state
+                    .selected_pet_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned())
+            });
+        let row = app_state_row(state, existing.window_placement_json, selected_pet_id)?;
         update_app_state_if_newer(database.connection(), &row)?;
         Ok(())
     }
@@ -312,6 +338,7 @@ fn reducer_snapshot<T: Serialize>(value: &T) -> Result<String, PersistenceError>
 fn app_state_row(
     state: &PersistentApplicationState,
     existing_window_placement: Option<JsonDocument>,
+    selected_pet_id: Option<String>,
 ) -> Result<AppStateRow, PersistenceError> {
     let reducer_json = reducer_snapshot(&state.reducer)?;
     let window_placement_json = state
@@ -320,10 +347,6 @@ fn app_state_row(
         .map(json_document)
         .transpose()?
         .or(existing_window_placement);
-    let selected_pet_id = state
-        .selected_pet_id
-        .as_ref()
-        .map(|value| value.as_str().to_owned());
     Ok(AppStateRow {
         id: 1,
         selected_pet_id,
@@ -407,10 +430,30 @@ mod tests {
         let store = AppStateStore::for_application(paths.clone());
         store.save(&state("lili", 10)).unwrap();
         let replacement = state("custom-pet", 30);
-        store.save(&replacement).unwrap();
+        store.save_selected_pet(&replacement).unwrap();
         assert_eq!(store.load().unwrap(), Some(replacement));
         assert!(store.database_path().is_file());
         assert!(paths.root().is_dir());
+    }
+
+    #[test]
+    fn regular_state_save_preserves_a_newer_pet_selection() {
+        let temp = TempDir::new();
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let store = AppStateStore::for_application(paths);
+        store.save(&state("lili", 10)).unwrap();
+        store.save_selected_pet(&state("custom-pet", 20)).unwrap();
+        store.save(&state("lili", 30)).unwrap();
+
+        assert_eq!(
+            store
+                .load()
+                .unwrap()
+                .unwrap()
+                .selected_pet_id()
+                .map(|value| value.as_str()),
+            Some("custom-pet")
+        );
     }
 
     #[test]

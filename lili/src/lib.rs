@@ -1441,7 +1441,7 @@ fn select_pet(
         let persistent = tauri::async_runtime::block_on(state.persistent_state(None))
             .with_selected_pet_id(Some(pet_id.clone()));
         store
-            .save(&persistent)
+            .save_selected_pet(&persistent)
             .map_err(|error| format!("selected pet could not be saved: {error}"))?;
     }
     tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));

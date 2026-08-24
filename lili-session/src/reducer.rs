@@ -241,11 +241,17 @@ impl SessionReducer {
                 latest_notifications.insert(key, notification.clone());
             }
         }
-        let notifications = latest_notifications
+        let mut notifications = latest_notifications
             .into_values()
             .filter(|notification| notification.state == NotificationState::Unread)
-            .take(MAX_PERSISTED_NOTIFICATIONS)
-            .collect();
+            .collect::<Vec<_>>();
+        notifications.sort_by(|left, right| {
+            notification_priority(right)
+                .cmp(&notification_priority(left))
+                .then_with(|| right.occurred_at_ms.cmp(&left.occurred_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        notifications.truncate(MAX_PERSISTED_NOTIFICATIONS);
         SessionReducerState {
             revision: self.revision,
             sessions,
@@ -385,6 +391,12 @@ impl SessionReducer {
             .entry(key)
             .or_insert_with(|| SessionRecord::new(event));
         let previous = session.turns.get(&turn_id);
+        if previous.is_none()
+            && event.event_id != session.last_event_id
+            && event_order(event) <= session_order(session)
+        {
+            return Transition::default();
+        }
         let Some(next_phase) = next_turn_phase(previous, event) else {
             return Transition::default();
         };
@@ -1108,6 +1120,48 @@ mod tests {
         );
         assert_eq!(persisted.notifications.len(), 1);
         assert_eq!(persisted.notifications[0].event_id.as_str(), "completed");
+
+        let mut restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(
+            restored.reduce(event(
+                "completed",
+                "turn_completed",
+                "session-1",
+                Some("turn-1"),
+                20,
+            )),
+            ReductionOutcome::IgnoredStale
+        );
+    }
+
+    #[test]
+    fn persistence_prioritizes_attention_notifications_before_truncation() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        for index in 0..(MAX_PERSISTED_NOTIFICATIONS + 4) {
+            reducer.reduce(event(
+                &format!("completion-{index}"),
+                "turn_completed",
+                &format!("session-{index}"),
+                Some("turn-1"),
+                index as u64,
+            ));
+        }
+        reducer.reduce(event(
+            "attention-priority",
+            "attention_required",
+            "session-priority",
+            Some("turn-1"),
+            10_000,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.notifications.len(), MAX_PERSISTED_NOTIFICATIONS);
+        assert!(
+            persisted
+                .notifications
+                .iter()
+                .any(|notification| notification.kind == NotificationKind::Attention)
+        );
     }
 
     #[test]
