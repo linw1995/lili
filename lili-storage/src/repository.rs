@@ -105,6 +105,22 @@ pub fn insert_inbound_spool(
         .first(connection)
 }
 
+pub fn insert_inbound_spool_if_retained(
+    connection: &mut SqliteConnection,
+    value: &NewInboundSpool<'_>,
+) -> QueryResult<Option<InboundSpoolRow>> {
+    diesel::insert_into(inbound_spool::table)
+        .values(value)
+        .on_conflict((inbound_spool::provider, inbound_spool::event_id))
+        .do_nothing()
+        .execute(connection)?;
+    inbound_spool::table
+        .find((value.provider, value.event_id))
+        .select(InboundSpoolRow::as_select())
+        .first(connection)
+        .optional()
+}
+
 pub fn find_inbound_spool(
     connection: &mut SqliteConnection,
     provider: &str,

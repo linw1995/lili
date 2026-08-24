@@ -1,8 +1,9 @@
 use lili_storage::models::NewInboundSpool;
 use lili_storage::repository::{
     claim_inbound_spool, delete_claimed_inbound_spool, delete_inbound_spool, find_inbound_spool,
-    increment_spool_metrics, insert_inbound_spool, list_inbound_spool, load_app_state,
-    recover_expired_inbound_spool_claims, release_claimed_inbound_spool,
+    increment_spool_metrics, insert_inbound_spool, insert_inbound_spool_if_retained,
+    list_inbound_spool, load_app_state, recover_expired_inbound_spool_claims,
+    release_claimed_inbound_spool,
 };
 use lili_storage::transaction::with_short_transaction;
 use lili_storage::{ApplicationPaths, JsonDocument, open, open_with_busy_timeout};
@@ -94,13 +95,7 @@ impl SqliteSpoolStore {
             // The database trigger applies the default Hook retention limits in this same
             // transaction; the desktop drain repeats policy enforcement before claiming.
             with_short_transaction(database.connection(), |connection| {
-                insert_inbound_spool(connection, &new_record)?;
-                Ok(find_inbound_spool(
-                    connection,
-                    event.provider.as_str(),
-                    event.event_id.as_str(),
-                )?
-                .is_some())
+                Ok(insert_inbound_spool_if_retained(connection, &new_record)?.is_some())
             })
             .map_err(database_query_error)?
         } else {
