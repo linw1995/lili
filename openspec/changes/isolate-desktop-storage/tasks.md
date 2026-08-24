@@ -7,7 +7,7 @@
 ## 2. SQLite Foundation and Schema
 
 - [x] 2.1 Add Diesel, Diesel migrations, and bundled SQLite dependencies through the pinned workspace/Flake toolchain; verify lockfiles and clean builds resolve the same SQLite implementation across supported targets.
-- [x] 2.2 Implement database opening and initialization with embedded migrations, `foreign_keys = ON`, WAL mode, and `busy_timeout = 5000`; verify first-open behavior and bounded connection errors.
+- [x] 2.2 Implement database opening and initialization with embedded migrations, `foreign_keys = ON`, WAL mode, a 5000ms desktop busy timeout, and a short Hook-specific busy timeout with a bounded initialization deadline; verify first-open behavior and bounded connection errors.
 - [x] 2.3 Add one initial schema for application metadata, compact reducer snapshots, inbound spool, and latest plugin evidence; verify JSON validity, state checks, unique spool identities, indexes, and retention-related constraints.
 - [x] 2.4 Add Diesel models, generated schema, typed codecs, and repositories for the compact projection, spool, and latest plugin evidence; verify business CRUD uses query-builder APIs and raw SQL appears only in the migration or fixed connection PRAGMAs.
 - [x] 2.5 Add initial-migration, rollback, constraint, and database-integrity tests; verify a failed migration or transaction does not leave a partially initialized application store.

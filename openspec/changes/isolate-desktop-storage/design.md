@@ -63,7 +63,7 @@ Alternatives considered:
 
 Create one SQLite database under the Lili application data root. Use Diesel's generated schema and query builder for repository operations, `diesel_migrations` for embedded schema migrations, and the bundled SQLite library so the desktop and hook binaries do not depend on a system SQLite installation.
 
-Every connection applies the same initialization contract: foreign keys are enabled, WAL mode is enabled for writable connections, and `busy_timeout` is set to 5 seconds. The database is owner-only, and its WAL/SHM sidecars remain inside the same protected application data directory.
+Normal desktop connections enable foreign keys, WAL mode for writable connections, and a 5-second `busy_timeout`. Hook connections use a separate short busy timeout and a bounded initialization deadline so a blocked SQLite writer cannot consume the Hook's lifecycle budget. The database is owner-only, and its WAL/SHM sidecars remain inside the same protected application data directory.
 
 The schema follows the reference storage pattern: stable query fields use typed columns and constraints, while the bounded session projection uses one validated JSON snapshot. The initial schema contains only:
 

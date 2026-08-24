@@ -90,15 +90,6 @@ pub async fn run_from_environment() -> HookResult {
         Ok(invocation) => invocation,
         Err(result) => return result,
     };
-    let application_paths = match ApplicationPaths::resolve() {
-        Ok(application_paths) => application_paths,
-        Err(_) => {
-            return HookResult::failure(
-                HookExitCode::DeliveryFailed,
-                "Lili application storage could not be resolved",
-            );
-        }
-    };
     match invocation {
         HookInvocation::Direct { payload, plugin_id } => {
             if plugin_id.is_some() && plugin_id.as_deref().is_some_and(str::is_empty) {
@@ -107,6 +98,10 @@ pub async fn run_from_environment() -> HookResult {
                     "plugin invocation identity is invalid",
                 );
             }
+            let application_paths = match ApplicationPaths::resolve() {
+                Ok(application_paths) => application_paths,
+                Err(_) => return application_storage_failure(),
+            };
             process_payload_with_source(
                 &application_paths,
                 &payload,
@@ -120,10 +115,22 @@ pub async fn run_from_environment() -> HookResult {
             payload,
         } => {
             let original_started = launch_original_notify(&original_argv, &payload);
-            let lili_result = process_payload(&application_paths, &payload, unix_time_ms()).await;
+            let lili_result = match ApplicationPaths::resolve() {
+                Ok(application_paths) => {
+                    process_payload(&application_paths, &payload, unix_time_ms()).await
+                }
+                Err(_) => application_storage_failure(),
+            };
             isolate_coexistence_result(original_started, lili_result)
         }
     }
+}
+
+fn application_storage_failure() -> HookResult {
+    HookResult::failure(
+        HookExitCode::DeliveryFailed,
+        "Lili application storage could not be resolved",
+    )
 }
 
 pub async fn process_payload(

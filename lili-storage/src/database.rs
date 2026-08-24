@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use diesel::Connection;
 use diesel::connection::SimpleConnection;
@@ -13,10 +13,8 @@ use crate::{ApplicationPaths, PathError, StorageError};
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
-const INITIALIZATION_RETRY_COUNT: usize = 100;
 const INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(25);
-// Keep this source dependency near the embedded migration so schema edits rebuild the binary.
-const BOUNDED_INITIALIZATION_RETRY_COUNT: usize = 2;
+const DEFAULT_INITIALIZATION_DEADLINE: Duration = Duration::from_secs(15);
 
 pub struct EmbeddedDatabase {
     connection: SqliteConnection,
@@ -29,48 +27,57 @@ impl EmbeddedDatabase {
 }
 
 pub fn open(paths: &ApplicationPaths) -> Result<EmbeddedDatabase, DatabaseError> {
-    open_with_options(paths, DEFAULT_BUSY_TIMEOUT, INITIALIZATION_RETRY_COUNT)
+    open_with_options(paths, DEFAULT_BUSY_TIMEOUT, DEFAULT_INITIALIZATION_DEADLINE)
 }
 
 pub fn open_with_busy_timeout(
     paths: &ApplicationPaths,
     busy_timeout: Duration,
 ) -> Result<EmbeddedDatabase, DatabaseError> {
-    open_with_options(paths, busy_timeout, BOUNDED_INITIALIZATION_RETRY_COUNT)
+    let initialization_deadline = busy_timeout + INITIALIZATION_RETRY_DELAY;
+    open_with_options(paths, busy_timeout, initialization_deadline)
 }
 
 fn open_with_options(
     paths: &ApplicationPaths,
     busy_timeout: Duration,
-    retry_count: usize,
+    initialization_deadline: Duration,
 ) -> Result<EmbeddedDatabase, DatabaseError> {
     paths.ensure_layout().map_err(DatabaseError::Storage)?;
-    let connection = connect_with_options(&paths.database_path(), busy_timeout, retry_count)?;
+    let connection = connect_with_options(
+        &paths.database_path(),
+        busy_timeout,
+        initialization_deadline,
+    )?;
     paths.ensure_layout().map_err(DatabaseError::Storage)?;
     Ok(EmbeddedDatabase { connection })
 }
 
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
-    connect_with_options(path, DEFAULT_BUSY_TIMEOUT, INITIALIZATION_RETRY_COUNT)
+    connect_with_options(path, DEFAULT_BUSY_TIMEOUT, DEFAULT_INITIALIZATION_DEADLINE)
 }
 
 fn connect_with_options(
     path: &Path,
     busy_timeout: Duration,
-    retry_count: usize,
+    initialization_deadline: Duration,
 ) -> Result<SqliteConnection, DatabaseError> {
-    let mut last_error = None;
-    for attempt in 0..=retry_count {
-        match connect_once(path, busy_timeout) {
+    let deadline = Instant::now() + initialization_deadline;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let attempt_timeout = busy_timeout.min(remaining);
+        match connect_once(path, attempt_timeout) {
             Ok(connection) => return Ok(connection),
-            Err(error) if error.is_retryable() && attempt < retry_count => {
-                last_error = Some(error);
-                thread::sleep(INITIALIZATION_RETRY_DELAY);
+            Err(error) if error.is_retryable() => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                thread::sleep(INITIALIZATION_RETRY_DELAY.min(remaining));
             }
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.expect("database initialization must produce an error"))
 }
 
 fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection, DatabaseError> {

@@ -16,7 +16,7 @@ use crate::{
 };
 
 const CLAIM_LEASE_MS: i64 = 30_000;
-const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(700);
+const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteSpoolStore {
@@ -92,20 +92,15 @@ impl SqliteSpoolStore {
             // drain retries retention when a concurrent hook still owns the SQLite writer lock.
             let maintenance = with_short_transaction(database.connection(), |connection| {
                 let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
-                record_retention_delta(connection, delta)
-            });
-            if maintenance.is_ok() {
-                match find_inbound_spool(
-                    database.connection(),
+                record_retention_delta(connection, delta)?;
+                Ok(find_inbound_spool(
+                    connection,
                     event.provider.as_str(),
                     event.event_id.as_str(),
-                ) {
-                    Ok(Some(_)) | Err(_) => true,
-                    Ok(None) => false,
-                }
-            } else {
-                true
-            }
+                )?
+                .is_some())
+            });
+            maintenance.unwrap_or(true)
         } else if stored {
             with_short_transaction(database.connection(), |connection| {
                 let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
