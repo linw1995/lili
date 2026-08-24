@@ -119,12 +119,25 @@ fn apply_pending_migrations(connection: &mut SqliteConnection) -> Result<(), Dat
     let applied =
         diesel::sql_query("SELECT version FROM __diesel_schema_migrations ORDER BY version ASC")
             .load::<MigrationVersionRow>(connection);
-    let is_current = applied.is_ok_and(|applied| {
-        applied
-            .iter()
-            .map(|migration| migration.version.as_str())
-            .eq(expected.iter().map(String::as_str))
-    });
+    let Ok(applied) = applied else {
+        connection
+            .run_pending_migrations(MIGRATIONS)
+            .map_err(DatabaseError::Migration)?;
+        return Ok(());
+    };
+    if let Some(unsupported) = applied
+        .iter()
+        .map(|migration| migration.version.as_str())
+        .find(|version| !expected.iter().any(|known| known == version))
+    {
+        return Err(DatabaseError::UnsupportedMigrationVersion(
+            unsupported.to_owned(),
+        ));
+    }
+    let is_current = applied
+        .iter()
+        .map(|migration| migration.version.as_str())
+        .eq(expected.iter().map(String::as_str));
     if !is_current {
         connection
             .run_pending_migrations(MIGRATIONS)
@@ -153,6 +166,7 @@ pub enum DatabaseError {
     Connection(diesel::ConnectionError),
     Configuration(diesel::result::Error),
     Migration(Box<dyn std::error::Error + Send + Sync>),
+    UnsupportedMigrationVersion(String),
 }
 
 impl fmt::Display for DatabaseError {
@@ -174,6 +188,12 @@ impl fmt::Display for DatabaseError {
             Self::Migration(error) => {
                 write!(formatter, "failed to apply database migrations: {error}")
             }
+            Self::UnsupportedMigrationVersion(version) => {
+                write!(
+                    formatter,
+                    "database contains unsupported migration version: {version}"
+                )
+            }
         }
     }
 }
@@ -187,6 +207,7 @@ impl std::error::Error for DatabaseError {
             Self::Connection(error) => Some(error),
             Self::Configuration(error) => Some(error),
             Self::Migration(error) => Some(&**error),
+            Self::UnsupportedMigrationVersion(_) => None,
         }
     }
 }
@@ -308,6 +329,39 @@ mod tests {
     }
 
     #[test]
+    fn divergent_equal_revision_update_is_rejected() {
+        let paths = temporary_paths();
+        let mut database = open(&paths).unwrap();
+        let current = AppStateRow {
+            id: 1,
+            selected_pet_id: Some("new-pet".to_owned()),
+            window_placement_json: None,
+            reducer_json: Some(r#"{"revision":2,"state":"current"}"#.to_owned()),
+            reducer_revision: 2,
+            spool_expired_drops: 0,
+            spool_limit_drops: 0,
+            spool_malformed_drops: 0,
+        };
+        update_app_state(database.connection(), &current).unwrap();
+
+        let divergent = AppStateRow {
+            reducer_json: Some(r#"{"revision":2,"state":"divergent"}"#.to_owned()),
+            selected_pet_id: Some("old-pet".to_owned()),
+            ..current
+        };
+        assert!(!update_app_state_if_newer(database.connection(), &divergent).unwrap());
+
+        let persisted = load_app_state(database.connection()).unwrap();
+        assert_eq!(persisted.selected_pet_id.as_deref(), Some("new-pet"));
+        assert_eq!(
+            persisted.reducer_json.as_deref(),
+            Some(r#"{"revision":2,"state":"current"}"#)
+        );
+        drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
     fn connection_enables_foreign_keys_and_wal() {
         let paths = temporary_paths();
         let mut database = open(&paths).unwrap();
@@ -345,6 +399,24 @@ mod tests {
             .count;
         assert_eq!(count, 1);
         drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn newer_migration_versions_fail_closed() {
+        let paths = temporary_paths();
+        let mut database = open(&paths).unwrap();
+        diesel::sql_query(
+            "INSERT INTO __diesel_schema_migrations (version, run_on) VALUES ('00000000000099', CURRENT_TIMESTAMP)",
+        )
+        .execute(database.connection())
+        .unwrap();
+        drop(database);
+
+        assert!(matches!(
+            open(&paths),
+            Err(DatabaseError::UnsupportedMigrationVersion(version)) if version == "00000000000099"
+        ));
         fs::remove_dir_all(paths.root()).unwrap();
     }
 
