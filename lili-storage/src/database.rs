@@ -104,9 +104,10 @@ fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection,
     } else {
         None
     };
-    if !journal_mode
-        .as_deref()
-        .is_some_and(|mode| mode.eq_ignore_ascii_case("wal"))
+    if !database_exists
+        || journal_mode
+            .as_deref()
+            .is_some_and(|mode| !mode.eq_ignore_ascii_case("wal"))
     {
         connection
             .batch_execute("PRAGMA journal_mode = WAL;")
@@ -381,6 +382,28 @@ mod tests {
             .journal_mode;
 
         assert_eq!(foreign_keys, 1);
+        assert_eq!(journal_mode, "wal");
+        drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn existing_non_wal_database_is_repaired() {
+        let paths = temporary_paths();
+        fs::create_dir_all(paths.root()).unwrap();
+        let mut connection =
+            SqliteConnection::establish(paths.database_path().to_str().unwrap()).unwrap();
+        connection
+            .batch_execute("PRAGMA journal_mode = DELETE;")
+            .unwrap();
+        drop(connection);
+
+        let mut database = open(&paths).unwrap();
+        let journal_mode = diesel::sql_query("PRAGMA journal_mode")
+            .get_result::<JournalModeRow>(database.connection())
+            .unwrap()
+            .journal_mode;
+
         assert_eq!(journal_mode, "wal");
         drop(database);
         fs::remove_dir_all(paths.root()).unwrap();
