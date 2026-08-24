@@ -6,14 +6,16 @@ use lili_storage::{
     ApplicationPaths, DatabaseError, JsonDocument,
     models::AppStateRow,
     open,
-    repository::{load_app_state, update_app_state_if_newer},
+    repository::{load_app_state, update_app_state_if_newer, update_selected_pet},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const PERSISTENCE_VERSION: u16 = 1;
 const MAX_DISPLAY_ID_CHARS: usize = 256;
-const MAX_REDUCER_SNAPSHOT_BYTES: usize = 512 * 1024;
+// This leaves headroom for the reducer's maximum bounded session and notification projection,
+// including UTF-8 expansion and JSON escaping of display-safe values.
+const MAX_REDUCER_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOGICAL_COORDINATE: i32 = 1_000_000;
 const MIN_SCALE_MILLI: u32 = 250;
 const MAX_SCALE_MILLI: u32 = 8_000;
@@ -287,35 +289,35 @@ impl AppStateStore {
     }
 
     pub fn save(&self, state: &PersistentApplicationState) -> Result<(), PersistenceError> {
-        self.save_with_selected_pet_policy(state, false)
+        self.save_with_selected_pet_policy(state)
     }
 
     pub fn save_selected_pet(
         &self,
         state: &PersistentApplicationState,
     ) -> Result<(), PersistenceError> {
-        self.save_with_selected_pet_policy(state, true)
+        state.validate()?;
+        let mut database = open(&self.paths)?;
+        update_selected_pet(
+            database.connection(),
+            state.selected_pet_id.as_ref().map(PetId::as_str),
+        )?;
+        Ok(())
     }
 
     fn save_with_selected_pet_policy(
         &self,
         state: &PersistentApplicationState,
-        replace_selected_pet: bool,
     ) -> Result<(), PersistenceError> {
         state.validate()?;
         let mut database = open(&self.paths)?;
         let existing = load_app_state(database.connection())?;
-        let selected_pet_id = replace_selected_pet
-            .then_some(state.selected_pet_id.as_ref())
-            .flatten()
-            .map(|value| value.as_str().to_owned())
-            .or(existing.selected_pet_id)
-            .or_else(|| {
-                state
-                    .selected_pet_id
-                    .as_ref()
-                    .map(|value| value.as_str().to_owned())
-            });
+        let selected_pet_id = existing.selected_pet_id.or_else(|| {
+            state
+                .selected_pet_id
+                .as_ref()
+                .map(|value| value.as_str().to_owned())
+        });
         let row = app_state_row(state, existing.window_placement_json, selected_pet_id)?;
         update_app_state_if_newer(database.connection(), &row)?;
         Ok(())
@@ -431,7 +433,15 @@ mod tests {
         store.save(&state("lili", 10)).unwrap();
         let replacement = state("custom-pet", 30);
         store.save_selected_pet(&replacement).unwrap();
-        assert_eq!(store.load().unwrap(), Some(replacement));
+        assert_eq!(
+            store
+                .load()
+                .unwrap()
+                .unwrap()
+                .selected_pet_id()
+                .map(PetId::as_str),
+            Some("custom-pet")
+        );
         assert!(store.database_path().is_file());
         assert!(paths.root().is_dir());
     }
@@ -454,6 +464,27 @@ mod tests {
                 .map(|value| value.as_str()),
             Some("custom-pet")
         );
+    }
+
+    #[test]
+    fn selected_pet_save_updates_preferences_after_a_newer_reducer_revision() {
+        let temp = TempDir::new();
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        store.save(&state("lili", 10)).unwrap();
+
+        let mut database = lili_storage::open(&paths).unwrap();
+        let mut row = lili_storage::repository::load_app_state(database.connection()).unwrap();
+        row.reducer_revision = 2;
+        lili_storage::repository::update_app_state(database.connection(), &row).unwrap();
+        drop(database);
+
+        store.save_selected_pet(&state("custom-pet", 20)).unwrap();
+
+        let mut database = lili_storage::open(&paths).unwrap();
+        let row = lili_storage::repository::load_app_state(database.connection()).unwrap();
+        assert_eq!(row.reducer_revision, 2);
+        assert_eq!(row.selected_pet_id.as_deref(), Some("custom-pet"));
     }
 
     #[test]

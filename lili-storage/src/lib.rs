@@ -209,8 +209,10 @@ fn platform_state_base(
 ) -> Result<PathBuf, PathError> {
     #[cfg(target_os = "linux")]
     {
-        Ok(non_empty_path(get_env, "XDG_STATE_HOME")
-            .unwrap_or(home_directory(get_env)?.join(".local").join("state")))
+        if let Some(path) = non_empty_path(get_env, "XDG_STATE_HOME") {
+            return Ok(path);
+        }
+        Ok(home_directory(get_env)?.join(".local").join("state"))
     }
 
     #[cfg(target_os = "macos")]
@@ -222,8 +224,10 @@ fn platform_state_base(
 
     #[cfg(target_os = "windows")]
     {
-        Ok(non_empty_path(get_env, "LOCALAPPDATA")
-            .unwrap_or(home_directory(get_env)?.join("AppData").join("Local")))
+        if let Some(path) = non_empty_path(get_env, "LOCALAPPDATA") {
+            return Ok(path);
+        }
+        Ok(home_directory(get_env)?.join("AppData").join("Local"))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -320,6 +324,21 @@ mod tests {
 
         assert!(!paths.starts_with("/Users/example/Documents/codex"));
         assert!(paths.is_absolute());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn absolute_xdg_state_home_does_not_require_home() {
+        let paths = platform_application_root_from(|name| match name {
+            "XDG_STATE_HOME" => Some(OsString::from("/tmp/lili-state")),
+            _ => None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            paths,
+            PathBuf::from("/tmp/lili-state").join(APPLICATION_IDENTIFIER)
+        );
     }
 
     #[test]

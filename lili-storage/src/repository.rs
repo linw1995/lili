@@ -49,6 +49,16 @@ pub fn update_app_state_if_newer(
     Ok(updated == 1)
 }
 
+pub fn update_selected_pet(
+    connection: &mut SqliteConnection,
+    selected_pet_id: Option<&str>,
+) -> QueryResult<()> {
+    diesel::update(app_state::table.find(1))
+        .set(app_state::selected_pet_id.eq(selected_pet_id))
+        .execute(connection)?;
+    Ok(())
+}
+
 pub fn increment_spool_metrics(
     connection: &mut SqliteConnection,
     expired_drops: i64,
