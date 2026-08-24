@@ -143,7 +143,6 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         &state,
     );
     app.manage(DesktopPersistence {
-        state: state.clone(),
         store: state_store.clone(),
     });
     app.manage(WindowDragState::default());
@@ -832,7 +831,6 @@ fn ensure_window_reachable(window: &tauri::WebviewWindow) {
 
 #[derive(Clone)]
 struct DesktopPersistence {
-    state: AppState,
     store: Option<AppStateStore>,
 }
 
@@ -1112,9 +1110,8 @@ async fn commit_window_position(
     };
     let placement = current_window_placement(&window)
         .ok_or_else(|| "window placement could not be determined".to_owned())?;
-    let state = persistence.state.persistent_state(Some(placement)).await;
     store
-        .save(&state)
+        .save_window_placement(&placement)
         .map_err(|error| format!("window placement could not be saved: {error}"))?;
     Ok(true)
 }

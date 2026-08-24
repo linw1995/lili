@@ -3,7 +3,8 @@ use diesel::result::QueryResult;
 use diesel::sqlite::SqliteConnection;
 
 use crate::models::{
-    AppStateRow, InboundSpoolRow, NewInboundSpool, NewPluginEvidence, PluginEvidenceRow,
+    AppStateRow, InboundSpoolRow, JsonDocument, NewInboundSpool, NewPluginEvidence,
+    PluginEvidenceRow,
 };
 use crate::schema::{app_state, inbound_spool, plugin_evidence};
 use crate::transaction::with_short_transaction;
@@ -55,6 +56,16 @@ pub fn update_selected_pet(
 ) -> QueryResult<()> {
     diesel::update(app_state::table.find(1))
         .set(app_state::selected_pet_id.eq(selected_pet_id))
+        .execute(connection)?;
+    Ok(())
+}
+
+pub fn update_window_placement(
+    connection: &mut SqliteConnection,
+    window_placement_json: Option<&JsonDocument>,
+) -> QueryResult<()> {
+    diesel::update(app_state::table.find(1))
+        .set(app_state::window_placement_json.eq(window_placement_json))
         .execute(connection)?;
     Ok(())
 }

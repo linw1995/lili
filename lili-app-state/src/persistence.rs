@@ -6,7 +6,9 @@ use lili_storage::{
     ApplicationPaths, DatabaseError, JsonDocument,
     models::AppStateRow,
     open,
-    repository::{load_app_state, update_app_state_if_newer, update_selected_pet},
+    repository::{
+        load_app_state, update_app_state_if_newer, update_selected_pet, update_window_placement,
+    },
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -266,15 +268,20 @@ impl AppStateStore {
     pub fn load(&self) -> Result<Option<PersistentApplicationState>, PersistenceError> {
         let mut database = open(&self.paths)?;
         let row = load_app_state(database.connection())?;
-        let Some(reducer_json) = row.reducer_json else {
-            return Ok(None);
+        let reducer = match row.reducer_json {
+            Some(reducer_json) => {
+                if reducer_json.len() > MAX_REDUCER_SNAPSHOT_BYTES {
+                    return Err(PersistenceError::ReducerSnapshotTooLarge(
+                        reducer_json.len(),
+                    ));
+                }
+                serde_json::from_str::<SessionReducerState>(reducer_json.as_str())?
+            }
+            None if row.selected_pet_id.is_some() || row.window_placement_json.is_some() => {
+                SessionReducer::default().persistent_state()
+            }
+            None => return Ok(None),
         };
-        if reducer_json.len() > MAX_REDUCER_SNAPSHOT_BYTES {
-            return Err(PersistenceError::ReducerSnapshotTooLarge(
-                reducer_json.len(),
-            ));
-        }
-        let reducer = serde_json::from_str::<SessionReducerState>(reducer_json.as_str())?;
         let selected_pet_id = row
             .selected_pet_id
             .map(|value| PetId::parse(value).ok_or(PersistenceError::InvalidSelectedPet))
@@ -302,6 +309,17 @@ impl AppStateStore {
             database.connection(),
             state.selected_pet_id.as_ref().map(PetId::as_str),
         )?;
+        Ok(())
+    }
+
+    pub fn save_window_placement(
+        &self,
+        placement: &WindowPlacement,
+    ) -> Result<(), PersistenceError> {
+        placement.validate()?;
+        let window_placement_json = json_document(placement)?;
+        let mut database = open(&self.paths)?;
+        update_window_placement(database.connection(), Some(&window_placement_json))?;
         Ok(())
     }
 
@@ -485,6 +503,42 @@ mod tests {
         let row = lili_storage::repository::load_app_state(database.connection()).unwrap();
         assert_eq!(row.reducer_revision, 2);
         assert_eq!(row.selected_pet_id.as_deref(), Some("custom-pet"));
+    }
+
+    #[test]
+    fn selected_pet_save_restores_before_the_first_reducer_snapshot() {
+        let temp = TempDir::new();
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let store = AppStateStore::for_application(paths);
+
+        store.save_selected_pet(&state("custom-pet", 20)).unwrap();
+
+        let restored = store.load().unwrap().unwrap();
+        assert_eq!(
+            restored.selected_pet_id().map(PetId::as_str),
+            Some("custom-pet")
+        );
+        assert_eq!(restored.into_reducer_state().revision(), 0);
+    }
+
+    #[test]
+    fn window_placement_save_survives_a_newer_reducer_revision() {
+        let temp = TempDir::new();
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        store.save(&state("lili", 10)).unwrap();
+
+        let mut database = lili_storage::open(&paths).unwrap();
+        let mut row = lili_storage::repository::load_app_state(database.connection()).unwrap();
+        row.reducer_revision = 2;
+        lili_storage::repository::update_app_state(database.connection(), &row).unwrap();
+        drop(database);
+
+        let placement = WindowPlacement::new("display-2", 80, 40, 1_500).unwrap();
+        store.save_window_placement(&placement).unwrap();
+
+        let restored = store.load().unwrap().unwrap();
+        assert_eq!(restored.window_placement(), Some(&placement));
     }
 
     #[test]
