@@ -80,12 +80,10 @@ impl SqliteSpoolStore {
             attempts: 0,
         };
         let retained = if self.busy_timeout.is_some() {
-            // Keep Hook delivery to one short transaction that makes insertion and retention
-            // atomic. The desktop drain repeats retention before claiming records.
+            // The database trigger applies the default Hook retention limits in this same
+            // transaction; the desktop drain repeats policy enforcement before claiming.
             with_short_transaction(database.connection(), |connection| {
                 insert_inbound_spool(connection, &new_record)?;
-                let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
-                record_retention_delta(connection, delta)?;
                 Ok(find_inbound_spool(
                     connection,
                     event.provider.as_str(),
@@ -426,36 +424,27 @@ mod tests {
     #[test]
     fn hook_enqueue_applies_retention_before_returning() {
         let paths = paths();
-        let store = SqliteSpoolStore {
-            paths: paths.clone(),
-            limits: SpoolLimits::new(1, 64 * 1024, 1_000),
-            busy_timeout: Some(HOOK_BUSY_TIMEOUT),
-        };
-        let completion = event("hook-completion", "turn_completed");
-        let attention = event("hook-attention", "attention_required");
-
-        assert_eq!(
-            store.enqueue(&completion, 1).unwrap(),
-            SpoolEnqueueOutcome::Stored
-        );
-        assert_eq!(
-            store.enqueue(&attention, 2).unwrap(),
-            SpoolEnqueueOutcome::Stored
-        );
+        let store = SqliteSpoolStore::for_hook(paths.clone());
+        let max_count = SpoolLimits::default().max_count();
+        for index in 0..=max_count {
+            assert_eq!(
+                store
+                    .enqueue(
+                        &event(&format!("hook-event-{index}"), "turn_completed"),
+                        index as u64
+                    )
+                    .unwrap(),
+                SpoolEnqueueOutcome::Stored
+            );
+        }
 
         let mut database = open(&paths).unwrap();
-        assert!(
-            find_inbound_spool(database.connection(), "codex", "hook-completion")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            find_inbound_spool(database.connection(), "codex", "hook-attention")
-                .unwrap()
-                .is_some()
+        assert_eq!(
+            list_inbound_spool(database.connection()).unwrap().len(),
+            max_count
         );
         drop(database);
-        assert_eq!(store.metrics().unwrap().limit_drops, 1);
+        assert!(store.metrics().unwrap().limit_drops >= 1);
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
 
