@@ -16,8 +16,8 @@ Lili may process and retain the following data on the user's device:
 
 | Category | Examples | Purpose |
 | --- | --- | --- |
-| Normalized session metadata | Provider, event, session and optional turn identifiers; lifecycle kind; occurrence time; bounded project basename; bounded redacted display summary | Present the pet state and notifications, order events, and deduplicate repeated delivery |
-| Application state | Selected pet identifier, window placement, bounded session reducer state, and unread notifications in the local SQLite database | Restore the local desktop experience after restart |
+| Normalized session metadata | Latest provider, event, session and optional turn identifiers; lifecycle kind; occurrence time; bounded project basename; bounded redacted display summary | Present the pet state and latest notification for each Session |
+| Application state | Selected pet identifier, window placement, and one bounded latest-state projection per Session in the local SQLite database | Restore the local desktop experience after restart |
 | Offline delivery records | Normalized events and aggregate expired, limit, and malformed-drop counters in the local SQLite database | Recover bounded events while the desktop endpoint is unavailable |
 | Integration metadata | Installed/enabled status, versions, hook source, IPC compatibility, last accepted plugin event metadata, legacy provenance, expected hashes, and backup paths | Diagnose compatibility, migrate safely, and remove only Lili-owned legacy entries |
 | Local authentication material | Rotating instance identifier, endpoint address, message-authentication secret, and replay nonces | Authenticate the local forwarder to the current desktop instance |
@@ -42,8 +42,8 @@ Visiting GitHub pages, downloading a release, opening a support issue, or using 
 
 ## Retention
 
-- SQLite application state remains until it is replaced by newer bounded state or the user deletes the Lili application data.
-- Unread notifications and bounded reducer metadata remain in application state for restart recovery.
+- SQLite application state remains until it is replaced by a newer bounded projection or the user deletes the Lili application data.
+- At most one latest notification and current state projection per Session remain in application state for restart recovery.
 - Offline spool records are bounded to 256 records, 4 MiB total, and 24 hours by default; older and excess records are dropped.
 - Runtime forwarding credentials last only for the current desktop instance and are removed on orderly shutdown.
 - The action audit is memory-only and bounded to recent entries; captured stdout and stderr content is not included in the audit.

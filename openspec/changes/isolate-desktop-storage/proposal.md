@@ -8,7 +8,7 @@ The storage boundary must be corrected before more desktop features are added. T
 
 - **BREAKING** Remove `CODEX_HOME` resolution from the normal desktop runtime and from the hook forwarder.
 - Add a shared application-storage path resolver used by the Tauri desktop process and standalone hook binary.
-- Store structured desktop state, reducer/session records, plugin evidence, and offline spool data in a versioned SQLite database under the platform-native Lili application data directory.
+- Store the compact latest per-Session desktop state projection, plugin evidence, and offline spool data in a versioned SQLite database under the platform-native Lili application data directory.
 - Keep Pet assets in an application-owned file tree, keep human-edited actions in `actions.toml`, and keep short-lived runtime credentials and endpoint metadata in owner-only runtime files.
 - Preserve the Pet v2 manifest and atlas format while removing the `${CODEX_HOME}/pets` location contract.
 - Limit Codex filesystem access to explicit `lili integrate` commands that the user invokes; startup and event forwarding must not inspect Codex files.

@@ -16,7 +16,7 @@ Only the third responsibility should touch `CODEX_HOME`. The first two must work
 
 - Make the desktop runtime and hook forwarder independent of `CODEX_HOME`.
 - Use one deterministic, platform-native Lili storage layout shared by Tauri and standalone native binaries.
-- Use SQLite as the authoritative store for structured state, reducer/session records, plugin evidence, and offline recovery data, with database-level concurrency and integrity guarantees.
+- Use SQLite as the authoritative store for the compact latest per-Session state projection, plugin evidence, and offline recovery data, with database-level concurrency and integrity guarantees.
 - Keep Pet assets, human-edited action configuration, and short-lived runtime credentials separated from the database and protected with appropriate local permissions.
 - Preserve the Pet v2 manifest and atlas contract while changing the package location to an Lili-owned directory.
 - Make Codex access explicit, auditable, and limited to user-invoked integration commands.
@@ -65,18 +65,15 @@ Create one SQLite database under the Lili application data root. Use Diesel's ge
 
 Every connection applies the same initialization contract: foreign keys are enabled, WAL mode is enabled for writable connections, and `busy_timeout` is set to 5 seconds. The database is owner-only, and its WAL/SHM sidecars remain inside the same protected application data directory.
 
-The schema follows the reference storage pattern: stable query fields use typed columns and constraints, while bounded nested details use validated JSON text fields. The initial tables are:
+The schema follows the reference storage pattern: stable query fields use typed columns and constraints, while the bounded session projection uses one validated JSON snapshot. The initial schema contains only:
 
-- `app_state`: one row for selected Pet, window placement, reducer revision, and other small application metadata;
-- `sessions`, `turns`, and `notifications`: bounded persisted session presentation state with stable identities and timestamps;
-- `recent_events`: deduplication identities retained within a strict bound;
-- `inbound_spool`: normalized offline events with priority, lease/claim metadata, and retention timestamps;
-- `plugin_evidence`: authenticated plugin diagnostics and bounded metadata;
-- `lifecycle_events`: append-only transition records for state changes and recovery decisions.
+- `app_state`: one row for selected Pet, window placement, reducer revision, and a compact reducer snapshot containing the current state and at most one latest notification per Session;
+- `inbound_spool`: normalized offline events with priority, lease/claim metadata, and retention timestamps; rows exist only until delivery is committed or retention evicts them;
+- `plugin_evidence`: the latest authenticated plugin diagnostics and bounded metadata.
 
-The reducer remains the in-memory authority for rendering. A reducer transition, its persisted state changes, and its lifecycle event are committed in one short transaction. Hook claims, acknowledgements, and spool eviction also use short transactions. No transaction may remain open while waiting for a socket, process, WebView, or external command.
+The reducer remains the in-memory authority for rendering. A reducer transition replaces the current application projection in one short database update. Event history, a persisted deduplication log, and separate session/turn/notification tables are intentionally excluded because they duplicate the reducer projection and are not required after restart. Hook claims, acknowledgements, and spool eviction also use short transactions. No transaction may remain open while waiting for a socket, process, WebView, or external command.
 
-Business CRUD uses Diesel repositories rather than handwritten SQL. Raw SQL is limited to embedded migration files and the fixed connection PRAGMAs. Schema constraints enforce valid enum values, JSON validity, unique event identities, bounded ownership relationships, and immutable lifecycle events. Retention keeps recent events and spool records bounded rather than allowing an unbounded database.
+Business CRUD uses Diesel repositories rather than handwritten SQL. Raw SQL is limited to embedded migration files and the fixed connection PRAGMAs. Schema constraints enforce valid identities, JSON validity, state values, unique spool identities, and bounded timestamps. The only multi-row retention policy applies to the temporary inbound spool; the durable application projection is replaced rather than appended.
 
 Alternatives considered:
 
@@ -151,7 +148,7 @@ Rollback means running the previous application version against its untouched ol
 - [Users lose automatic access to old state and external Pet packages] → State the breaking change prominently, keep old files untouched, and provide the embedded Pet as the clean default.
 - [The Tauri resolver and standalone hook resolver can diverge on one platform] → Centralize the resolver, assert the same application identity and relative layout in platform tests, and run packaged hook-to-desktop acceptance.
 - [SQLite migrations or lock contention can prevent startup or event delivery] → Embed migrations, configure WAL and a bounded busy timeout, keep transactions short, fail closed on migration errors, and test concurrent desktop/hook access.
-- [Database corruption can affect more state than one JSON file] → Enforce foreign keys, JSON validity, unique identities, immutable lifecycle records, bounded retention, owner-only permissions, and explicit integrity diagnostics.
+- [Database corruption can affect more state than one JSON file] → Enforce JSON validity, unique spool identities, bounded projections, owner-only permissions, and explicit integrity diagnostics.
 - [An existing hook may stop working until the new runtime contract is provisioned] → Make explicit integration verification report the required reinstallation state; never silently mutate Codex configuration during desktop startup.
 - [Application-data permissions can still be changed or denied by the user] → Fail closed, report a bounded diagnostic, and do not search for a fallback path.
 - [A user-configured action may intentionally execute in a protected directory] → Keep action execution explicit, argv-only, and user-configured; do not use action working directories as a startup storage mechanism.

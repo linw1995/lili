@@ -20,7 +20,7 @@ The desktop runtime and event forwarder MUST resolve persistent, configuration, 
 
 ### Requirement: Keep desktop-owned data separated by purpose
 
-The desktop runtime MUST store structured application state, reducer/session records, notifications, offline spool records, plugin evidence, and lifecycle metadata in a versioned SQLite database under the Lili application data root. Pet assets MUST remain in the Lili-owned Pet file tree, action configuration MUST remain in the Lili-owned configuration root, and credentials and endpoint metadata MUST remain in owner-only runtime storage where the platform supports it.
+The desktop runtime MUST store application metadata, a compact latest per-Session state projection, offline spool records, and latest plugin evidence in a versioned SQLite database under the Lili application data root. Pet assets MUST remain in the Lili-owned Pet file tree, action configuration MUST remain in the Lili-owned configuration root, and credentials and endpoint metadata MUST remain in owner-only runtime storage where the platform supports it.
 
 #### Scenario: Desktop persists state on shutdown
 
@@ -34,7 +34,7 @@ The desktop runtime MUST store structured application state, reducer/session rec
 
 ### Requirement: Open a versioned SQLite database with a fixed connection contract
 
-The desktop and hook processes MUST open the same Lili-owned SQLite database through a shared path resolver. The database MUST use embedded migrations, foreign-key enforcement, WAL mode for writable connections, and a bounded busy timeout. A new database MUST start at the current schema without reading any previous Codex-rooted storage.
+The desktop and hook processes MUST open the same Lili-owned SQLite database through a shared path resolver. The database MUST use one embedded initial schema, WAL mode for writable connections, and a bounded busy timeout. A new database MUST start at the current schema without reading any previous Codex-rooted storage.
 
 #### Scenario: First launch creates the application database
 
@@ -48,12 +48,12 @@ The desktop and hook processes MUST open the same Lili-owned SQLite database thr
 
 ### Requirement: Commit state transitions and spool claims transactionally
 
-Structured state changes, lifecycle records, spool claims, acknowledgements, and retention decisions MUST use short database transactions. A transition and its corresponding lifecycle record MUST commit together or neither change MUST become visible. Transactions MUST NOT remain open while waiting for sockets, WebViews, processes, or other external work.
+Structured state replacement, spool claims, acknowledgements, and retention decisions MUST use short database transactions. A reducer transition MUST replace the current projection atomically or leave the prior projection visible. Transactions MUST NOT remain open while waiting for sockets, WebViews, processes, or other external work.
 
 #### Scenario: Reducer transition is interrupted
 
-- **WHEN** persisting a reducer transition fails after the state update is attempted but before its lifecycle record is committed
-- **THEN** the database rolls back the state update and lifecycle record together, leaving the prior consistent state recoverable
+- **WHEN** persisting a reducer transition fails after the projection update is attempted
+- **THEN** the database leaves the prior projection visible, and the in-memory reducer restores its previous state
 
 #### Scenario: Two hooks claim one spool record
 
@@ -62,21 +62,21 @@ Structured state changes, lifecycle records, spool claims, acknowledgements, and
 
 ### Requirement: Enforce database invariants and bounded retention
 
-The storage layer MUST enforce typed state constraints, valid JSON for structured detail fields, unique event identities, valid ownership relationships, immutable lifecycle records, and bounded retention for recent identities, notifications, and offline events.
+The storage layer MUST enforce valid JSON, valid spool state values, unique spool event identities, and bounded retention for temporary offline events. The durable application projection MUST be replaced rather than appended.
 
 #### Scenario: Invalid structured detail is written
 
 - **WHEN** a repository receives malformed JSON or an invalid state value
 - **THEN** the write is rejected by validation or a database constraint and the existing record remains unchanged
 
-#### Scenario: Lifecycle record is changed after insertion
+#### Scenario: More than one notification exists for a Session
 
-- **WHEN** an operation attempts to update or delete an immutable lifecycle record
-- **THEN** the database rejects the operation and preserves the original record
+- **WHEN** a reducer snapshot is persisted after a Session has produced multiple notifications
+- **THEN** the durable projection contains only the latest notification for that Session, while the in-memory reducer may retain the complete current lifecycle
 
 #### Scenario: Retention limit is reached
 
-- **WHEN** recent event identities or offline spool records exceed their configured bound
+- **WHEN** offline spool records exceed their configured bound
 - **THEN** retention removes only records allowed by the priority and age policy and never allows unbounded database growth
 
 ### Requirement: Preserve Pet v2 format without Codex location compatibility

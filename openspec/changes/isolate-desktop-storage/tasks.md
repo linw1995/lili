@@ -8,14 +8,14 @@
 
 - [x] 2.1 Add Diesel, Diesel migrations, and bundled SQLite dependencies through the pinned workspace/Flake toolchain; verify lockfiles and clean builds resolve the same SQLite implementation across supported targets.
 - [x] 2.2 Implement database opening and initialization with embedded migrations, `foreign_keys = ON`, WAL mode, and `busy_timeout = 5000`; verify first-open behavior and bounded connection errors.
-- [x] 2.3 Add the initial schema for application metadata, sessions, turns, notifications, recent event identities, inbound spool, plugin evidence, and immutable lifecycle events; verify foreign keys, enum checks, JSON validity, unique identities, indexes, and retention-related constraints.
-- [x] 2.4 Add Diesel models, generated schema, typed codecs, and repository functions for the new tables; verify business CRUD uses query-builder APIs and raw SQL appears only in migrations or fixed connection PRAGMAs.
-- [x] 2.5 Add migration, rollback, constraint, immutable-event, and database-integrity tests; verify a failed migration or transaction does not leave a partially initialized application store.
+- [x] 2.3 Add one initial schema for application metadata, compact reducer snapshots, inbound spool, and latest plugin evidence; verify JSON validity, state checks, unique spool identities, indexes, and retention-related constraints.
+- [x] 2.4 Add Diesel models, generated schema, typed codecs, and repositories for the compact projection, spool, and latest plugin evidence; verify business CRUD uses query-builder APIs and raw SQL appears only in the migration or fixed connection PRAGMAs.
+- [x] 2.5 Add initial-migration, rollback, constraint, and database-integrity tests; verify a failed migration or transaction does not leave a partially initialized application store.
 
 ## 3. Persisted Application State and Pet Resources
 
-- [x] 3.1 Replace `AppStateStore` JSON persistence with a SQLite repository for application metadata, selected Pet, window placement, reducer revision, session/turn state, notifications, and recent event identities; verify the restored reducer snapshot matches the pre-restart state.
-- [x] 3.2 Persist reducer transitions and lifecycle records in one short transaction; verify a simulated failure rolls back both the state mutation and its lifecycle record.
+- [x] 3.1 Replace `AppStateStore` JSON persistence with a SQLite repository for application metadata, selected Pet, window placement, reducer revision, and one latest state projection per Session; verify the restored reducer snapshot matches the compact persisted state.
+- [x] 3.2 Persist reducer transitions by replacing the current projection in one short database operation; verify failed persistence restores the in-memory reducer and does not append event history.
 - [x] 3.3 Remove the separate legacy selection-file path and make selected Pet state database-backed while retaining only the embedded fallback when the selected app-owned package is unavailable; verify `${CODEX_HOME}/lili/selected-pet.json` is ignored and untouched.
 - [x] 3.4 Refactor Pet catalog discovery to scan only the application-owned `pets/<id>` file tree while preserving Pet v2 validation; verify packages under `${CODEX_HOME}/pets` and `${CODEX_HOME}/pet` are ignored and untouched.
 - [x] 3.5 Move action configuration to the application-owned `actions.toml` path and update the action context to stop modeling `CODEX_HOME`; verify missing, malformed, and valid configuration behavior from the new root.
@@ -42,7 +42,7 @@
 
 ## 7. Verification and Packaged Acceptance
 
-- [x] 7.1 Add unit and integration coverage for schema migrations, transaction rollback, immutable lifecycle records, JSON constraints, retention bounds, cross-process claims, and restart recovery.
+- [x] 7.1 Add unit and integration coverage for the single schema migration, transaction rollback, JSON constraints, compact projection bounds, spool retention, cross-process claims, and restart recovery.
 - [x] 7.2 Update macOS, Windows, and Linux desktop acceptance fixtures to provision isolated Lili application roots and SQLite stores while keeping Codex configuration in a separate sentinel root; verify platform-native paths, permissions, WAL sidecars, and hook delivery.
 - [x] 7.3 Run the complete Flake-provided Rust checks, tests, Web tests, packaged desktop smoke/acceptance, plugin checks, and `openspec validate --changes --strict --no-interactive`; verify all gates pass without modifying lockfiles or user Codex data.
 

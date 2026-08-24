@@ -20,7 +20,7 @@ The desktop runtime and Hook use the platform-native Lili application root. `COD
 
 | Path | Lifetime | Contents |
 | --- | --- | --- |
-| `<LILI_DATA>/lili.sqlite3` | Persistent | Application state, reducer/session records, notifications, recent identities, normalized offline spool, plugin evidence, and lifecycle records. |
+| `<LILI_DATA>/lili.sqlite3` | Persistent | Application metadata, one latest state projection per Session, unconsumed offline spool records, and the latest plugin evidence. |
 | `<LILI_DATA>/pets/<id>/` | User managed | Validated Pet v2 manifests and spritesheets owned by Lili. |
 | `<LILI_DATA>/config/actions.toml` | User managed | Action identifiers, filters, executable argv, limits, working-directory policy, and explicit environment additions. |
 | `<LILI_DATA>/runtime/forwarding.json` | Current desktop instance | Instance identifier, local endpoint, and secret used to authenticate forwarding. Owner-only and removed on orderly shutdown. |
@@ -33,14 +33,14 @@ The desktop runtime and Hook use the platform-native Lili application root. `COD
 
 ## Retained metadata and excluded content
 
-Lili retains only the metadata needed for display, deduplication, recovery, and audit:
+Lili retains only the metadata needed for display and recovery:
 
-- provider, event, session, and optional turn identities;
-- normalized lifecycle kind and occurrence time;
-- bounded project label and display-safe summary;
-- unread notification state and bounded reducer ordering metadata;
+- the latest provider, event, session, and optional turn identities for each persisted Session projection;
+- the latest normalized lifecycle kind and occurrence time for each persisted Session projection;
+- a bounded project label and display-safe summary for the latest Session notification;
+- unread state for at most one latest notification per Session;
 - action identifier, trigger, event identity, timing, outcome, exit code, and output byte counts;
-- aggregate ingestion and spool counters.
+- unconsumed normalized spool records until they are delivered or evicted.
 
 The action audit is memory-only and bounded to recent entries. Captured child stdout and stderr are used only to classify the current result; their content is not included in the audit or diagnostics response.
 
