@@ -243,7 +243,7 @@ impl AppState {
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             let persistent =
                 PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
-            if let Err(error) = store.save_transition(&persistent, &event) {
+            if let Err(error) = store.save(&persistent) {
                 *reducer = previous;
                 return Err(error);
             }
@@ -609,14 +609,11 @@ impl Default for AppState {
 
 #[cfg(test)]
 mod tests {
-    use diesel::prelude::*;
     use lili_session::{
         ProviderCapabilitiesInputV1, ProviderInputV1, ProviderProjectInputV1, SessionPhase,
         normalize_provider_input,
     };
-    use lili_storage::{
-        ApplicationPaths, models::NewLifecycleEvent, open, repository::insert_lifecycle_event,
-    };
+    use lili_storage::ApplicationPaths;
 
     use super::*;
 
@@ -743,69 +740,6 @@ mod tests {
         let persisted = store.load().unwrap().unwrap();
         let restored = AppState::with_persistent_state(PetCatalog::default(), persisted).unwrap();
         assert_eq!(restored.snapshot().await.session_state.revision, 1);
-        let mut database = open(&paths).unwrap();
-        assert_eq!(
-            lili_storage::schema::lifecycle_events::table
-                .count()
-                .get_result::<i64>(database.connection())
-                .unwrap(),
-            1
-        );
-        drop(database);
-        std::fs::remove_dir_all(paths.root()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn failed_persisted_event_restores_the_previous_reducer() {
-        let root = std::env::temp_dir().join(format!(
-            "lili-app-state-transition-failure-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let paths = ApplicationPaths::from_root(root).unwrap();
-        let store = AppStateStore::for_application(paths.clone());
-        let state = AppState::default();
-        let event = normalize_provider_input(ProviderInputV1 {
-            version: 1,
-            provider: Some("codex".to_owned()),
-            event_type: Some("turn_started".to_owned()),
-            event_id: Some("event-conflict".to_owned()),
-            session_id: Some("session-conflict".to_owned()),
-            turn_id: Some("turn-conflict".to_owned()),
-            occurred_at_ms: Some(10),
-            project: None,
-            summary: None,
-            capabilities: ProviderCapabilitiesInputV1::default(),
-            source_discriminator: None,
-        })
-        .unwrap();
-        let lifecycle_id = persistence::lifecycle_event_id(&event);
-        let mut database = open(&paths).unwrap();
-        insert_lifecycle_event(
-            database.connection(),
-            &NewLifecycleEvent {
-                event_id: &lifecycle_id,
-                entity_type: "session",
-                entity_id: "session-conflict",
-                event_type: "existing",
-                source: "test",
-                occurred_at_ms: 1,
-                previous_state: None,
-                current_state: None,
-                details_json: None,
-                error_json: None,
-            },
-        )
-        .unwrap();
-        drop(database);
-
-        let before = state.snapshot().await;
-        assert!(
-            state
-                .apply_session_event_persisted(event, &store)
-                .await
-                .is_err()
-        );
-        assert_eq!(state.snapshot().await, before);
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
 

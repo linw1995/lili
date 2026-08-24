@@ -15,7 +15,6 @@ use crate::{
 const MAX_RECENT_EVENT_IDS: usize = 4096;
 const MAX_PERSISTED_NOTIFICATIONS: usize = 128;
 const MAX_PERSISTED_SESSIONS: usize = 128;
-const MAX_PERSISTED_TURNS_PER_SESSION: usize = 64;
 pub const DEFAULT_MINIMUM_DWELL_MS: u64 = 750;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,10 +66,15 @@ pub struct SessionReducerState {
     revision: u64,
     sessions: Vec<PersistedSession>,
     notifications: Vec<Notification>,
-    recent_event_ids: Vec<PersistedEventIdentity>,
     presentation: PresentationState,
     presentation_since_ms: u64,
     minimum_dwell_ms: u64,
+}
+
+impl SessionReducerState {
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,7 +83,7 @@ struct PersistedSession {
     provider: ProviderId,
     id: SessionId,
     current_turn_id: Option<TurnId>,
-    turns: Vec<PersistedTurn>,
+    current_turn: Option<PersistedTurn>,
     project: Option<DisplayProjectContext>,
     updated_at_ms: u64,
     last_event_id: EventId,
@@ -95,23 +99,12 @@ struct PersistedTurn {
     last_event_id: EventId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PersistedEventIdentity {
-    provider: ProviderId,
-    event_id: EventId,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReducerRestoreError {
     TooManySessions,
-    TooManyTurns,
     TooManyNotifications,
-    TooManyRecentEvents,
     DuplicateSession,
-    DuplicateTurn,
     DuplicateNotification,
-    DuplicateRecentEvent,
     InvalidCurrentTurn,
     InvalidNotificationState,
 }
@@ -120,13 +113,9 @@ impl std::fmt::Display for ReducerRestoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::TooManySessions => "persisted reducer has too many sessions",
-            Self::TooManyTurns => "persisted reducer has too many turns",
             Self::TooManyNotifications => "persisted reducer has too many notifications",
-            Self::TooManyRecentEvents => "persisted reducer has too many recent events",
             Self::DuplicateSession => "persisted reducer has a duplicate session",
-            Self::DuplicateTurn => "persisted reducer has a duplicate turn",
             Self::DuplicateNotification => "persisted reducer has a duplicate notification",
-            Self::DuplicateRecentEvent => "persisted reducer has a duplicate recent event",
             Self::InvalidCurrentTurn => "persisted reducer references an unknown current turn",
             Self::InvalidNotificationState => {
                 "persisted reducer contains a non-unread notification"
@@ -237,29 +226,30 @@ impl SessionReducer {
             .map(PersistedSession::from_record)
             .collect();
 
-        let notifications = self
-            .snapshot()
-            .notifications
-            .into_iter()
+        let mut latest_notifications = BTreeMap::new();
+        for notification in self.notifications.values() {
+            let key = (
+                notification.provider.clone(),
+                notification.session_id.clone(),
+            );
+            let replace = latest_notifications
+                .get(&key)
+                .is_none_or(|current: &Notification| {
+                    notification_order(notification) > notification_order(current)
+                });
+            if replace {
+                latest_notifications.insert(key, notification.clone());
+            }
+        }
+        let notifications = latest_notifications
+            .into_values()
             .filter(|notification| notification.state == NotificationState::Unread)
             .take(MAX_PERSISTED_NOTIFICATIONS)
-            .collect();
-        let recent_event_ids = self
-            .recent_event_ids
-            .iter()
-            .rev()
-            .take(MAX_RECENT_EVENT_IDS)
-            .rev()
-            .map(|(provider, event_id)| PersistedEventIdentity {
-                provider: provider.clone(),
-                event_id: event_id.clone(),
-            })
             .collect();
         SessionReducerState {
             revision: self.revision,
             sessions,
             notifications,
-            recent_event_ids,
             presentation: self.presentation.state,
             presentation_since_ms: self.presentation.since_ms,
             minimum_dwell_ms: self.minimum_dwell_ms,
@@ -272,9 +262,6 @@ impl SessionReducer {
         }
         if state.notifications.len() > MAX_PERSISTED_NOTIFICATIONS {
             return Err(ReducerRestoreError::TooManyNotifications);
-        }
-        if state.recent_event_ids.len() > MAX_RECENT_EVENT_IDS {
-            return Err(ReducerRestoreError::TooManyRecentEvents);
         }
 
         let mut sessions = BTreeMap::new();
@@ -297,21 +284,12 @@ impl SessionReducer {
                 return Err(ReducerRestoreError::DuplicateNotification);
             }
         }
-        let mut recent_event_ids = VecDeque::new();
-        let mut recent_event_set = BTreeSet::new();
-        for event in state.recent_event_ids {
-            let key = (event.provider, event.event_id);
-            if !recent_event_set.insert(key.clone()) {
-                return Err(ReducerRestoreError::DuplicateRecentEvent);
-            }
-            recent_event_ids.push_back(key);
-        }
         Ok(Self {
             revision: state.revision,
             sessions,
             notifications,
-            recent_event_ids,
-            recent_event_set,
+            recent_event_ids: VecDeque::new(),
+            recent_event_set: BTreeSet::new(),
             presentation: PresentationTracker {
                 state: state.presentation,
                 since_ms: state.presentation_since_ms,
@@ -614,32 +592,19 @@ impl SessionRecord {
 
 impl PersistedSession {
     fn from_record(record: &SessionRecord) -> Self {
-        let mut turns = record.turns.iter().collect::<Vec<_>>();
-        turns.sort_by(|(left_id, left), (right_id, right)| {
-            right
-                .updated_at_ms
-                .cmp(&left.updated_at_ms)
-                .then_with(|| left_id.cmp(right_id))
-        });
-        let turns = turns
-            .into_iter()
-            .take(MAX_PERSISTED_TURNS_PER_SESSION)
-            .map(|(id, turn)| PersistedTurn {
-                id: id.clone(),
+        let current_turn = record.current_turn_id.as_ref().and_then(|turn_id| {
+            record.turns.get(turn_id).map(|turn| PersistedTurn {
+                id: turn_id.clone(),
                 phase: turn.phase,
                 updated_at_ms: turn.updated_at_ms,
                 last_event_id: turn.last_event_id.clone(),
             })
-            .collect::<Vec<_>>();
-        let current_turn_id = record
-            .current_turn_id
-            .clone()
-            .filter(|current| turns.iter().any(|turn| turn.id == *current));
+        });
         Self {
             provider: record.provider.clone(),
             id: record.id.clone(),
-            current_turn_id,
-            turns,
+            current_turn_id: current_turn.as_ref().map(|turn| turn.id.clone()),
+            current_turn,
             project: record.project.clone(),
             updated_at_ms: record.updated_at_ms,
             last_event_id: record.last_event_id.clone(),
@@ -648,19 +613,14 @@ impl PersistedSession {
     }
 
     fn into_record(self) -> Result<SessionRecord, ReducerRestoreError> {
-        if self.turns.len() > MAX_PERSISTED_TURNS_PER_SESSION {
-            return Err(ReducerRestoreError::TooManyTurns);
-        }
         let mut turns = BTreeMap::new();
-        for turn in self.turns {
+        if let Some(turn) = self.current_turn {
             let record = TurnRecord {
                 phase: turn.phase,
                 updated_at_ms: turn.updated_at_ms,
                 last_event_id: turn.last_event_id,
             };
-            if turns.insert(turn.id, record).is_some() {
-                return Err(ReducerRestoreError::DuplicateTurn);
-            }
+            turns.insert(turn.id, record);
         }
         if self
             .current_turn_id
@@ -770,6 +730,10 @@ fn notification_priority(notification: &Notification) -> u8 {
     }
 }
 
+fn notification_order(notification: &Notification) -> (u64, &NotificationId) {
+    (notification.occurred_at_ms, &notification.id)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
@@ -780,13 +744,9 @@ mod tests {
     fn restore_errors_have_safe_public_messages() {
         let errors = [
             ReducerRestoreError::TooManySessions,
-            ReducerRestoreError::TooManyTurns,
             ReducerRestoreError::TooManyNotifications,
-            ReducerRestoreError::TooManyRecentEvents,
             ReducerRestoreError::DuplicateSession,
-            ReducerRestoreError::DuplicateTurn,
             ReducerRestoreError::DuplicateNotification,
-            ReducerRestoreError::DuplicateRecentEvent,
             ReducerRestoreError::InvalidCurrentTurn,
             ReducerRestoreError::InvalidNotificationState,
         ];
@@ -1109,7 +1069,45 @@ mod tests {
         assert_eq!(snapshot.notifications[0].kind, NotificationKind::Attention);
 
         let mut restored = restored;
-        assert_eq!(restored.reduce(failed), ReductionOutcome::Duplicate);
+        assert_eq!(restored.reduce(failed), ReductionOutcome::IgnoredStale);
+    }
+
+    #[test]
+    fn persistence_keeps_one_current_turn_and_latest_notification_per_session() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "attention",
+            "attention_required",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "completed",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            20,
+        ));
+        reducer.reduce(event(
+            "next-turn",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.sessions.len(), 1);
+        assert_eq!(
+            persisted.sessions[0]
+                .current_turn
+                .as_ref()
+                .map(|turn| turn.id.as_str()),
+            Some("turn-2")
+        );
+        assert_eq!(persisted.notifications.len(), 1);
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "completed");
     }
 
     #[test]

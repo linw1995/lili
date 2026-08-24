@@ -131,9 +131,8 @@ mod tests {
     use diesel_migrations::MigrationHarness;
 
     use super::*;
-    use crate::models::NewLifecycleEvent;
-    use crate::repository::insert_lifecycle_event;
-    use crate::schema::lifecycle_events;
+    use crate::models::AppStateRow;
+    use crate::repository::{load_app_state, update_app_state, update_app_state_if_newer};
 
     #[derive(QueryableByName)]
     struct CountRow {
@@ -171,17 +170,52 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_database_and_applies_metadata_migration() {
+    fn open_creates_database_and_applies_initial_migration() {
         let paths = temporary_paths();
         let database_path = paths.database_path();
         let mut database = open(&paths).unwrap();
-        let count = diesel::sql_query("SELECT COUNT(*) AS count FROM storage_metadata")
+        let app_state_count = diesel::sql_query("SELECT COUNT(*) AS count FROM app_state")
             .get_result::<CountRow>(database.connection())
             .unwrap()
             .count;
+        let migration_count =
+            diesel::sql_query("SELECT COUNT(*) AS count FROM __diesel_schema_migrations")
+                .get_result::<CountRow>(database.connection())
+                .unwrap()
+                .count;
 
-        assert_eq!(count, 1);
+        assert_eq!(app_state_count, 1);
+        assert_eq!(migration_count, 1);
         assert!(database_path.is_file());
+        drop(database);
+        fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn stale_application_state_update_cannot_replace_a_newer_revision() {
+        let paths = temporary_paths();
+        let mut database = open(&paths).unwrap();
+        let current = AppStateRow {
+            id: 1,
+            selected_pet_id: Some("new-pet".to_owned()),
+            window_placement_json: None,
+            reducer_json: Some(r#"{"revision":2}"#.to_owned()),
+            reducer_revision: 2,
+        };
+        update_app_state(database.connection(), &current).unwrap();
+
+        let stale = AppStateRow {
+            id: 1,
+            selected_pet_id: Some("old-pet".to_owned()),
+            window_placement_json: None,
+            reducer_json: Some(r#"{"revision":1}"#.to_owned()),
+            reducer_revision: 1,
+        };
+        assert!(!update_app_state_if_newer(database.connection(), &stale).unwrap());
+
+        let persisted = load_app_state(database.connection()).unwrap();
+        assert_eq!(persisted.reducer_revision, 2);
+        assert_eq!(persisted.selected_pet_id.as_deref(), Some("new-pet"));
         drop(database);
         fs::remove_dir_all(paths.root()).unwrap();
     }
@@ -228,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_rejects_invalid_json_and_orphaned_notifications() {
+    fn schema_rejects_invalid_json() {
         let paths = temporary_paths();
         let mut database = open(&paths).unwrap();
         let invalid_json = diesel::sql_query(
@@ -236,44 +270,6 @@ mod tests {
         )
         .execute(database.connection());
         assert!(invalid_json.is_err());
-
-        let orphaned_notification = diesel::sql_query(
-            "INSERT INTO notifications (id, provider, event_id, session_id, kind, state, occurred_at_ms) VALUES ('notification-1', 'codex', 'event-1', 'missing-session', 'completion', 'unread', 1)",
-        )
-        .execute(database.connection());
-        assert!(orphaned_notification.is_err());
-        drop(database);
-        fs::remove_dir_all(paths.root()).unwrap();
-    }
-
-    #[test]
-    fn lifecycle_events_are_immutable() {
-        let paths = temporary_paths();
-        let mut database = open(&paths).unwrap();
-        insert_lifecycle_event(
-            database.connection(),
-            &NewLifecycleEvent {
-                event_id: "event-1",
-                entity_type: "application",
-                entity_id: "app",
-                event_type: "started",
-                source: "test",
-                occurred_at_ms: 1,
-                previous_state: None,
-                current_state: Some("idle"),
-                details_json: None,
-                error_json: None,
-            },
-        )
-        .unwrap();
-
-        let update = diesel::update(lifecycle_events::table.find("event-1"))
-            .set(lifecycle_events::event_type.eq("changed"))
-            .execute(database.connection());
-        let delete =
-            diesel::delete(lifecycle_events::table.find("event-1")).execute(database.connection());
-        assert!(update.is_err());
-        assert!(delete.is_err());
         drop(database);
         fs::remove_dir_all(paths.root()).unwrap();
     }

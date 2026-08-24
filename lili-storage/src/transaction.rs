@@ -22,8 +22,8 @@ mod tests {
     use super::with_short_transaction;
     use crate::ApplicationPaths;
     use crate::database;
-    use crate::models::NewSession;
-    use crate::repository::insert_session;
+    use crate::models::AppStateRow;
+    use crate::repository::{load_app_state, update_app_state};
 
     #[test]
     fn failed_short_transaction_rolls_back_all_database_work() {
@@ -32,27 +32,24 @@ mod tests {
         let paths = ApplicationPaths::from_root(root).unwrap();
         let mut database = database::open(&paths).unwrap();
         let result: QueryResult<()> = with_short_transaction(database.connection(), |connection| {
-            insert_session(
+            update_app_state(
                 connection,
-                &NewSession {
-                    provider: "codex",
-                    session_id: "session-1",
-                    current_turn_id: None,
-                    project_json: None,
-                    updated_at_ms: 1,
-                    last_event_id: "event-1",
-                    ended: 0,
+                &AppStateRow {
+                    id: 1,
+                    selected_pet_id: Some("custom-pet".to_owned()),
+                    window_placement_json: None,
+                    reducer_revision: 1,
+                    reducer_json: Some(r#"{"revision":1}"#.to_owned()),
                 },
             )?;
             Err(diesel::result::Error::RollbackTransaction)
         });
         assert!(result.is_err());
 
-        let count = crate::schema::sessions::table
-            .count()
-            .get_result::<i64>(database.connection())
-            .unwrap();
-        assert_eq!(count, 0);
+        let persisted = load_app_state(database.connection()).unwrap();
+        assert_eq!(persisted.selected_pet_id, None);
+        assert_eq!(persisted.reducer_revision, 0);
+        assert_eq!(persisted.reducer_json, None);
         drop(database);
         fs::remove_dir_all(paths.root()).unwrap();
     }
