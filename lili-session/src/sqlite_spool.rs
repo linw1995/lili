@@ -84,12 +84,7 @@ impl SqliteSpoolStore {
                 },
             )?;
             let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
-            increment_spool_metrics(
-                connection,
-                delta.expired_drops,
-                delta.limit_drops,
-                delta.malformed_drops,
-            )?;
+            record_retention_delta(connection, delta)?;
             Ok(
                 find_inbound_spool(connection, event.provider.as_str(), event.event_id.as_str())?
                     .is_some(),
@@ -120,12 +115,7 @@ impl SqliteSpoolStore {
             .map_err(database_query_error)?;
         with_short_transaction(database.connection(), |connection| {
             let delta = enforce_limits(connection, self.limits, now_ms)?;
-            increment_spool_metrics(
-                connection,
-                delta.expired_drops,
-                delta.limit_drops,
-                delta.malformed_drops,
-            )
+            record_retention_delta(connection, delta)
         })
         .map_err(database_query_error)?;
         loop {
@@ -245,6 +235,21 @@ struct RetentionDelta {
     expired_drops: i64,
     limit_drops: i64,
     malformed_drops: i64,
+}
+
+fn record_retention_delta(
+    connection: &mut diesel::sqlite::SqliteConnection,
+    delta: RetentionDelta,
+) -> diesel::QueryResult<()> {
+    if delta != RetentionDelta::default() {
+        increment_spool_metrics(
+            connection,
+            delta.expired_drops,
+            delta.limit_drops,
+            delta.malformed_drops,
+        )?;
+    }
+    Ok(())
 }
 
 fn enforce_limits(
