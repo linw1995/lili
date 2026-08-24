@@ -299,7 +299,9 @@ impl AppStateStore {
         state.validate()?;
         let mut database = open(&self.paths)?;
         let row = app_state_row(state, None, None)?;
-        update_app_state_if_newer(database.connection(), &row)?;
+        if !update_app_state_if_newer(database.connection(), &row)? {
+            return Err(PersistenceError::ReducerSnapshotRejected);
+        }
         Ok(())
     }
 
@@ -380,6 +382,8 @@ pub enum PersistenceError {
     Reducer(#[from] ReducerRestoreError),
     #[error("application state contains an invalid reducer snapshot")]
     InvalidReducerSnapshot,
+    #[error("application state reducer snapshot was rejected by a newer or divergent revision")]
+    ReducerSnapshotRejected,
     #[error("application state contains invalid JSON: {0}")]
     InvalidJsonDocument(lili_storage::models::JsonDocumentError),
     #[error("reducer snapshot exceeds the bounded size limit: {0} bytes")]
