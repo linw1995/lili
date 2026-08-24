@@ -44,7 +44,7 @@ Visiting GitHub pages, downloading a release, opening a support issue, or using 
 
 - SQLite application state remains until it is replaced by a newer bounded projection or the user deletes the Lili application data.
 - At most one latest notification and current state projection per Session remain in application state for restart recovery.
-- Offline spool records are bounded to 256 records, 4 MiB total, and 24 hours by default; older and excess records are dropped.
+- Offline spool records are hard-capped at 256 records, 4 MiB total, and 24 hours; older and excess records are dropped.
 - Runtime forwarding credentials last only for the current desktop instance and are removed on orderly shutdown.
 - The action audit is memory-only and bounded to recent entries; captured stdout and stderr content is not included in the audit.
 - Legacy integration provenance and timestamped configuration backups remain until successful cleanup or manual removal.

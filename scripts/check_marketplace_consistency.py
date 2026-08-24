@@ -265,7 +265,7 @@ def validate_marketplace(workspace_root: Path) -> None:
         (
             "does not request or retain raw prompts, approval arguments",
             "do not send session data, diagnostics, or telemetry",
-            "bounded to 256 records, 4 MiB total, and 24 hours by default",
+            "hard-capped at 256 records, 4 MiB total, and 24 hours",
             "Permission events are observation-only and never authorize a request.",
         ),
     )
@@ -302,7 +302,9 @@ def validate_marketplace(workspace_root: Path) -> None:
             "credentials_rotate_and_debug_output_redacts_the_secret",
         ),
         workspace_root / "lili-session" / "src" / "spool.rs": (
-            "Self::new(256, 4 * 1024 * 1024, 24 * 60 * 60 * 1_000)",
+            "pub const HARD_MAX_COUNT: usize = 256",
+            "pub const HARD_MAX_BYTES: u64 = 4 * 1024 * 1024",
+            "pub const HARD_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000",
         ),
         workspace_root / "lili-session" / "src" / "transport.rs": (
             ".reject_remote_clients(true)",
