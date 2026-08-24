@@ -515,7 +515,7 @@ fn sync_directory(_directory: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
-fn unix_socket_path(runtime_dir: &Path) -> PathBuf {
+fn unix_socket_directory(runtime_dir: &Path) -> PathBuf {
     use std::fmt::Write as _;
 
     use sha2::{Digest, Sha256};
@@ -527,8 +527,12 @@ fn unix_socket_path(runtime_dir: &Path) -> PathBuf {
     for byte in digest.finalize() {
         write!(&mut name, "{byte:02x}").expect("writing a socket name cannot fail");
     }
-    name.push_str(".sock");
     PathBuf::from("/tmp").join(name)
+}
+
+#[cfg(unix)]
+fn unix_socket_path(runtime_dir: &Path) -> PathBuf {
+    unix_socket_directory(runtime_dir).join("endpoint.sock")
 }
 
 #[cfg(unix)]
@@ -543,6 +547,7 @@ impl PlatformListener {
     fn bind(runtime_dir: &Path, _instance_id: &str) -> Result<Self, ForwardingTransportError> {
         use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
+        ensure_private_runtime_dir(&unix_socket_directory(runtime_dir))?;
         let path = unix_socket_path(runtime_dir);
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
@@ -963,6 +968,14 @@ mod tests {
                 & 0o777,
             0o600
         );
+        assert_eq!(
+            fs::metadata(endpoint.endpoint().unix_path().unwrap().parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
 
         let message = record.credentials().unwrap().sign(event(), 1_000).unwrap();
         let server = async {
@@ -1199,6 +1212,7 @@ mod tests {
 
         let temp = TempDir::new();
         let socket_path = unix_socket_path(&temp.0);
+        fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
 
         fs::write(&socket_path, b"not a socket").unwrap();
         assert!(matches!(
@@ -1232,7 +1246,14 @@ mod tests {
         let runtime_dir = PathBuf::from("/").join("runtime".repeat(256));
         let socket_path = unix_socket_path(&runtime_dir);
 
-        assert_eq!(socket_path.parent(), Some(Path::new("/tmp")));
+        assert_eq!(
+            socket_path.parent().and_then(Path::parent),
+            Some(Path::new("/tmp"))
+        );
+        assert_eq!(
+            socket_path.file_name().and_then(|name| name.to_str()),
+            Some("endpoint.sock")
+        );
         assert!(socket_path.to_string_lossy().len() < 100);
     }
 
