@@ -40,7 +40,8 @@ Lili retains only the metadata needed for display and recovery:
 - a bounded project label and display-safe summary for the latest Session notification;
 - unread state for at most one latest notification per Session;
 - action identifier, trigger, event identity, timing, outcome, exit code, and output byte counts;
-- unconsumed normalized spool records until they are delivered or evicted.
+- unconsumed normalized spool records until they are delivered or evicted;
+- aggregate expired, limit, and malformed-drop counters for the temporary spool.
 
 The action audit is memory-only and bounded to recent entries. Captured child stdout and stderr are used only to classify the current result; their content is not included in the audit or diagnostics response.
 

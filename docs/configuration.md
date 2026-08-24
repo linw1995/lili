@@ -219,7 +219,7 @@ Restart Lili after editing `actions.toml`. Invalid entries are disabled independ
 Use this sequence after configuration:
 
 1. Confirm the desktop pet is visible. Use tray **Show** if it was hidden.
-2. Confirm the tray integration label reports **Integration: Installed**.
+2. Open **Diagnostics** from the tray and confirm the current plugin or Hook delivery state there.
 3. Run `"$LILI_RELEASE/bin/lili" integrate inspect` and review `warnings`, notify ownership, configured hooks, and detected Codex version.
 4. Start a new Codex Session and produce a completion or attention event.
 5. Activate the notification or interact with the pet, then inspect action feedback and tray **Diagnostics**.

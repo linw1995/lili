@@ -156,4 +156,4 @@ Rollback means running the previous application version against its untouched ol
 
 ## Migration Plan
 
-There is no migration plan by design. On first launch after this change, Lili creates a new application-owned SQLite database, applies its embedded initial migrations, and ignores existing Lili/Codex-rooted files without reading or deleting them. Users who need Codex event delivery must explicitly run the current integration or Plugin Directory workflow and complete its verification. Users who need old state or Pet packages can continue using the previous application version; the new version does not import them.
+There is no migration plan by design. On first launch after this change, Lili creates a new application-owned SQLite database, applies its single embedded initial migration, and ignores existing Lili/Codex-rooted files without reading or deleting them. Users who need Codex event delivery must explicitly run the current integration or Plugin Directory workflow and complete its verification. Users who need old state or Pet packages can continue using the previous application version; the new version does not import them.

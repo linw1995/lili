@@ -36,7 +36,7 @@
 - [x] 3.3 Implement the serialized session reducer with per-turn monotonic terminal states, new-turn generations, deduplication, attention resolution, notification acknowledgement, and snapshot revisions.
 - [x] 3.4 Implement deterministic concurrent-session presentation priority and minimum animation dwell without coupling notification ordering to the currently displayed session.
 - [x] 3.5 Add table-driven and property tests for duplicated, reordered, stale, concurrent, missing-field, and new-provider-field event sequences.
-- [x] 3.6 Add bounded persistence for selected pet, window placement, unread normalized notifications, and reducer metadata with version rejection and atomic replacement tests.
+- [x] 3.6 Add bounded persistence for selected pet, window placement, and one latest normalized state notification per Session with version rejection and atomic replacement tests; keep event deduplication in memory.
 
 ## 4. Private Event Delivery and Offline Recovery
 
@@ -74,7 +74,7 @@
 - [x] 7.4 Implement pointer gaze, hit-region tracking, click versus double-click disambiguation, drag velocity, running-left/right selection, and final window-position commit.
 - [x] 7.5 Implement logical display-coordinate persistence, scale conversion, work-area clamping, display disconnect handling, and a reachable visible margin on every platform.
 - [x] 7.6 Implement pet-anchored notification cards with priority/recency ordering, immutable session context, bounded safe summaries, independent activation, dismissal, and unread state.
-- [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, integration status, settings, diagnostics, and quit while native event ingestion continues when hidden.
+- [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, settings, diagnostics, and quit while native event ingestion continues when hidden.
 - [x] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
 - [x] 7.9 Keep directional drag animation responsive by replacing modal native drag loops with controlled window movement and smoothing sparse pointer samples.
 - [x] 7.10 Keep the built-in fallback palette consistent across standard animation and look-direction rows, with deterministic color-drift QA.

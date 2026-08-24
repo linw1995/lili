@@ -64,7 +64,7 @@ plugins/lili/
   assets/
 ```
 
-`hooks/hooks.json` uses `${PLUGIN_ROOT}` for all package paths, provides `commandWindows` for Windows, runs observer hooks asynchronously where the Codex event contract permits, and applies short timeouts. The POSIX and PowerShell launchers select only an exact packaged target from a closed operating-system and architecture matrix; they never resolve a forwarder from `PATH`, evaluate provider data as shell text, download code, or mutate Codex configuration.
+`hooks/hooks.json` uses `${PLUGIN_ROOT}` for all package paths, provides `commandWindows` for Windows, runs observer hooks asynchronously where the Codex event contract permits, and applies short timeouts. The POSIX and PowerShell launchers select only an exact packaged target from a closed operating-system and architecture matrix and derive the installed `lili@<marketplace>` selector from the Codex-provided `${PLUGIN_DATA}` root; they never hard-code the local test marketplace, resolve a forwarder from `PATH`, evaluate provider data as shell text, download code, or mutate Codex configuration.
 
 The packaged `lili-hook` binaries are built from the same source and application version as the desktop release. macOS and Windows forwarders use the applicable release signing path. The plugin archive includes only the target binaries supported by the corresponding desktop release matrix, and unsupported hosts fail closed with a bounded local diagnostic.
 

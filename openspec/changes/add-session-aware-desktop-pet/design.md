@@ -120,7 +120,7 @@ Temporary animation overrides never mutate session state. They expire back to th
 Alternatives considered:
 
 - Letting the WebView merge events makes reload recovery and concurrency dependent on browser timing.
-- A database is unnecessary for the first bounded queue; the atomic spool and compact persisted user state cover crash recovery without introducing migrations.
+- The application-owned SQLite store is the authority for the compact latest per-Session projection, plugin evidence, and bounded offline spool. It deliberately does not append event history or persist the in-memory deduplication cache.
 
 ### Treat the Codex v2 manifest as an external compatibility boundary
 
