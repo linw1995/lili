@@ -87,6 +87,7 @@ fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection,
     let path_text = path
         .to_str()
         .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
+    let database_exists = path.exists();
     let mut connection =
         SqliteConnection::establish(path_text).map_err(DatabaseError::Connection)?;
     let busy_timeout_ms = busy_timeout.as_millis().min(i64::MAX as u128);
@@ -95,13 +96,7 @@ fn connect_once(path: &Path, busy_timeout: Duration) -> Result<SqliteConnection,
             "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {busy_timeout_ms};"
         ))
         .map_err(DatabaseError::Configuration)?;
-    let journal_mode = diesel::sql_query("PRAGMA journal_mode")
-        .get_result::<JournalModeRow>(&mut connection)
-        .map(|row| row.journal_mode);
-    if !journal_mode
-        .as_deref()
-        .is_ok_and(|mode| mode.eq_ignore_ascii_case("wal"))
-    {
+    if !database_exists {
         connection
             .batch_execute("PRAGMA journal_mode = WAL;")
             .map_err(DatabaseError::Configuration)?;
@@ -144,12 +139,6 @@ fn apply_pending_migrations(connection: &mut SqliteConnection) -> Result<(), Dat
             .map_err(DatabaseError::Migration)?;
     }
     Ok(())
-}
-
-#[derive(diesel::QueryableByName)]
-struct JournalModeRow {
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    journal_mode: String,
 }
 
 #[derive(diesel::QueryableByName)]
