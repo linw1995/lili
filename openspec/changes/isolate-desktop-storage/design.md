@@ -117,7 +117,7 @@ The hook forwarder uses the shared application path resolver to load credentials
 
 Plugin attribution is passed as an explicit, validated hook argument or equivalent package-owned metadata. The hook launcher does not need to query Codex to determine its own plugin identity. Direct integration hooks and Marketplace hooks therefore share the same local transport without sharing a Codex filesystem dependency.
 
-Credential rotation remains an owner-only atomic file replacement. Spool insertion, claims, acknowledgements, eviction, and concurrent hook delivery use the SQLite repository with authenticated frames and replay protection. The hook never holds a database transaction while waiting for the desktop endpoint.
+Credential rotation remains an owner-only atomic file replacement. A Hook performs only one short durable spool insert; the desktop drain performs retention and drop accounting before claiming records. Claims and acknowledgements use the SQLite repository with authenticated frames and replay protection. The Hook never holds a database transaction while waiting for the desktop endpoint or while performing retention maintenance.
 
 Alternatives considered:
 

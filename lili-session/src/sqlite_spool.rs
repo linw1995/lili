@@ -80,27 +80,13 @@ impl SqliteSpoolStore {
             attempts: 0,
         };
         let stored = with_short_transaction(database.connection(), |connection| {
-            insert_inbound_spool(connection, &new_record)?;
-            Ok(
-                find_inbound_spool(connection, event.provider.as_str(), event.event_id.as_str())?
-                    .is_some(),
-            )
+            insert_inbound_spool(connection, &new_record).map(|_| true)
         })
         .map_err(database_query_error)?;
-        let retained = if self.busy_timeout.is_some() && stored {
-            // Keep the hook-critical transaction limited to the durable insert. The desktop
-            // drain retries retention when a concurrent hook still owns the SQLite writer lock.
-            let maintenance = with_short_transaction(database.connection(), |connection| {
-                let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
-                record_retention_delta(connection, delta)?;
-                Ok(find_inbound_spool(
-                    connection,
-                    event.provider.as_str(),
-                    event.event_id.as_str(),
-                )?
-                .is_some())
-            });
-            maintenance.unwrap_or(true)
+        let retained = if self.busy_timeout.is_some() {
+            // Keep Hook delivery to one durable insert. The desktop drain owns retention before
+            // claiming records, so maintenance cannot extend the Hook's lifecycle budget.
+            stored
         } else if stored {
             with_short_transaction(database.connection(), |connection| {
                 let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
