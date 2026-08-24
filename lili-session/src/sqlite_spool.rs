@@ -188,24 +188,32 @@ fn enforce_limits(
     let max_age_ms = i64::try_from(limits.max_age_ms()).unwrap_or(i64::MAX);
     let mut retained = Vec::with_capacity(records.len());
     for record in records {
-        if now_ms.saturating_sub(record.inserted_at_ms) > max_age_ms {
+        if record.status == "pending" && now_ms.saturating_sub(record.inserted_at_ms) > max_age_ms {
             delete_inbound_spool(connection, &record.provider, &record.event_id)?;
         } else {
             retained.push(record);
         }
     }
-    let mut records = retained;
-    let mut total_bytes = records
+    let mut total_count = retained.len();
+    let mut total_bytes = retained
         .iter()
         .map(|record| record.payload_json.as_str().len() as u64)
         .sum::<u64>();
-    records.sort_by(|left, right| {
+    let mut pending = retained
+        .into_iter()
+        .filter(|record| record.status == "pending")
+        .collect::<Vec<_>>();
+    pending.sort_by(|left, right| {
         left.priority
             .cmp(&right.priority)
             .then_with(|| left.inserted_at_ms.cmp(&right.inserted_at_ms))
     });
-    while records.len() > limits.max_count() || total_bytes > limits.max_bytes() {
-        let record = records.remove(0);
+    while total_count > limits.max_count() || total_bytes > limits.max_bytes() {
+        let Some(record) = pending.first().cloned() else {
+            break;
+        };
+        pending.remove(0);
+        total_count = total_count.saturating_sub(1);
         total_bytes = total_bytes.saturating_sub(record.payload_json.as_str().len() as u64);
         delete_inbound_spool(connection, &record.provider, &record.event_id)?;
     }
@@ -311,6 +319,26 @@ mod tests {
                 .is_some()
         );
         drop(database);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn retention_preserves_claimed_records_for_lease_recovery() {
+        let paths = paths();
+        let limits = SpoolLimits::new(1, 64 * 1024, 1_000);
+        let store = SqliteSpoolStore::new(paths.clone(), limits);
+        let claimed_event = event("claimed", "turn_completed");
+        let pending_event = event("pending", "turn_completed");
+        store.enqueue(&claimed_event, 1).unwrap();
+        let claimed = store.claim_next(2).unwrap().unwrap();
+
+        assert_eq!(
+            store.enqueue(&pending_event, 3).unwrap(),
+            SpoolEnqueueOutcome::DroppedByLimit
+        );
+        claimed.commit().unwrap();
+
+        assert!(store.claim_next(4).unwrap().is_none());
         std::fs::remove_dir_all(paths.root()).unwrap();
     }
 
