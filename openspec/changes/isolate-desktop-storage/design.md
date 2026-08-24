@@ -117,7 +117,7 @@ Alternatives considered:
 
 The hook forwarder uses the shared application path resolver to load credentials, deliver to the local endpoint, and enqueue offline records. It does not resolve `CODEX_HOME`, inspect Codex plugin state, or discover the installed plugin by reading Codex files.
 
-Plugin attribution is passed as an explicit, validated hook argument or equivalent package-owned metadata. The hook launcher does not need to query Codex to determine its own plugin identity. Direct integration hooks and Marketplace hooks therefore share the same local transport without sharing a Codex filesystem dependency.
+Plugin attribution is derived by the packaged forwarder from the absolute, Codex-provided `PLUGIN_DATA` directory name. Plugin mode has no caller-selected identity argument, and malformed or missing package metadata fails closed. The hook launcher does not need to query Codex to determine its own plugin identity. Direct integration hooks and Marketplace hooks therefore share the same local transport without sharing a Codex filesystem dependency.
 
 Credential rotation remains an owner-only atomic file replacement. A Hook performs one short transaction that atomically inserts a durable spool record and applies bounded retention; the desktop drain repeats retention and drop accounting before claiming records. Claims and acknowledgements use the SQLite repository with authenticated frames and replay protection. The Hook never holds a database transaction while waiting for the desktop endpoint.
 

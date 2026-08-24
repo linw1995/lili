@@ -41,10 +41,9 @@ if ([string]::IsNullOrWhiteSpace($env:PLUGIN_DATA) -or
     Fail-LiliLauncher "Lili plugin data root is unavailable" 65
 }
 $pluginDataName = Split-Path -Leaf $env:PLUGIN_DATA.TrimEnd($trimCharacters)
-if ($pluginDataName -notmatch '^lili-(?<marketplace>[A-Za-z0-9._-]+)$') {
+if ($pluginDataName -notmatch '^lili-[A-Za-z0-9._-]+$') {
     Fail-LiliLauncher "Lili plugin data root does not identify the active package" 65
 }
-$pluginSelector = "lili@$($Matches.marketplace)"
 
 $isWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
@@ -68,7 +67,7 @@ if (-not $forwarderItem.PSIsContainer -and
 }
 
 $OutputEncoding = [Text.UTF8Encoding]::new($false)
-$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook $pluginSelector --json-stdin
+$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin
 if ($null -eq $LASTEXITCODE) {
     Fail-LiliLauncher "Lili plugin forwarder did not return an exit code" 67
 }

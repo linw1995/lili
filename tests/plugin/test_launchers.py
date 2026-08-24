@@ -61,14 +61,14 @@ class PluginLauncherContractTests(unittest.TestCase):
             "Get-Content",
         ):
             self.assertNotIn(forbidden, windows)
-        self.assertIn('plugin_selector="lili@$plugin_marketplace"', posix)
+        self.assertIn('plugin_data_name=${plugin_data##*/}', posix)
         self.assertIn(
-            'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook "$plugin_selector" --json-stdin',
+            'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
             posix,
         )
         self.assertIn("$OutputEncoding = [Text.UTF8Encoding]::new($false)", windows)
         self.assertIn(
-            '$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook $pluginSelector --json-stdin',
+            '$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
             windows,
         )
 
@@ -91,8 +91,7 @@ class PluginLauncherContractTests(unittest.TestCase):
                 'test "$1" = "--integration-id" || exit 91\n'
                 'test "$2" = "lili-session-v1" || exit 92\n'
                 'test "$3" = "--plugin-hook" || exit 93\n'
-                'test "$4" = "lili@lili-local" || exit 94\n'
-                'test "$5" = "--json-stdin" || exit 95\n'
+                'test "$4" = "--json-stdin" || exit 94\n'
                 "/bin/cat\n",
                 encoding="utf-8",
             )

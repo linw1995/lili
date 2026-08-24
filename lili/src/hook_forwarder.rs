@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
     io::Read,
+    path::Path,
     process::{Command, Stdio},
     time::Duration,
 };
@@ -75,7 +76,7 @@ impl HookResult {
 enum HookInvocation {
     Direct {
         payload: Vec<u8>,
-        plugin_id: Option<String>,
+        plugin_hook: bool,
     },
     Coexist {
         original_argv: Vec<String>,
@@ -91,13 +92,23 @@ pub async fn run_from_environment() -> HookResult {
         Err(result) => return result,
     };
     match invocation {
-        HookInvocation::Direct { payload, plugin_id } => {
-            if plugin_id.is_some() && plugin_id.as_deref().is_some_and(str::is_empty) {
-                return HookResult::failure(
-                    HookExitCode::InvalidInput,
-                    "plugin invocation identity is invalid",
-                );
-            }
+        HookInvocation::Direct {
+            payload,
+            plugin_hook,
+        } => {
+            let plugin_id = if plugin_hook {
+                match plugin_identity_from_environment() {
+                    Some(plugin_id) => Some(plugin_id),
+                    None => {
+                        return HookResult::failure(
+                            HookExitCode::InvalidInput,
+                            "plugin invocation identity is unavailable",
+                        );
+                    }
+                }
+            } else {
+                None
+            };
             let application_paths = match ApplicationPaths::resolve() {
                 Ok(application_paths) => application_paths,
                 Err(_) => return application_storage_failure(),
@@ -266,38 +277,48 @@ fn read_hook_invocation<R: Read>(
         [mode, payload] if mode == "--json-argv" => {
             bounded_argv_payload(payload).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_id: None,
+                plugin_hook: false,
             })
         }
         [mode] if mode == "--json-stdin" => {
             bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_id: None,
+                plugin_hook: false,
             })
         }
-        [plugin, plugin_id, mode] if plugin == "--plugin-hook" && mode == "--json-stdin" => {
-            let plugin_id = plugin_id.to_str().ok_or_else(|| {
-                HookResult::failure(
-                    HookExitCode::InvalidInput,
-                    "plugin invocation identity must be valid UTF-8",
-                )
-            })?;
-            if plugin_id.is_empty() || plugin_id.len() > 128 {
-                return Err(HookResult::failure(
-                    HookExitCode::InvalidInput,
-                    "plugin invocation identity is invalid",
-                ));
-            }
+        [plugin, mode] if plugin == "--plugin-hook" && mode == "--json-stdin" => {
             bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_id: Some(plugin_id.to_owned()),
+                plugin_hook: true,
             })
         }
         _ => Err(HookResult::failure(
             HookExitCode::Usage,
-            "usage: lili-hook [--plugin-hook <plugin-id>] --json-stdin | --json-argv <json>",
+            "usage: lili-hook [--plugin-hook] --json-stdin | --json-argv <json>",
         )),
     }
+}
+
+fn plugin_identity_from_environment() -> Option<String> {
+    let data_root = std::env::var_os("PLUGIN_DATA")?;
+    plugin_identity_from_data_root(Path::new(&data_root))
+}
+
+fn plugin_identity_from_data_root(data_root: &Path) -> Option<String> {
+    if !data_root.is_absolute() {
+        return None;
+    }
+    let directory_name = data_root.file_name()?.to_str()?;
+    let marketplace = directory_name.strip_prefix("lili-")?;
+    if marketplace.is_empty()
+        || marketplace.len() > 126
+        || marketplace
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    Some(format!("lili@{marketplace}"))
 }
 
 fn bounded_stdin_payload<R: Read>(stdin: &mut R) -> Result<Vec<u8>, HookResult> {
@@ -480,7 +501,6 @@ mod tests {
                 OsString::from("--integration-id"),
                 OsString::from(LILI_INTEGRATION_ID),
                 OsString::from("--plugin-hook"),
-                OsString::from("lili@lili-local"),
                 OsString::from("--json-stdin"),
             ],
             &mut Cursor::new(
@@ -491,10 +511,26 @@ mod tests {
         assert!(matches!(
             invocation,
             HookInvocation::Direct {
-                plugin_id: Some(_),
+                plugin_hook: true,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn plugin_identity_is_derived_from_the_absolute_data_root() {
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("/tmp/lili-lili-local")),
+            Some("lili@lili-local".to_owned())
+        );
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("relative/lili-lili-local")),
+            None
+        );
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("/tmp/lili-other.marketplace")),
+            None
+        );
     }
 
     #[test]
