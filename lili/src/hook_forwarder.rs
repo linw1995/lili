@@ -191,6 +191,12 @@ async fn process_payload_with_source(
         ),
         Err(error) => {
             let diagnostic = match error {
+                SpoolError::Database(message) if message.contains("locked") => {
+                    "hook SQLite spool was locked"
+                }
+                SpoolError::Database(message) if message.contains("migration") => {
+                    "hook SQLite migration was unavailable"
+                }
                 SpoolError::Database(_) => "hook SQLite spool was unavailable",
                 SpoolError::Io(_) => "hook local spool I/O failed",
                 _ => "hook event could not be delivered or spooled",
