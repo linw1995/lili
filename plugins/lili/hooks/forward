@@ -47,12 +47,15 @@ case "$plugin_data" in
 esac
 plugin_data_name=${plugin_data##*/}
 case "$plugin_data_name" in
-    lili-?*) ;;
+    lili-?*) plugin_marketplace=${plugin_data_name#lili-} ;;
     *) fail "Lili plugin data root does not identify the active package" 65 ;;
 esac
-case "${plugin_data_name#lili-}" in
+case "$plugin_marketplace" in
     *[!A-Za-z0-9._-]*|'') fail "Lili plugin marketplace identity is invalid" 65 ;;
 esac
+if [ "${#plugin_marketplace}" -gt 123 ]; then
+    fail "Lili plugin marketplace identity is invalid" 65
+fi
 
 kernel=$("$uname_path" -s 2>/dev/null) \
     || fail "Lili plugin host could not be identified" 64

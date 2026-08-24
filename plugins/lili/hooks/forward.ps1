@@ -41,7 +41,7 @@ if ([string]::IsNullOrWhiteSpace($env:PLUGIN_DATA) -or
     Fail-LiliLauncher "Lili plugin data root is unavailable" 65
 }
 $pluginDataName = Split-Path -Leaf $env:PLUGIN_DATA.TrimEnd($trimCharacters)
-if ($pluginDataName -notmatch '^lili-[A-Za-z0-9._-]+$') {
+if ($pluginDataName -notmatch '^lili-[A-Za-z0-9._-]{1,123}$') {
     Fail-LiliLauncher "Lili plugin data root does not identify the active package" 65
 }
 

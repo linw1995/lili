@@ -242,7 +242,7 @@ fn bounded_plugin_id(plugin_id: &str) -> Option<String> {
         || plugin_id.len() > 128
         || plugin_id
             .bytes()
-            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'@'))
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.' | b'@'))
         || plugin_id.matches('@').count() != 1
     {
         return None;
@@ -953,6 +953,11 @@ mod tests {
             "lili@lili-local"
         ));
         assert_eq!(plugin_startup.event_id, startup.event_id);
+        let mut dotted_plugin_startup = startup.clone();
+        assert!(mark_plugin_hook_event(
+            &mut dotted_plugin_startup,
+            "lili@lili.local"
+        ));
     }
 
     #[test]

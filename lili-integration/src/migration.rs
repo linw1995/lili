@@ -704,7 +704,7 @@ fn valid_plugin_selector(selector: &str) -> bool {
         && [name, marketplace].into_iter().all(|component| {
             component
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         })
 }
 

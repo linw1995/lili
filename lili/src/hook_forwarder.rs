@@ -311,10 +311,10 @@ fn plugin_identity_from_data_root(data_root: &Path) -> Option<String> {
     let directory_name = data_root.file_name()?.to_str()?;
     let marketplace = directory_name.strip_prefix("lili-")?;
     if marketplace.is_empty()
-        || marketplace.len() > 126
+        || marketplace.len() > 123
         || marketplace
             .bytes()
-            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.'))
     {
         return None;
     }
@@ -529,6 +529,10 @@ mod tests {
         );
         assert_eq!(
             plugin_identity_from_data_root(Path::new("/tmp/lili-other.marketplace")),
+            Some("lili@other.marketplace".to_owned())
+        );
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("/tmp/lili-invalid/marketplace")),
             None
         );
     }
