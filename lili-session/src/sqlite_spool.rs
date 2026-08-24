@@ -79,16 +79,11 @@ impl SqliteSpoolStore {
             lease_expires_at_ms: None,
             attempts: 0,
         };
-        let stored = with_short_transaction(database.connection(), |connection| {
-            insert_inbound_spool(connection, &new_record).map(|_| true)
-        })
-        .map_err(database_query_error)?;
         let retained = if self.busy_timeout.is_some() {
-            // Keep Hook delivery to one durable insert. The desktop drain owns retention before
-            // claiming records, so maintenance cannot extend the Hook's lifecycle budget.
-            stored
-        } else if stored {
+            // Keep Hook delivery to one short transaction that makes insertion and retention
+            // atomic. The desktop drain repeats retention before claiming records.
             with_short_transaction(database.connection(), |connection| {
+                insert_inbound_spool(connection, &new_record)?;
                 let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
                 record_retention_delta(connection, delta)?;
                 Ok(find_inbound_spool(
@@ -100,7 +95,25 @@ impl SqliteSpoolStore {
             })
             .map_err(database_query_error)?
         } else {
-            false
+            let stored = with_short_transaction(database.connection(), |connection| {
+                insert_inbound_spool(connection, &new_record).map(|_| true)
+            })
+            .map_err(database_query_error)?;
+            if stored {
+                with_short_transaction(database.connection(), |connection| {
+                    let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
+                    record_retention_delta(connection, delta)?;
+                    Ok(find_inbound_spool(
+                        connection,
+                        event.provider.as_str(),
+                        event.event_id.as_str(),
+                    )?
+                    .is_some())
+                })
+                .map_err(database_query_error)?
+            } else {
+                false
+            }
         };
         Ok(if retained {
             SpoolEnqueueOutcome::Stored
@@ -402,6 +415,42 @@ mod tests {
         );
         assert!(
             find_inbound_spool(database.connection(), "codex", "attention")
+                .unwrap()
+                .is_some()
+        );
+        drop(database);
+        assert_eq!(store.metrics().unwrap().limit_drops, 1);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[test]
+    fn hook_enqueue_applies_retention_before_returning() {
+        let paths = paths();
+        let store = SqliteSpoolStore {
+            paths: paths.clone(),
+            limits: SpoolLimits::new(1, 64 * 1024, 1_000),
+            busy_timeout: Some(HOOK_BUSY_TIMEOUT),
+        };
+        let completion = event("hook-completion", "turn_completed");
+        let attention = event("hook-attention", "attention_required");
+
+        assert_eq!(
+            store.enqueue(&completion, 1).unwrap(),
+            SpoolEnqueueOutcome::Stored
+        );
+        assert_eq!(
+            store.enqueue(&attention, 2).unwrap(),
+            SpoolEnqueueOutcome::Stored
+        );
+
+        let mut database = open(&paths).unwrap();
+        assert!(
+            find_inbound_spool(database.connection(), "codex", "hook-completion")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            find_inbound_spool(database.connection(), "codex", "hook-attention")
                 .unwrap()
                 .is_some()
         );

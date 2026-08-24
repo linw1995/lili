@@ -85,6 +85,8 @@ Alternatives considered:
 
 SQLite stores structured and queryable application state. Pet manifests and spritesheets remain confined files under the application-owned Pet root, where existing v2 validation can inspect file metadata and asset paths. `actions.toml` remains in the application configuration root because it is user-authored configuration. Rotating runtime credentials and endpoint metadata remain owner-only files in the runtime root because they are short-lived transport material rather than application history.
 
+On Unix, the forwarding listener uses a short owner-only socket path under `/tmp`, derived from the application root and user identity and recorded in the runtime credential record. This keeps the endpoint within Unix-domain socket path limits even when the platform application root is unusually long.
+
 The database path resolver and file path resolver are returned together by `ApplicationPaths`, so all processes agree on the storage boundary without making every crate derive paths independently.
 
 ### Inject application paths into the desktop composition
@@ -117,7 +119,7 @@ The hook forwarder uses the shared application path resolver to load credentials
 
 Plugin attribution is passed as an explicit, validated hook argument or equivalent package-owned metadata. The hook launcher does not need to query Codex to determine its own plugin identity. Direct integration hooks and Marketplace hooks therefore share the same local transport without sharing a Codex filesystem dependency.
 
-Credential rotation remains an owner-only atomic file replacement. A Hook performs only one short durable spool insert; the desktop drain performs retention and drop accounting before claiming records. Claims and acknowledgements use the SQLite repository with authenticated frames and replay protection. The Hook never holds a database transaction while waiting for the desktop endpoint or while performing retention maintenance.
+Credential rotation remains an owner-only atomic file replacement. A Hook performs one short transaction that atomically inserts a durable spool record and applies bounded retention; the desktop drain repeats retention and drop accounting before claiming records. Claims and acknowledgements use the SQLite repository with authenticated frames and replay protection. The Hook never holds a database transaction while waiting for the desktop endpoint.
 
 Alternatives considered:
 
