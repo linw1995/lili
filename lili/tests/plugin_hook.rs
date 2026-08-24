@@ -81,6 +81,9 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
         .join("plugins/cache/lili-local/lili")
         .join(env!("CARGO_PKG_VERSION"));
     let launcher = install_plugin_runtime(&plugin_root, target);
+    SqliteSpoolStore::for_application(application_paths(&home))
+        .metrics()
+        .unwrap();
     let barrier = Arc::new(Barrier::new(FIXTURES.len() + 1));
     let started = Instant::now();
     let workers = FIXTURES.map(|fixture| {
