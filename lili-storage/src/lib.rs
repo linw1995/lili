@@ -34,6 +34,9 @@ impl ApplicationPaths {
         if !root.is_absolute() {
             return Err(PathError::RelativeRoot(root));
         }
+        if root.to_str().is_none() {
+            return Err(PathError::NonUtf8Root(root));
+        }
         Ok(Self { root })
     }
 
@@ -96,6 +99,8 @@ pub enum PathError {
     HomeDirectoryUnavailable,
     #[error("application root must be absolute: {0}")]
     RelativeRoot(PathBuf),
+    #[error("application root must be representable as UTF-8: {0:?}")]
+    NonUtf8Root(PathBuf),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -310,6 +315,18 @@ mod tests {
         assert!(matches!(
             ApplicationPaths::from_root("relative"),
             Err(PathError::RelativeRoot(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_roots_are_rejected_before_database_open() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = PathBuf::from(OsString::from_vec(b"/tmp/lili-\xFF".to_vec()));
+        assert!(matches!(
+            ApplicationPaths::from_root(root),
+            Err(PathError::NonUtf8Root(_))
         ));
     }
 
