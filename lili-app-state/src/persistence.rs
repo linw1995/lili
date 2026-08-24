@@ -296,7 +296,11 @@ impl AppStateStore {
     }
 
     pub fn save(&self, state: &PersistentApplicationState) -> Result<(), PersistenceError> {
-        self.save_with_selected_pet_policy(state)
+        state.validate()?;
+        let mut database = open(&self.paths)?;
+        let row = app_state_row(state, None, None)?;
+        update_app_state_if_newer(database.connection(), &row)?;
+        Ok(())
     }
 
     pub fn save_selected_pet(
@@ -320,24 +324,6 @@ impl AppStateStore {
         let window_placement_json = json_document(placement)?;
         let mut database = open(&self.paths)?;
         update_window_placement(database.connection(), Some(&window_placement_json))?;
-        Ok(())
-    }
-
-    fn save_with_selected_pet_policy(
-        &self,
-        state: &PersistentApplicationState,
-    ) -> Result<(), PersistenceError> {
-        state.validate()?;
-        let mut database = open(&self.paths)?;
-        let existing = load_app_state(database.connection())?;
-        let selected_pet_id = existing.selected_pet_id.or_else(|| {
-            state
-                .selected_pet_id
-                .as_ref()
-                .map(|value| value.as_str().to_owned())
-        });
-        let row = app_state_row(state, existing.window_placement_json, selected_pet_id)?;
-        update_app_state_if_newer(database.connection(), &row)?;
         Ok(())
     }
 }

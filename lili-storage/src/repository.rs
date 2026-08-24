@@ -36,13 +36,17 @@ pub fn update_app_state_if_newer(
     value: &AppStateRow,
 ) -> QueryResult<bool> {
     let updated = diesel::update(
-        app_state::table
-            .find(value.id)
-            .filter(app_state::reducer_revision.le(value.reducer_revision)),
+        app_state::table.find(value.id).filter(
+            app_state::reducer_revision
+                .lt(value.reducer_revision)
+                .or(app_state::reducer_revision.eq(value.reducer_revision).and(
+                    app_state::reducer_json
+                        .eq(&value.reducer_json)
+                        .or(app_state::reducer_json.is_null()),
+                )),
+        ),
     )
     .set((
-        app_state::selected_pet_id.eq(&value.selected_pet_id),
-        app_state::window_placement_json.eq(&value.window_placement_json),
         app_state::reducer_revision.eq(value.reducer_revision),
         app_state::reducer_json.eq(&value.reducer_json),
     ))

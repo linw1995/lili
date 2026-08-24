@@ -428,9 +428,14 @@ fn persist_desktop_state(app: &tauri::AppHandle, state: &AppState, store: Option
         .get_webview_window("pet")
         .as_ref()
         .and_then(current_window_placement);
-    let persistent = tauri::async_runtime::block_on(state.persistent_state(placement));
+    let persistent = tauri::async_runtime::block_on(state.persistent_state(placement.clone()));
     if store.save(&persistent).is_err() {
         diagnostics::warn("state", "persist", "write_failed");
+    }
+    if let Some(placement) = placement
+        && store.save_window_placement(&placement).is_err()
+    {
+        diagnostics::warn("state", "persist_window", "write_failed");
     }
 }
 
