@@ -66,31 +66,61 @@ impl SqliteSpoolStore {
         }
         let enqueued_at_ms = i64::try_from(enqueued_at_ms).unwrap_or(i64::MAX);
         let mut database = self.open_database().map_err(database_error)?;
-        let retained = with_short_transaction(database.connection(), |connection| {
-            insert_inbound_spool(
-                connection,
-                &NewInboundSpool {
-                    provider: event.provider.as_str(),
-                    event_id: event.event_id.as_str(),
-                    payload_json: &payload_json,
-                    priority: i32::from(event_priority(event.event_type)),
-                    occurred_at_ms: i64::try_from(event.occurred_at_ms).unwrap_or(i64::MAX),
-                    inserted_at_ms: enqueued_at_ms,
-                    status: "pending",
-                    claim_token: None,
-                    claimed_at_ms: None,
-                    lease_expires_at_ms: None,
-                    attempts: 0,
-                },
-            )?;
-            let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
-            record_retention_delta(connection, delta)?;
+        let new_record = NewInboundSpool {
+            provider: event.provider.as_str(),
+            event_id: event.event_id.as_str(),
+            payload_json: &payload_json,
+            priority: i32::from(event_priority(event.event_type)),
+            occurred_at_ms: i64::try_from(event.occurred_at_ms).unwrap_or(i64::MAX),
+            inserted_at_ms: enqueued_at_ms,
+            status: "pending",
+            claim_token: None,
+            claimed_at_ms: None,
+            lease_expires_at_ms: None,
+            attempts: 0,
+        };
+        let stored = with_short_transaction(database.connection(), |connection| {
+            insert_inbound_spool(connection, &new_record)?;
             Ok(
                 find_inbound_spool(connection, event.provider.as_str(), event.event_id.as_str())?
                     .is_some(),
             )
         })
         .map_err(database_query_error)?;
+        let retained = if self.busy_timeout.is_some() && stored {
+            // Keep the hook-critical transaction limited to the durable insert. The desktop
+            // drain retries retention when a concurrent hook still owns the SQLite writer lock.
+            let maintenance = with_short_transaction(database.connection(), |connection| {
+                let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
+                record_retention_delta(connection, delta)
+            });
+            if maintenance.is_ok() {
+                match find_inbound_spool(
+                    database.connection(),
+                    event.provider.as_str(),
+                    event.event_id.as_str(),
+                ) {
+                    Ok(Some(_)) | Err(_) => true,
+                    Ok(None) => false,
+                }
+            } else {
+                true
+            }
+        } else if stored {
+            with_short_transaction(database.connection(), |connection| {
+                let delta = enforce_limits(connection, self.limits, enqueued_at_ms)?;
+                record_retention_delta(connection, delta)?;
+                Ok(find_inbound_spool(
+                    connection,
+                    event.provider.as_str(),
+                    event.event_id.as_str(),
+                )?
+                .is_some())
+            })
+            .map_err(database_query_error)?
+        } else {
+            false
+        };
         Ok(if retained {
             SpoolEnqueueOutcome::Stored
         } else {
