@@ -13,7 +13,6 @@ use crate::{
 };
 
 const MAX_RECENT_EVENT_IDS: usize = 4096;
-const MAX_PERSISTED_NOTIFICATIONS: usize = 128;
 const MAX_PERSISTED_SESSIONS: usize = 128;
 pub const DEFAULT_MINIMUM_DWELL_MS: u64 = 750;
 
@@ -102,9 +101,10 @@ struct PersistedTurn {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReducerRestoreError {
     TooManySessions,
-    TooManyNotifications,
     DuplicateSession,
     DuplicateNotification,
+    DuplicateSessionNotification,
+    NotificationWithoutSession,
     InvalidCurrentTurn,
     InvalidNotificationState,
 }
@@ -113,9 +113,14 @@ impl std::fmt::Display for ReducerRestoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::TooManySessions => "persisted reducer has too many sessions",
-            Self::TooManyNotifications => "persisted reducer has too many notifications",
             Self::DuplicateSession => "persisted reducer has a duplicate session",
             Self::DuplicateNotification => "persisted reducer has a duplicate notification",
+            Self::DuplicateSessionNotification => {
+                "persisted reducer has multiple notifications for one session"
+            }
+            Self::NotificationWithoutSession => {
+                "persisted reducer has a notification without a session"
+            }
             Self::InvalidCurrentTurn => "persisted reducer references an unknown current turn",
             Self::InvalidNotificationState => {
                 "persisted reducer contains a non-unread notification"
@@ -224,13 +229,23 @@ impl SessionReducer {
             .into_iter()
             .take(MAX_PERSISTED_SESSIONS)
             .map(PersistedSession::from_record)
-            .collect();
+            .collect::<Vec<_>>();
+        let persisted_session_keys = sessions
+            .iter()
+            .map(|session| (session.provider.clone(), session.id.clone()))
+            .collect::<BTreeSet<_>>();
 
         let mut latest_notifications = BTreeMap::new();
         for notification in self
             .notifications
             .values()
             .filter(|notification| notification.state == NotificationState::Unread)
+            .filter(|notification| {
+                persisted_session_keys.contains(&(
+                    notification.provider.clone(),
+                    notification.session_id.clone(),
+                ))
+            })
         {
             let key = (
                 notification.provider.clone(),
@@ -252,7 +267,6 @@ impl SessionReducer {
                 .then_with(|| right.occurred_at_ms.cmp(&left.occurred_at_ms))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        notifications.truncate(MAX_PERSISTED_NOTIFICATIONS);
         SessionReducerState {
             revision: self.revision,
             sessions,
@@ -267,10 +281,6 @@ impl SessionReducer {
         if state.sessions.len() > MAX_PERSISTED_SESSIONS {
             return Err(ReducerRestoreError::TooManySessions);
         }
-        if state.notifications.len() > MAX_PERSISTED_NOTIFICATIONS {
-            return Err(ReducerRestoreError::TooManyNotifications);
-        }
-
         let mut sessions = BTreeMap::new();
         for persisted in state.sessions {
             let record = persisted.into_record()?;
@@ -280,9 +290,20 @@ impl SessionReducer {
             }
         }
         let mut notifications = BTreeMap::new();
+        let mut notification_sessions = BTreeSet::new();
         for notification in state.notifications {
             if notification.state != NotificationState::Unread {
                 return Err(ReducerRestoreError::InvalidNotificationState);
+            }
+            let session_key = (
+                notification.provider.clone(),
+                notification.session_id.clone(),
+            );
+            if !sessions.contains_key(&session_key) {
+                return Err(ReducerRestoreError::NotificationWithoutSession);
+            }
+            if !notification_sessions.insert(session_key) {
+                return Err(ReducerRestoreError::DuplicateSessionNotification);
             }
             if notifications
                 .insert(notification.id.clone(), notification)
@@ -757,9 +778,10 @@ mod tests {
     fn restore_errors_have_safe_public_messages() {
         let errors = [
             ReducerRestoreError::TooManySessions,
-            ReducerRestoreError::TooManyNotifications,
             ReducerRestoreError::DuplicateSession,
             ReducerRestoreError::DuplicateNotification,
+            ReducerRestoreError::DuplicateSessionNotification,
+            ReducerRestoreError::NotificationWithoutSession,
             ReducerRestoreError::InvalidCurrentTurn,
             ReducerRestoreError::InvalidNotificationState,
         ];
@@ -1174,37 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn persistence_prioritizes_attention_notifications_before_truncation() {
-        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
-        for index in 0..(MAX_PERSISTED_NOTIFICATIONS + 4) {
-            reducer.reduce(event(
-                &format!("completion-{index}"),
-                "turn_completed",
-                &format!("session-{index}"),
-                Some("turn-1"),
-                index as u64,
-            ));
-        }
-        reducer.reduce(event(
-            "attention-priority",
-            "attention_required",
-            "session-priority",
-            Some("turn-1"),
-            10_000,
-        ));
-
-        let persisted = reducer.persistent_state();
-        assert_eq!(persisted.notifications.len(), MAX_PERSISTED_NOTIFICATIONS);
-        assert!(
-            persisted
-                .notifications
-                .iter()
-                .any(|notification| notification.kind == NotificationKind::Attention)
-        );
-    }
-
-    #[test]
-    fn persistence_bounds_sessions_and_unread_notifications() {
+    fn persistence_keeps_notifications_only_for_persisted_sessions() {
         let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
         for index in 0..(MAX_PERSISTED_SESSIONS + 12) {
             reducer.reduce(event(
@@ -1218,6 +1210,33 @@ mod tests {
         let restored = SessionReducer::from_persistent_state(reducer.persistent_state()).unwrap();
         let snapshot = restored.snapshot();
         assert_eq!(snapshot.sessions.len(), MAX_PERSISTED_SESSIONS);
-        assert_eq!(snapshot.notifications.len(), MAX_PERSISTED_NOTIFICATIONS);
+        assert_eq!(snapshot.notifications.len(), MAX_PERSISTED_SESSIONS);
+        assert!(
+            snapshot
+                .notifications
+                .iter()
+                .all(|notification| notification.session_id.as_str() != "session-0")
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_multiple_notifications_for_one_session() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "completion",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        let mut persisted = reducer.persistent_state();
+        persisted
+            .notifications
+            .push(persisted.notifications[0].clone());
+
+        assert!(matches!(
+            SessionReducer::from_persistent_state(persisted),
+            Err(ReducerRestoreError::DuplicateSessionNotification)
+        ));
     }
 }

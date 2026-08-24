@@ -9,7 +9,7 @@ The compatibility target is the installed Codex v2 pet contract: a package under
 **Goals:**
 
 - Keep pet assets interchangeable with existing Codex v2 packages.
-- Represent concurrent sessions with a deterministic reducer and recoverable notification queue.
+- Represent concurrent sessions with a deterministic reducer and a restart-safe latest-notification projection.
 - Make hook forwarding fast, observer-only, private to the local user, and tolerant of the UI being offline.
 - Keep rendering, native session authority, and process execution separated by explicit interfaces.
 - Make every configured interaction reproducible and auditable without shell parsing.
@@ -103,7 +103,7 @@ Alternatives considered:
 
 ### Use a serialized reducer for ordering, deduplication, and priority
 
-One native actor owns the session map, event deduplication cache, unread notification queue, and monotonic snapshot revision. An `EventId` uses a provider-supplied identity when present and otherwise a hash of the normalized source type, session, turn, occurrence time, and stable source discriminator.
+One native actor owns the session map, event deduplication cache, in-memory notification set, and monotonic snapshot revision. An `EventId` uses a provider-supplied identity when present and otherwise a hash of the normalized source type, session, turn, occurrence time, and stable source discriminator.
 
 Each `(session, turn)` is monotonic: a terminal state cannot return to active, while a different turn identifier starts a new generation. A new snapshot is published only after reduction. The displayed state priority is:
 

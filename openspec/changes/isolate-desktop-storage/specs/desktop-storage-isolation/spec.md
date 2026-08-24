@@ -87,7 +87,7 @@ Structured state replacement, spool claims, acknowledgements, and retention deci
 
 ### Requirement: Enforce database invariants and bounded retention
 
-The storage layer MUST enforce valid JSON, valid spool state values, unique spool event identities, and bounded retention for temporary offline events. The durable application projection MUST be replaced rather than appended.
+The storage layer MUST enforce valid JSON, valid spool state values, unique spool event identities, and bounded retention for temporary offline events. The durable application projection MUST be replaced rather than appended, and MUST contain at most one latest unread notification for each persisted Session rather than a notification history or a separate global notification queue.
 
 #### Scenario: Invalid structured detail is written
 
@@ -98,6 +98,11 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 
 - **WHEN** a reducer snapshot is persisted after a Session has produced multiple notifications
 - **THEN** the durable projection contains only the latest notification for that Session, while the in-memory reducer may retain the complete current lifecycle
+
+#### Scenario: A notification belongs to a Session outside the persisted projection
+
+- **WHEN** the reducer has more Sessions than the bounded restart projection can retain
+- **THEN** the durable projection retains notifications only for the Sessions present in that projection, with no orphan notification record
 
 #### Scenario: Retention limit is reached
 
