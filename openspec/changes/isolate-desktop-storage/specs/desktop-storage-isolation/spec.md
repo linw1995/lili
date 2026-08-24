@@ -104,6 +104,11 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 - **WHEN** the reducer has more Sessions than the bounded restart projection can retain
 - **THEN** the durable projection retains notifications only for the Sessions present in that projection, with no orphan notification record
 
+#### Scenario: An older state-driving Session competes with newer ended Sessions
+
+- **WHEN** an Active or Attention Session is older than enough ended Sessions to exceed the restart projection bound
+- **THEN** the state-driving Session is retained and the restored presentation is recomputed from the retained Sessions and notifications
+
 #### Scenario: Retention limit is reached
 
 - **WHEN** offline spool records exceed their configured bound

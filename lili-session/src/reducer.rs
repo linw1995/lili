@@ -65,9 +65,6 @@ pub struct SessionReducerState {
     revision: u64,
     sessions: Vec<PersistedSession>,
     notifications: Vec<Notification>,
-    presentation: PresentationState,
-    presentation_since_ms: u64,
-    minimum_dwell_ms: u64,
 }
 
 impl SessionReducerState {
@@ -219,9 +216,9 @@ impl SessionReducer {
     pub fn persistent_state(&self) -> SessionReducerState {
         let mut sessions = self.sessions.values().collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
-            right
-                .updated_at_ms
-                .cmp(&left.updated_at_ms)
+            is_state_driving(right)
+                .cmp(&is_state_driving(left))
+                .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
                 .then_with(|| left.provider.cmp(&right.provider))
                 .then_with(|| left.id.cmp(&right.id))
         });
@@ -271,9 +268,6 @@ impl SessionReducer {
             revision: self.revision,
             sessions,
             notifications,
-            presentation: self.presentation.state,
-            presentation_since_ms: self.presentation.since_ms,
-            minimum_dwell_ms: self.minimum_dwell_ms,
         }
     }
 
@@ -312,18 +306,17 @@ impl SessionReducer {
                 return Err(ReducerRestoreError::DuplicateNotification);
             }
         }
-        Ok(Self {
+        let mut reducer = Self {
             revision: state.revision,
             sessions,
             notifications,
             recent_event_ids: VecDeque::new(),
             recent_event_set: BTreeSet::new(),
-            presentation: PresentationTracker {
-                state: state.presentation,
-                since_ms: state.presentation_since_ms,
-            },
-            minimum_dwell_ms: state.minimum_dwell_ms,
-        })
+            presentation: PresentationTracker::default(),
+            minimum_dwell_ms: DEFAULT_MINIMUM_DWELL_MS,
+        };
+        reducer.presentation.state = reducer.desired_presentation();
+        Ok(reducer)
     }
 
     pub fn snapshot(&self) -> SessionViewSnapshot {
@@ -736,6 +729,13 @@ fn event_order(event: &NormalizedSessionEvent) -> (u64, &EventId) {
 
 fn session_order(session: &SessionRecord) -> (u64, &EventId) {
     (session.updated_at_ms, &session.last_event_id)
+}
+
+fn is_state_driving(session: &SessionRecord) -> bool {
+    matches!(
+        session.summary().phase,
+        SessionPhase::Active | SessionPhase::Attention
+    )
 }
 
 fn turn_order(turn: &TurnRecord) -> (u64, &EventId) {
@@ -1217,6 +1217,38 @@ mod tests {
                 .iter()
                 .all(|notification| notification.session_id.as_str() != "session-0")
         );
+    }
+
+    #[test]
+    fn persistence_retains_state_driving_sessions_and_recomputes_presentation() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "active-event",
+            "turn_started",
+            "old-active-session",
+            Some("turn-1"),
+            1,
+        ));
+        for index in 0..(MAX_PERSISTED_SESSIONS + 12) {
+            reducer.reduce(event(
+                &format!("completed-{index}"),
+                "session_ended",
+                &format!("ended-session-{index}"),
+                None,
+                100 + index as u64,
+            ));
+        }
+
+        let persisted = reducer.persistent_state();
+        assert!(
+            persisted
+                .sessions
+                .iter()
+                .any(|session| session.id.as_str() == "old-active-session")
+        );
+
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Running);
     }
 
     #[test]
