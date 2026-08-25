@@ -119,6 +119,11 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 - **WHEN** the Session projection is full of Active or Attention Sessions and another Session owns an unread Failure or Completion notification
 - **THEN** the notification-driving Session is retained before the projection bound is applied, and restart restores Failed or Review presentation as applicable
 
+#### Scenario: An older turn is retried after restart
+
+- **WHEN** a delayed event for one of a Session's recently retired turn identities arrives after the reducer has been restored
+- **THEN** the event is ignored as stale without changing the current turn or recreating its notification, while the durable projection remains bounded
+
 #### Scenario: Retention limit is reached
 
 - **WHEN** offline spool records exceed their configured bound

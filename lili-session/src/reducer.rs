@@ -14,6 +14,7 @@ use crate::{
 
 const MAX_RECENT_EVENT_IDS: usize = 4096;
 const MAX_PERSISTED_SESSIONS: usize = 128;
+const MAX_PERSISTED_RETIRED_TURNS: usize = 16;
 pub const DEFAULT_MINIMUM_DWELL_MS: u64 = 750;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +47,7 @@ struct SessionRecord {
     id: SessionId,
     current_turn_id: Option<TurnId>,
     turns: BTreeMap<TurnId, TurnRecord>,
+    retired_turn_ids: VecDeque<TurnId>,
     project: Option<DisplayProjectContext>,
     updated_at_ms: u64,
     last_event_id: EventId,
@@ -80,6 +82,7 @@ struct PersistedSession {
     id: SessionId,
     current_turn_id: Option<TurnId>,
     current_turn: Option<PersistedTurn>,
+    retired_turn_ids: Vec<TurnId>,
     project: Option<DisplayProjectContext>,
     updated_at_ms: u64,
     last_event_id: EventId,
@@ -98,8 +101,11 @@ struct PersistedTurn {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReducerRestoreError {
     TooManySessions,
+    TooManyRetiredTurns,
     DuplicateSession,
     DuplicateNotification,
+    DuplicateRetiredTurn,
+    RetiredCurrentTurn,
     DuplicateSessionNotification,
     NotificationWithoutSession,
     InvalidCurrentTurn,
@@ -110,8 +116,11 @@ impl std::fmt::Display for ReducerRestoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::TooManySessions => "persisted reducer has too many sessions",
+            Self::TooManyRetiredTurns => "persisted reducer has too many retired turns",
             Self::DuplicateSession => "persisted reducer has a duplicate session",
             Self::DuplicateNotification => "persisted reducer has a duplicate notification",
+            Self::DuplicateRetiredTurn => "persisted reducer has a duplicate retired turn",
+            Self::RetiredCurrentTurn => "persisted reducer retires the current turn",
             Self::DuplicateSessionNotification => {
                 "persisted reducer has multiple notifications for one session"
             }
@@ -428,6 +437,14 @@ impl SessionReducer {
             .entry(key)
             .or_insert_with(|| SessionRecord::new(event));
         let previous = session.turns.get(&turn_id);
+        let starts_new_turn = previous.is_none()
+            && session
+                .current_turn_id
+                .as_ref()
+                .is_some_and(|current| current != &turn_id);
+        if starts_new_turn && session.retired_turn_ids.contains(&turn_id) {
+            return Transition::default();
+        }
         if previous.is_none()
             && event.event_id != session.last_event_id
             && event_order(event) <= session_order(session)
@@ -437,6 +454,9 @@ impl SessionReducer {
         let Some(next_phase) = next_turn_phase(previous, event) else {
             return Transition::default();
         };
+        if starts_new_turn && let Some(current_turn_id) = session.current_turn_id.clone() {
+            remember_retired_turn(session, current_turn_id);
+        }
         session.turns.insert(
             turn_id.clone(),
             TurnRecord {
@@ -612,6 +632,7 @@ impl SessionRecord {
             id: event.session_id.clone(),
             current_turn_id: None,
             turns: BTreeMap::new(),
+            retired_turn_ids: VecDeque::new(),
             project: event.project.clone(),
             updated_at_ms: event.occurred_at_ms,
             last_event_id: event.event_id.clone(),
@@ -654,6 +675,7 @@ impl PersistedSession {
             id: record.id.clone(),
             current_turn_id: current_turn.as_ref().map(|turn| turn.id.clone()),
             current_turn,
+            retired_turn_ids: record.retired_turn_ids.iter().cloned().collect(),
             project: record.project.clone(),
             updated_at_ms: record.updated_at_ms,
             last_event_id: record.last_event_id.clone(),
@@ -671,6 +693,19 @@ impl PersistedSession {
             };
             turns.insert(turn.id, record);
         }
+        if self.retired_turn_ids.len() > MAX_PERSISTED_RETIRED_TURNS {
+            return Err(ReducerRestoreError::TooManyRetiredTurns);
+        }
+        let mut retired_turn_ids = VecDeque::new();
+        for turn_id in self.retired_turn_ids {
+            if self.current_turn_id.as_ref() == Some(&turn_id) {
+                return Err(ReducerRestoreError::RetiredCurrentTurn);
+            }
+            if retired_turn_ids.contains(&turn_id) {
+                return Err(ReducerRestoreError::DuplicateRetiredTurn);
+            }
+            retired_turn_ids.push_back(turn_id);
+        }
         if self
             .current_turn_id
             .as_ref()
@@ -683,6 +718,7 @@ impl PersistedSession {
             id: self.id,
             current_turn_id: self.current_turn_id,
             turns,
+            retired_turn_ids,
             project: self.project,
             updated_at_ms: self.updated_at_ms,
             last_event_id: self.last_event_id,
@@ -742,6 +778,20 @@ fn update_session_after_turn(
         if event.project.is_some() {
             session.project.clone_from(&event.project);
         }
+    }
+}
+
+fn remember_retired_turn(session: &mut SessionRecord, turn_id: TurnId) {
+    if let Some(index) = session
+        .retired_turn_ids
+        .iter()
+        .position(|retired| retired == &turn_id)
+    {
+        session.retired_turn_ids.remove(index);
+    }
+    session.retired_turn_ids.push_back(turn_id);
+    while session.retired_turn_ids.len() > MAX_PERSISTED_RETIRED_TURNS {
+        session.retired_turn_ids.pop_front();
     }
 }
 
@@ -813,8 +863,11 @@ mod tests {
     fn restore_errors_have_safe_public_messages() {
         let errors = [
             ReducerRestoreError::TooManySessions,
+            ReducerRestoreError::TooManyRetiredTurns,
             ReducerRestoreError::DuplicateSession,
             ReducerRestoreError::DuplicateNotification,
+            ReducerRestoreError::DuplicateRetiredTurn,
+            ReducerRestoreError::RetiredCurrentTurn,
             ReducerRestoreError::DuplicateSessionNotification,
             ReducerRestoreError::NotificationWithoutSession,
             ReducerRestoreError::InvalidCurrentTurn,
@@ -1189,6 +1242,52 @@ mod tests {
                 20,
             )),
             ReductionOutcome::IgnoredStale
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_replayed_retired_turns_after_restart() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "started-1",
+            "turn_started",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "completed-1",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            20,
+        ));
+        reducer.reduce(event(
+            "started-2",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+
+        let mut restored =
+            SessionReducer::from_persistent_state(reducer.persistent_state()).unwrap();
+        assert_eq!(
+            restored.reduce(event(
+                "completed-1-retry",
+                "turn_completed",
+                "session-1",
+                Some("turn-1"),
+                100,
+            )),
+            ReductionOutcome::IgnoredStale
+        );
+        assert_eq!(
+            restored.snapshot().sessions[0]
+                .current_turn_id
+                .as_ref()
+                .map(TurnId::as_str),
+            Some("turn-2")
         );
     }
 
