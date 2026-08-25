@@ -515,7 +515,7 @@ fn sync_directory(_directory: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
-fn unix_socket_directory(runtime_dir: &Path) -> PathBuf {
+fn unix_socket_directory_name(runtime_dir: &Path) -> String {
     use std::fmt::Write as _;
 
     use sha2::{Digest, Sha256};
@@ -527,7 +527,30 @@ fn unix_socket_directory(runtime_dir: &Path) -> PathBuf {
     for byte in digest.finalize() {
         write!(&mut name, "{byte:02x}").expect("writing a socket name cannot fail");
     }
-    PathBuf::from("/tmp").join(name)
+    name
+}
+
+#[cfg(unix)]
+fn unix_socket_directory(runtime_dir: &Path) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    const MAX_SOCKET_PATH_BYTES: usize = 100;
+
+    let directory_name = unix_socket_directory_name(runtime_dir);
+    let fallback = PathBuf::from("/tmp").join(&directory_name);
+    let Some(runtime_base) = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    else {
+        return fallback;
+    };
+    let candidate = runtime_base.join(&directory_name).join("endpoint.sock");
+    if candidate.as_os_str().as_bytes().len() >= MAX_SOCKET_PATH_BYTES {
+        fallback
+    } else {
+        runtime_base.join(directory_name)
+    }
 }
 
 #[cfg(unix)]
@@ -1246,10 +1269,6 @@ mod tests {
         let runtime_dir = PathBuf::from("/").join("runtime".repeat(256));
         let socket_path = unix_socket_path(&runtime_dir);
 
-        assert_eq!(
-            socket_path.parent().and_then(Path::parent),
-            Some(Path::new("/tmp"))
-        );
         assert_eq!(
             socket_path.file_name().and_then(|name| name.to_str()),
             Some("endpoint.sock")
