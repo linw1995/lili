@@ -220,6 +220,7 @@ pub fn install_local_marketplace_plugin(
 pub fn invoke_installed_plugin_hook(
     plugin: &InstalledMarketplacePlugin,
     codex_home: &Path,
+    application_home: &Path,
     payload: &[u8],
     codex_binary: &Path,
     repository_root: &Path,
@@ -241,7 +242,10 @@ pub fn invoke_installed_plugin_hook(
             .arg("--installed-plugin-root")
             .arg(plugin.root())
             .arg("--dispatch-cwd")
-            .arg(repository_root);
+            .arg(repository_root)
+            .env("HOME", application_home)
+            .env("LOCALAPPDATA", application_home)
+            .env("XDG_STATE_HOME", application_home.join("state"));
         let output = run_command(
             &mut command,
             CODEX_HOOK_DISPATCH_TIMEOUT,
@@ -267,7 +271,17 @@ pub fn invoke_installed_plugin_hook(
 
         command
             .env("PLUGIN_ROOT", &plugin.root)
+            .env(
+                "PLUGIN_DATA",
+                codex_home
+                    .join("plugins")
+                    .join("data")
+                    .join("lili-lili-local"),
+            )
             .env("CODEX_HOME", codex_home)
+            .env("HOME", application_home)
+            .env("LOCALAPPDATA", application_home)
+            .env("XDG_STATE_HOME", application_home.join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

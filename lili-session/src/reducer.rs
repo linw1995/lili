@@ -13,9 +13,8 @@ use crate::{
 };
 
 const MAX_RECENT_EVENT_IDS: usize = 4096;
-const MAX_PERSISTED_NOTIFICATIONS: usize = 128;
 const MAX_PERSISTED_SESSIONS: usize = 128;
-const MAX_PERSISTED_TURNS_PER_SESSION: usize = 64;
+const MAX_PERSISTED_RETIRED_TURNS: usize = 16;
 pub const DEFAULT_MINIMUM_DWELL_MS: u64 = 750;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,6 +47,7 @@ struct SessionRecord {
     id: SessionId,
     current_turn_id: Option<TurnId>,
     turns: BTreeMap<TurnId, TurnRecord>,
+    retired_turn_ids: VecDeque<TurnId>,
     project: Option<DisplayProjectContext>,
     updated_at_ms: u64,
     last_event_id: EventId,
@@ -67,10 +67,12 @@ pub struct SessionReducerState {
     revision: u64,
     sessions: Vec<PersistedSession>,
     notifications: Vec<Notification>,
-    recent_event_ids: Vec<PersistedEventIdentity>,
-    presentation: PresentationState,
-    presentation_since_ms: u64,
-    minimum_dwell_ms: u64,
+}
+
+impl SessionReducerState {
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,7 +81,8 @@ struct PersistedSession {
     provider: ProviderId,
     id: SessionId,
     current_turn_id: Option<TurnId>,
-    turns: Vec<PersistedTurn>,
+    current_turn: Option<PersistedTurn>,
+    retired_turn_ids: Vec<TurnId>,
     project: Option<DisplayProjectContext>,
     updated_at_ms: u64,
     last_event_id: EventId,
@@ -95,23 +98,16 @@ struct PersistedTurn {
     last_event_id: EventId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PersistedEventIdentity {
-    provider: ProviderId,
-    event_id: EventId,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReducerRestoreError {
     TooManySessions,
-    TooManyTurns,
-    TooManyNotifications,
-    TooManyRecentEvents,
+    TooManyRetiredTurns,
     DuplicateSession,
-    DuplicateTurn,
     DuplicateNotification,
-    DuplicateRecentEvent,
+    DuplicateRetiredTurn,
+    RetiredCurrentTurn,
+    DuplicateSessionNotification,
+    NotificationWithoutSession,
     InvalidCurrentTurn,
     InvalidNotificationState,
 }
@@ -120,13 +116,17 @@ impl std::fmt::Display for ReducerRestoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::TooManySessions => "persisted reducer has too many sessions",
-            Self::TooManyTurns => "persisted reducer has too many turns",
-            Self::TooManyNotifications => "persisted reducer has too many notifications",
-            Self::TooManyRecentEvents => "persisted reducer has too many recent events",
+            Self::TooManyRetiredTurns => "persisted reducer has too many retired turns",
             Self::DuplicateSession => "persisted reducer has a duplicate session",
-            Self::DuplicateTurn => "persisted reducer has a duplicate turn",
             Self::DuplicateNotification => "persisted reducer has a duplicate notification",
-            Self::DuplicateRecentEvent => "persisted reducer has a duplicate recent event",
+            Self::DuplicateRetiredTurn => "persisted reducer has a duplicate retired turn",
+            Self::RetiredCurrentTurn => "persisted reducer retires the current turn",
+            Self::DuplicateSessionNotification => {
+                "persisted reducer has multiple notifications for one session"
+            }
+            Self::NotificationWithoutSession => {
+                "persisted reducer has a notification without a session"
+            }
             Self::InvalidCurrentTurn => "persisted reducer references an unknown current turn",
             Self::InvalidNotificationState => {
                 "persisted reducer contains a non-unread notification"
@@ -223,11 +223,33 @@ impl SessionReducer {
     }
 
     pub fn persistent_state(&self) -> SessionReducerState {
+        let unread_notification_priorities = self
+            .notifications
+            .values()
+            .filter(|notification| notification.state == NotificationState::Unread)
+            .fold(
+                BTreeMap::<(ProviderId, SessionId), u8>::new(),
+                |mut priorities, notification| {
+                    let key = (
+                        notification.provider.clone(),
+                        notification.session_id.clone(),
+                    );
+                    let priority = notification_priority(notification);
+                    priorities
+                        .entry(key)
+                        .and_modify(|current| *current = (*current).max(priority))
+                        .or_insert(priority);
+                    priorities
+                },
+            );
         let mut sessions = self.sessions.values().collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
-            right
-                .updated_at_ms
-                .cmp(&left.updated_at_ms)
+            session_persistence_priority(right, &unread_notification_priorities)
+                .cmp(&session_persistence_priority(
+                    left,
+                    &unread_notification_priorities,
+                ))
+                .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
                 .then_with(|| left.provider.cmp(&right.provider))
                 .then_with(|| left.id.cmp(&right.id))
         });
@@ -235,34 +257,48 @@ impl SessionReducer {
             .into_iter()
             .take(MAX_PERSISTED_SESSIONS)
             .map(PersistedSession::from_record)
-            .collect();
-
-        let notifications = self
-            .snapshot()
-            .notifications
-            .into_iter()
-            .filter(|notification| notification.state == NotificationState::Unread)
-            .take(MAX_PERSISTED_NOTIFICATIONS)
-            .collect();
-        let recent_event_ids = self
-            .recent_event_ids
+            .collect::<Vec<_>>();
+        let persisted_session_keys = sessions
             .iter()
-            .rev()
-            .take(MAX_RECENT_EVENT_IDS)
-            .rev()
-            .map(|(provider, event_id)| PersistedEventIdentity {
-                provider: provider.clone(),
-                event_id: event_id.clone(),
+            .map(|session| (session.provider.clone(), session.id.clone()))
+            .collect::<BTreeSet<_>>();
+
+        let mut state_notifications = BTreeMap::new();
+        for notification in self
+            .notifications
+            .values()
+            .filter(|notification| notification.state == NotificationState::Unread)
+            .filter(|notification| {
+                persisted_session_keys.contains(&(
+                    notification.provider.clone(),
+                    notification.session_id.clone(),
+                ))
             })
-            .collect();
+        {
+            let key = (
+                notification.provider.clone(),
+                notification.session_id.clone(),
+            );
+            let replace = state_notifications
+                .get(&key)
+                .is_none_or(|current: &Notification| {
+                    notification_order(notification) > notification_order(current)
+                });
+            if replace {
+                state_notifications.insert(key, notification.clone());
+            }
+        }
+        let mut notifications = state_notifications.into_values().collect::<Vec<_>>();
+        notifications.sort_by(|left, right| {
+            notification_priority(right)
+                .cmp(&notification_priority(left))
+                .then_with(|| right.occurred_at_ms.cmp(&left.occurred_at_ms))
+                .then_with(|| left.id.cmp(&right.id))
+        });
         SessionReducerState {
             revision: self.revision,
             sessions,
             notifications,
-            recent_event_ids,
-            presentation: self.presentation.state,
-            presentation_since_ms: self.presentation.since_ms,
-            minimum_dwell_ms: self.minimum_dwell_ms,
         }
     }
 
@@ -270,13 +306,6 @@ impl SessionReducer {
         if state.sessions.len() > MAX_PERSISTED_SESSIONS {
             return Err(ReducerRestoreError::TooManySessions);
         }
-        if state.notifications.len() > MAX_PERSISTED_NOTIFICATIONS {
-            return Err(ReducerRestoreError::TooManyNotifications);
-        }
-        if state.recent_event_ids.len() > MAX_RECENT_EVENT_IDS {
-            return Err(ReducerRestoreError::TooManyRecentEvents);
-        }
-
         let mut sessions = BTreeMap::new();
         for persisted in state.sessions {
             let record = persisted.into_record()?;
@@ -286,9 +315,20 @@ impl SessionReducer {
             }
         }
         let mut notifications = BTreeMap::new();
+        let mut notification_sessions = BTreeSet::new();
         for notification in state.notifications {
             if notification.state != NotificationState::Unread {
                 return Err(ReducerRestoreError::InvalidNotificationState);
+            }
+            let session_key = (
+                notification.provider.clone(),
+                notification.session_id.clone(),
+            );
+            if !sessions.contains_key(&session_key) {
+                return Err(ReducerRestoreError::NotificationWithoutSession);
+            }
+            if !notification_sessions.insert(session_key) {
+                return Err(ReducerRestoreError::DuplicateSessionNotification);
             }
             if notifications
                 .insert(notification.id.clone(), notification)
@@ -297,27 +337,17 @@ impl SessionReducer {
                 return Err(ReducerRestoreError::DuplicateNotification);
             }
         }
-        let mut recent_event_ids = VecDeque::new();
-        let mut recent_event_set = BTreeSet::new();
-        for event in state.recent_event_ids {
-            let key = (event.provider, event.event_id);
-            if !recent_event_set.insert(key.clone()) {
-                return Err(ReducerRestoreError::DuplicateRecentEvent);
-            }
-            recent_event_ids.push_back(key);
-        }
-        Ok(Self {
+        let mut reducer = Self {
             revision: state.revision,
             sessions,
             notifications,
-            recent_event_ids,
-            recent_event_set,
-            presentation: PresentationTracker {
-                state: state.presentation,
-                since_ms: state.presentation_since_ms,
-            },
-            minimum_dwell_ms: state.minimum_dwell_ms,
-        })
+            recent_event_ids: VecDeque::new(),
+            recent_event_set: BTreeSet::new(),
+            presentation: PresentationTracker::default(),
+            minimum_dwell_ms: DEFAULT_MINIMUM_DWELL_MS,
+        };
+        reducer.presentation.state = reducer.desired_presentation();
+        Ok(reducer)
     }
 
     pub fn snapshot(&self) -> SessionViewSnapshot {
@@ -407,9 +437,26 @@ impl SessionReducer {
             .entry(key)
             .or_insert_with(|| SessionRecord::new(event));
         let previous = session.turns.get(&turn_id);
+        let starts_new_turn = previous.is_none()
+            && session
+                .current_turn_id
+                .as_ref()
+                .is_some_and(|current| current != &turn_id);
+        if starts_new_turn && session.retired_turn_ids.contains(&turn_id) {
+            return Transition::default();
+        }
+        if previous.is_none()
+            && event.event_id != session.last_event_id
+            && event_order(event) <= session_order(session)
+        {
+            return Transition::default();
+        }
         let Some(next_phase) = next_turn_phase(previous, event) else {
             return Transition::default();
         };
+        if starts_new_turn && let Some(current_turn_id) = session.current_turn_id.clone() {
+            remember_retired_turn(session, current_turn_id);
+        }
         session.turns.insert(
             turn_id.clone(),
             TurnRecord {
@@ -585,6 +632,7 @@ impl SessionRecord {
             id: event.session_id.clone(),
             current_turn_id: None,
             turns: BTreeMap::new(),
+            retired_turn_ids: VecDeque::new(),
             project: event.project.clone(),
             updated_at_ms: event.occurred_at_ms,
             last_event_id: event.event_id.clone(),
@@ -614,32 +662,20 @@ impl SessionRecord {
 
 impl PersistedSession {
     fn from_record(record: &SessionRecord) -> Self {
-        let mut turns = record.turns.iter().collect::<Vec<_>>();
-        turns.sort_by(|(left_id, left), (right_id, right)| {
-            right
-                .updated_at_ms
-                .cmp(&left.updated_at_ms)
-                .then_with(|| left_id.cmp(right_id))
-        });
-        let turns = turns
-            .into_iter()
-            .take(MAX_PERSISTED_TURNS_PER_SESSION)
-            .map(|(id, turn)| PersistedTurn {
-                id: id.clone(),
+        let current_turn = record.current_turn_id.as_ref().and_then(|turn_id| {
+            record.turns.get(turn_id).map(|turn| PersistedTurn {
+                id: turn_id.clone(),
                 phase: turn.phase,
                 updated_at_ms: turn.updated_at_ms,
                 last_event_id: turn.last_event_id.clone(),
             })
-            .collect::<Vec<_>>();
-        let current_turn_id = record
-            .current_turn_id
-            .clone()
-            .filter(|current| turns.iter().any(|turn| turn.id == *current));
+        });
         Self {
             provider: record.provider.clone(),
             id: record.id.clone(),
-            current_turn_id,
-            turns,
+            current_turn_id: current_turn.as_ref().map(|turn| turn.id.clone()),
+            current_turn,
+            retired_turn_ids: record.retired_turn_ids.iter().cloned().collect(),
             project: record.project.clone(),
             updated_at_ms: record.updated_at_ms,
             last_event_id: record.last_event_id.clone(),
@@ -648,19 +684,27 @@ impl PersistedSession {
     }
 
     fn into_record(self) -> Result<SessionRecord, ReducerRestoreError> {
-        if self.turns.len() > MAX_PERSISTED_TURNS_PER_SESSION {
-            return Err(ReducerRestoreError::TooManyTurns);
-        }
         let mut turns = BTreeMap::new();
-        for turn in self.turns {
+        if let Some(turn) = self.current_turn {
             let record = TurnRecord {
                 phase: turn.phase,
                 updated_at_ms: turn.updated_at_ms,
                 last_event_id: turn.last_event_id,
             };
-            if turns.insert(turn.id, record).is_some() {
-                return Err(ReducerRestoreError::DuplicateTurn);
+            turns.insert(turn.id, record);
+        }
+        if self.retired_turn_ids.len() > MAX_PERSISTED_RETIRED_TURNS {
+            return Err(ReducerRestoreError::TooManyRetiredTurns);
+        }
+        let mut retired_turn_ids = VecDeque::new();
+        for turn_id in self.retired_turn_ids {
+            if self.current_turn_id.as_ref() == Some(&turn_id) {
+                return Err(ReducerRestoreError::RetiredCurrentTurn);
             }
+            if retired_turn_ids.contains(&turn_id) {
+                return Err(ReducerRestoreError::DuplicateRetiredTurn);
+            }
+            retired_turn_ids.push_back(turn_id);
         }
         if self
             .current_turn_id
@@ -674,6 +718,7 @@ impl PersistedSession {
             id: self.id,
             current_turn_id: self.current_turn_id,
             turns,
+            retired_turn_ids,
             project: self.project,
             updated_at_ms: self.updated_at_ms,
             last_event_id: self.last_event_id,
@@ -736,12 +781,42 @@ fn update_session_after_turn(
     }
 }
 
+fn remember_retired_turn(session: &mut SessionRecord, turn_id: TurnId) {
+    if let Some(index) = session
+        .retired_turn_ids
+        .iter()
+        .position(|retired| retired == &turn_id)
+    {
+        session.retired_turn_ids.remove(index);
+    }
+    session.retired_turn_ids.push_back(turn_id);
+    while session.retired_turn_ids.len() > MAX_PERSISTED_RETIRED_TURNS {
+        session.retired_turn_ids.pop_front();
+    }
+}
+
 fn event_order(event: &NormalizedSessionEvent) -> (u64, &EventId) {
     (event.occurred_at_ms, &event.event_id)
 }
 
 fn session_order(session: &SessionRecord) -> (u64, &EventId) {
     (session.updated_at_ms, &session.last_event_id)
+}
+
+fn session_persistence_priority(
+    session: &SessionRecord,
+    unread_notification_priorities: &BTreeMap<(ProviderId, SessionId), u8>,
+) -> (u8, u8) {
+    let notification_priority = unread_notification_priorities
+        .get(&(session.provider.clone(), session.id.clone()))
+        .copied()
+        .unwrap_or_default();
+    let state_priority = match session.summary().phase {
+        SessionPhase::Attention => 2,
+        SessionPhase::Active => 1,
+        _ => 0,
+    };
+    (notification_priority, state_priority)
 }
 
 fn turn_order(turn: &TurnRecord) -> (u64, &EventId) {
@@ -770,6 +845,14 @@ fn notification_priority(notification: &Notification) -> u8 {
     }
 }
 
+fn notification_order(notification: &Notification) -> (u8, u64, &NotificationId) {
+    (
+        notification_priority(notification),
+        notification.occurred_at_ms,
+        &notification.id,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{ProviderCapabilitiesInputV1, ProviderInputV1, normalize_provider_input};
@@ -780,13 +863,13 @@ mod tests {
     fn restore_errors_have_safe_public_messages() {
         let errors = [
             ReducerRestoreError::TooManySessions,
-            ReducerRestoreError::TooManyTurns,
-            ReducerRestoreError::TooManyNotifications,
-            ReducerRestoreError::TooManyRecentEvents,
+            ReducerRestoreError::TooManyRetiredTurns,
             ReducerRestoreError::DuplicateSession,
-            ReducerRestoreError::DuplicateTurn,
             ReducerRestoreError::DuplicateNotification,
-            ReducerRestoreError::DuplicateRecentEvent,
+            ReducerRestoreError::DuplicateRetiredTurn,
+            ReducerRestoreError::RetiredCurrentTurn,
+            ReducerRestoreError::DuplicateSessionNotification,
+            ReducerRestoreError::NotificationWithoutSession,
             ReducerRestoreError::InvalidCurrentTurn,
             ReducerRestoreError::InvalidNotificationState,
         ];
@@ -1109,11 +1192,178 @@ mod tests {
         assert_eq!(snapshot.notifications[0].kind, NotificationKind::Attention);
 
         let mut restored = restored;
-        assert_eq!(restored.reduce(failed), ReductionOutcome::Duplicate);
+        assert_eq!(restored.reduce(failed), ReductionOutcome::IgnoredStale);
     }
 
     #[test]
-    fn persistence_bounds_sessions_and_unread_notifications() {
+    fn persistence_keeps_one_current_turn_and_state_notification_per_session() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "attention",
+            "attention_required",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "completed",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            20,
+        ));
+        reducer.reduce(event(
+            "next-turn",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.sessions.len(), 1);
+        assert_eq!(
+            persisted.sessions[0]
+                .current_turn
+                .as_ref()
+                .map(|turn| turn.id.as_str()),
+            Some("turn-2")
+        );
+        assert_eq!(persisted.notifications.len(), 1);
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "completed");
+
+        let mut restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(
+            restored.reduce(event(
+                "completed",
+                "turn_completed",
+                "session-1",
+                Some("turn-1"),
+                20,
+            )),
+            ReductionOutcome::IgnoredStale
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_replayed_retired_turns_after_restart() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "started-1",
+            "turn_started",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "completed-1",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            20,
+        ));
+        reducer.reduce(event(
+            "started-2",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+
+        let mut restored =
+            SessionReducer::from_persistent_state(reducer.persistent_state()).unwrap();
+        assert_eq!(
+            restored.reduce(event(
+                "completed-1-retry",
+                "turn_completed",
+                "session-1",
+                Some("turn-1"),
+                100,
+            )),
+            ReductionOutcome::IgnoredStale
+        );
+        assert_eq!(
+            restored.snapshot().sessions[0]
+                .current_turn_id
+                .as_ref()
+                .map(TurnId::as_str),
+            Some("turn-2")
+        );
+    }
+
+    #[test]
+    fn persistence_keeps_an_older_unread_notification_when_newer_one_is_acknowledged() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "completed-1",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "started-2",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            20,
+        ));
+        reducer.reduce(event(
+            "completed-2",
+            "turn_completed",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+        let newer_notification = reducer
+            .snapshot()
+            .notifications
+            .iter()
+            .find(|notification| notification.event_id.as_str() == "completed-2")
+            .map(|notification| notification.id.clone())
+            .unwrap();
+        reducer.acknowledge_notification(&newer_notification, 31);
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.notifications.len(), 1);
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "completed-1");
+    }
+
+    #[test]
+    fn persistence_keeps_the_notification_that_drives_presentation() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "attention",
+            "attention_required",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "started-2",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            20,
+        ));
+        reducer.reduce(event(
+            "completed-2",
+            "turn_completed",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.notifications.len(), 1);
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "attention");
+
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Waiting);
+    }
+
+    #[test]
+    fn persistence_keeps_notifications_only_for_persisted_sessions() {
         let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
         for index in 0..(MAX_PERSISTED_SESSIONS + 12) {
             reducer.reduce(event(
@@ -1127,6 +1377,97 @@ mod tests {
         let restored = SessionReducer::from_persistent_state(reducer.persistent_state()).unwrap();
         let snapshot = restored.snapshot();
         assert_eq!(snapshot.sessions.len(), MAX_PERSISTED_SESSIONS);
-        assert_eq!(snapshot.notifications.len(), MAX_PERSISTED_NOTIFICATIONS);
+        assert_eq!(snapshot.notifications.len(), MAX_PERSISTED_SESSIONS);
+        assert!(
+            snapshot
+                .notifications
+                .iter()
+                .all(|notification| notification.session_id.as_str() != "session-0")
+        );
+    }
+
+    #[test]
+    fn persistence_retains_state_driving_sessions_and_recomputes_presentation() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "active-event",
+            "turn_started",
+            "old-active-session",
+            Some("turn-1"),
+            1,
+        ));
+        for index in 0..(MAX_PERSISTED_SESSIONS + 12) {
+            reducer.reduce(event(
+                &format!("completed-{index}"),
+                "session_ended",
+                &format!("ended-session-{index}"),
+                None,
+                100 + index as u64,
+            ));
+        }
+
+        let persisted = reducer.persistent_state();
+        assert!(
+            persisted
+                .sessions
+                .iter()
+                .any(|session| session.id.as_str() == "old-active-session")
+        );
+
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Running);
+    }
+
+    #[test]
+    fn persistence_retains_sessions_with_presentation_driving_notifications() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        for index in 0..MAX_PERSISTED_SESSIONS {
+            reducer.reduce(event(
+                &format!("active-{index}"),
+                "turn_started",
+                &format!("active-session-{index}"),
+                Some("turn-1"),
+                index as u64,
+            ));
+        }
+        reducer.reduce(event(
+            "failed",
+            "turn_failed",
+            "failed-session",
+            Some("turn-1"),
+            10_000,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.sessions.len(), MAX_PERSISTED_SESSIONS);
+        assert!(
+            persisted
+                .sessions
+                .iter()
+                .any(|session| session.id.as_str() == "failed-session")
+        );
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Failed);
+    }
+
+    #[test]
+    fn persistence_rejects_multiple_notifications_for_one_session() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "completion",
+            "turn_completed",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        let mut persisted = reducer.persistent_state();
+        persisted
+            .notifications
+            .push(persisted.notifications[0].clone());
+
+        assert!(matches!(
+            SessionReducer::from_persistent_state(persisted),
+            Err(ReducerRestoreError::DuplicateSessionNotification)
+        ));
     }
 }

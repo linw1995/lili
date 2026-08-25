@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::{AppState, ViewSnapshot};
+use crate::{AppState, AppStateStore, ViewSnapshot};
 
 pub const DEFAULT_INGESTION_QUEUE_CAPACITY: usize = 128;
 
@@ -150,6 +150,7 @@ pub struct NativeIngestionActor {
     snapshot_sender: watch::Sender<ViewSnapshot>,
     diagnostics: IngestionDiagnostics,
     codex_evidence_store: Option<CodexPluginEvidenceStore>,
+    persistence_store: Option<AppStateStore>,
 }
 
 impl NativeIngestionActor {
@@ -205,8 +206,14 @@ impl NativeIngestionActor {
                 ..IngestionDiagnostics::default()
             },
             codex_evidence_store,
+            persistence_store: None,
         };
         (NativeIngestionHandle { sender, snapshots }, actor)
+    }
+
+    pub fn with_persistence_store(mut self, store: AppStateStore) -> Self {
+        self.persistence_store = Some(store);
+        self
     }
 
     pub async fn run(mut self) {
@@ -227,9 +234,8 @@ impl NativeIngestionActor {
                 }
                 IngestionCommand::IngestSpooled { event, response } => {
                     let outcome = if event.validate().is_ok() {
-                        Ok(self
-                            .reduce_event(event, PluginAttributionTrust::Unauthenticated)
-                            .await)
+                        self.reduce_event(event, PluginAttributionTrust::Unauthenticated)
+                            .await
                     } else {
                         self.diagnostics
                             .record_rejection(RejectionCategory::Malformed);
@@ -276,7 +282,7 @@ impl NativeIngestionActor {
                     verified.event().clone(),
                     PluginAttributionTrust::Authenticated,
                 )
-                .await
+                .await?
             }
             ForwardingPurpose::Verification => {
                 self.verification_reducer.reduce(verified.event().clone())
@@ -295,8 +301,16 @@ impl NativeIngestionActor {
         &mut self,
         event: NormalizedSessionEvent,
         plugin_attribution: PluginAttributionTrust,
-    ) -> ReductionOutcome {
-        let outcome = self.state.apply_session_event(event.clone()).await;
+    ) -> Result<ReductionOutcome, IngestionError> {
+        let persistence_store = self.persistence_store.clone();
+        let outcome = if let Some(store) = persistence_store {
+            self.state
+                .apply_session_event_persisted(event.clone(), &store)
+                .await
+                .map_err(|_| IngestionError::Persistence)?
+        } else {
+            self.state.apply_session_event(event.clone()).await
+        };
         match plugin_attribution {
             PluginAttributionTrust::Authenticated => {
                 self.diagnostics.codex_adapter.record_accepted_event(&event)
@@ -322,7 +336,7 @@ impl NativeIngestionActor {
             }
         }
         self.publish_diagnostics().await;
-        outcome
+        Ok(outcome)
     }
 
     async fn publish_diagnostics(&self) {
@@ -387,6 +401,8 @@ pub enum IngestionError {
     Protocol(#[from] ForwardingProtocolError),
     #[error("native ingestion rejected an invalid normalized event")]
     InvalidEvent,
+    #[error("native ingestion could not persist the accepted event")]
+    Persistence,
 }
 
 #[cfg(test)]
@@ -793,7 +809,9 @@ mod tests {
         let temp = TempDir::new();
         let state = AppState::default();
         let credentials = ForwardingCredentials::generate().unwrap();
-        let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let store = CodexPluginEvidenceStore::for_application(
+            lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap(),
+        );
         let plugin = CodexPluginDiagnostics::discovered(
             Some(lili_session::TESTED_CODEX_VERSION),
             CodexPluginAvailability::Installed,

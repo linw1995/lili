@@ -186,7 +186,7 @@ pub struct EventFilterV1 {
 pub enum WorkingDirectoryPolicy {
     #[default]
     Application,
-    CodexHome,
+    ApplicationData,
     Explicit,
 }
 
@@ -300,7 +300,7 @@ max_parallel = 2
 queue_capacity = 8
 
 [action.working_directory]
-policy = "codex_home"
+policy = "application_data"
 
 [action.environment.allow]
 ACTION_MODE = "desktop"
@@ -316,7 +316,7 @@ ACTION_MODE = "desktop"
         assert_eq!(action.concurrency.mode, ConcurrencyMode::Queue);
         assert_eq!(
             action.working_directory.policy,
-            WorkingDirectoryPolicy::CodexHome
+            WorkingDirectoryPolicy::ApplicationData
         );
         assert_eq!(
             action

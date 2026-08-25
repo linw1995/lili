@@ -36,6 +36,20 @@ if (-not [StringComparer]::OrdinalIgnoreCase.Equals($resolvedPluginRoot, $provid
     Fail-LiliLauncher "Lili plugin root does not match the active package" 65
 }
 
+if ([string]::IsNullOrWhiteSpace($env:PLUGIN_DATA) -or
+    -not [IO.Path]::IsPathRooted($env:PLUGIN_DATA)) {
+    Fail-LiliLauncher "Lili plugin data root is unavailable" 65
+}
+$pluginDataName = Split-Path -Leaf $env:PLUGIN_DATA.TrimEnd($trimCharacters)
+if ($pluginDataName -notmatch '^lili-[A-Za-z0-9._-]{1,123}$') {
+    Fail-LiliLauncher "Lili plugin data root does not identify the active package" 65
+}
+Remove-Item Env:LILI_PLUGIN_CODEX_HOME -ErrorAction SilentlyContinue
+if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME) -and
+    [IO.Path]::IsPathRooted($env:CODEX_HOME)) {
+    $env:LILI_PLUGIN_CODEX_HOME = $env:CODEX_HOME
+}
+
 $isWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
 )

@@ -40,6 +40,33 @@ if [ "$provided_root" != "$plugin_root" ]; then
     fail "Lili plugin root does not match the active package" 65
 fi
 
+plugin_data=${PLUGIN_DATA:-}
+case "$plugin_data" in
+    /*) ;;
+    *) fail "Lili plugin data root is unavailable" 65 ;;
+esac
+plugin_data_name=${plugin_data##*/}
+case "$plugin_data_name" in
+    lili-?*) plugin_marketplace=${plugin_data_name#lili-} ;;
+    *) fail "Lili plugin data root does not identify the active package" 65 ;;
+esac
+case "$plugin_marketplace" in
+    *[!A-Za-z0-9._-]*|'') fail "Lili plugin marketplace identity is invalid" 65 ;;
+esac
+if [ "${#plugin_marketplace}" -gt 123 ]; then
+    fail "Lili plugin marketplace identity is invalid" 65
+fi
+
+unset LILI_PLUGIN_CODEX_HOME
+if [ -n "${CODEX_HOME:-}" ]; then
+    case "$CODEX_HOME" in
+        /*)
+            LILI_PLUGIN_CODEX_HOME=$CODEX_HOME
+            export LILI_PLUGIN_CODEX_HOME
+            ;;
+    esac
+fi
+
 kernel=$("$uname_path" -s 2>/dev/null) \
     || fail "Lili plugin host could not be identified" 64
 machine=$("$uname_path" -m 2>/dev/null) \

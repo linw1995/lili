@@ -4,14 +4,14 @@ use lili_integration::{
     PluginMigrationAssessment, PluginMigrationEvidence, assess_plugin_migration,
     build_coexistence_install_plan, build_install_plan, cleanup_legacy_after_verification, inspect,
     inspect_plugin, install, install_plugin, load_plan, load_plugin_migration_assessment,
-    plugin_hooks_are_trusted, save_plugin_migration_verification, uninstall,
+    plugin_hooks_are_trusted, resolve_codex_home, save_plugin_migration_verification, uninstall,
 };
-use lili_pet::resolve_codex_home;
 use lili_session::{
     DESKTOP_VERSION, ForwardingAckDisposition, ForwardingCredentialStore,
     ProviderCapabilitiesInputV1, ProviderInputV1, deliver_forwarding_message,
     normalize_provider_input,
 };
+use lili_storage::ApplicationPaths;
 
 const SYNTHETIC_DELIVERY_DEADLINE: std::time::Duration = std::time::Duration::from_millis(750);
 
@@ -158,7 +158,7 @@ fn collect_runtime_verification(
             .last_accepted_plugin_event
             .is_some()
     {
-        verify_synthetic_overlap(codex_home, selector)
+        verify_synthetic_overlap(codex_home, selector, None)
     } else {
         (false, false, String::new(), None)
     };
@@ -199,21 +199,29 @@ fn write_assessment(assessment: &PluginMigrationAssessment) -> u8 {
 }
 
 fn verify_synthetic_overlap(
-    codex_home: &std::path::Path,
+    _codex_home: &std::path::Path,
     plugin_selector: &str,
+    test_application_paths: Option<&ApplicationPaths>,
 ) -> (
     bool,
     bool,
     String,
     Option<lili_session::ForwardingCredentials>,
 ) {
-    let record =
-        match ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"))
-            .load()
-        {
-            Ok(record) => record,
-            Err(_) => return (false, false, String::new(), None),
-        };
+    let application_paths = match test_application_paths
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(ApplicationPaths::resolve)
+    {
+        Ok(paths) => paths,
+        Err(_) => return (false, false, String::new(), None),
+    };
+    let record = match ForwardingCredentialStore::for_runtime_dir(&application_paths.runtime_root())
+        .load()
+    {
+        Ok(record) => record,
+        Err(_) => return (false, false, String::new(), None),
+    };
     let credentials = match record.credentials() {
         Ok(credentials) => credentials,
         Err(_) => return (false, false, String::new(), None),
@@ -562,7 +570,8 @@ mod tests {
     #[test]
     fn synthetic_overlap_uses_the_authenticated_runtime_and_observes_a_duplicate() {
         let temp = TempDir::new();
-        let runtime_dir = temp.0.join("lili/runtime");
+        let application_paths = ApplicationPaths::from_root(temp.0.join("application")).unwrap();
+        let runtime_dir = application_paths.runtime_root();
         let endpoint = tauri::async_runtime::block_on(async {
             BoundForwardingEndpoint::bind(&runtime_dir).unwrap()
         });
@@ -592,7 +601,7 @@ mod tests {
         });
 
         let (synthetic, overlap, event_id, returned_credentials) =
-            verify_synthetic_overlap(&temp.0, "lili@test-marketplace");
+            verify_synthetic_overlap(&temp.0, "lili@test-marketplace", Some(&application_paths));
         tauri::async_runtime::block_on(server).unwrap();
         assert!(synthetic);
         assert!(overlap);
@@ -606,13 +615,15 @@ mod tests {
     #[test]
     fn synthetic_overlap_times_out_against_an_unresponsive_runtime() {
         let temp = TempDir::new();
-        let runtime_dir = temp.0.join("lili/runtime");
+        let application_paths = ApplicationPaths::from_root(temp.0.join("application")).unwrap();
+        let runtime_dir = application_paths.runtime_root();
         let _endpoint = tauri::async_runtime::block_on(async {
             BoundForwardingEndpoint::bind(&runtime_dir).unwrap()
         });
         let started = std::time::Instant::now();
 
-        let (synthetic, overlap, _, _) = verify_synthetic_overlap(&temp.0, "lili@test-marketplace");
+        let (synthetic, overlap, _, _) =
+            verify_synthetic_overlap(&temp.0, "lili@test-marketplace", Some(&application_paths));
 
         assert!(!synthetic);
         assert!(!overlap);

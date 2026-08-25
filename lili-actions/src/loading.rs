@@ -23,24 +23,24 @@ const MAX_ENVIRONMENT_VALUE_BYTES: usize = 16 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionLoadContext {
     application_dir: PathBuf,
-    codex_home: PathBuf,
+    application_data_dir: PathBuf,
     executable_search_path: Vec<PathBuf>,
 }
 
 impl ActionLoadContext {
     pub fn new(
         application_dir: impl Into<PathBuf>,
-        codex_home: impl Into<PathBuf>,
+        application_data_dir: impl Into<PathBuf>,
         executable_search_path: Vec<PathBuf>,
     ) -> Self {
         Self {
             application_dir: application_dir.into(),
-            codex_home: codex_home.into(),
+            application_data_dir: application_data_dir.into(),
             executable_search_path,
         }
     }
 
-    pub fn for_codex_home(codex_home: impl Into<PathBuf>) -> Self {
+    pub fn for_application(application_data_dir: impl Into<PathBuf>) -> Self {
         let application_dir = std::env::current_exe()
             .ok()
             .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -48,7 +48,11 @@ impl ActionLoadContext {
         let executable_search_path = std::env::var_os("PATH")
             .map(|value| std::env::split_paths(&value).collect())
             .unwrap_or_default();
-        Self::new(application_dir, codex_home, executable_search_path)
+        Self::new(
+            application_dir,
+            application_data_dir,
+            executable_search_path,
+        )
     }
 }
 
@@ -211,8 +215,8 @@ impl LoadedActions {
     }
 }
 
-pub fn action_config_path(codex_home: &Path) -> PathBuf {
-    codex_home.join("lili").join("actions.toml")
+pub fn action_config_path(config_root: &Path) -> PathBuf {
+    config_root.join("actions.toml")
 }
 
 pub fn load_actions_file(path: &Path, context: &ActionLoadContext) -> LoadedActions {
@@ -365,8 +369,8 @@ fn validate_action(
         WorkingDirectoryPolicy::Application if config.working_directory.path.is_none() => {
             context.application_dir.clone()
         }
-        WorkingDirectoryPolicy::CodexHome if config.working_directory.path.is_none() => {
-            context.codex_home.clone()
+        WorkingDirectoryPolicy::ApplicationData if config.working_directory.path.is_none() => {
+            context.application_data_dir.clone()
         }
         WorkingDirectoryPolicy::Explicit => config
             .working_directory

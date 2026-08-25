@@ -49,7 +49,7 @@ Plugin installation or enablement SHALL NOT mark command hooks trusted, bypass h
 - **THEN** it forwards an observer-only normalized event without emitting an approval decision or blocking the Codex permission flow
 
 ### Requirement: Forward events through a bounded local bridge
-The plugin hook launchers SHALL execute only the packaged forwarder selected from the declared host matrix, preserve the structured hook input on stdin, emit no model-visible content, perform no download or remote request, and retain the existing limits, authentication, replay protection, redaction, and offline-spool behavior.
+The plugin hook launchers SHALL execute only the packaged forwarder selected from the declared host matrix, preserve the Codex-provided `PLUGIN_DATA` root and package-owned current Codex-home identity for delivery provenance, accept no caller-selected plugin identity argument, enforce the shared ASCII alphanumeric plus `.`, `-`, and `_` marketplace grammar within the 128-byte selector bound, preserve the structured hook input on stdin, emit no model-visible content, perform no download or remote request, and retain the existing limits, authentication, replay protection, redaction, and offline-spool behavior.
 
 #### Scenario: Lili is available
 - **WHEN** concurrent supported lifecycle events invoke trusted plugin hooks while the matching desktop application is running

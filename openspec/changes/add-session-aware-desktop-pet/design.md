@@ -2,14 +2,14 @@
 
 The repository is empty apart from Git and OpenSpec. Linw1995 provided a reference architecture with Rust domain crates, one Axum router, Leptos SSR with hydrated islands, a normal Web entry point, and a Tauri desktop entry point that serves the same router over an ephemeral signed HTTPS loopback origin. Lili needs that security boundary because session integration and local process execution are native capabilities that must not be exposed directly to WebView JavaScript.
 
-The compatibility target is the installed Codex v2 pet contract: a package under `${CODEX_HOME}/pets/<id>/`, `spriteVersionNumber: 2`, and a transparent `1536x2288` 8x11 atlas with `192x208` cells. The product wording uses ChatGPT/Codex sessions, but the first supported machine-readable inputs are the public Codex `notify` command and lifecycle hooks. Those contracts evolve independently, so provider payloads cannot become the internal model.
+The compatibility target is the installed Codex v2 pet contract: a package under the Lili application data root at `pets/<id>/`, `spriteVersionNumber: 2`, and a transparent `1536x2288` 8x11 atlas with `192x208` cells. The product wording uses ChatGPT/Codex sessions, but the first supported machine-readable inputs are the public Codex `notify` command and lifecycle hooks. Those contracts evolve independently, so provider payloads cannot become the internal model.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
 - Keep pet assets interchangeable with existing Codex v2 packages.
-- Represent concurrent sessions with a deterministic reducer and recoverable notification queue.
+- Represent concurrent sessions with a deterministic reducer and a restart-safe state-notification projection.
 - Make hook forwarding fast, observer-only, private to the local user, and tolerant of the UI being offline.
 - Keep rendering, native session authority, and process execution separated by explicit interfaces.
 - Make every configured interaction reproducible and auditable without shell parsing.
@@ -103,7 +103,7 @@ Alternatives considered:
 
 ### Use a serialized reducer for ordering, deduplication, and priority
 
-One native actor owns the session map, event deduplication cache, unread notification queue, and monotonic snapshot revision. An `EventId` uses a provider-supplied identity when present and otherwise a hash of the normalized source type, session, turn, occurrence time, and stable source discriminator.
+One native actor owns the session map, event deduplication cache, in-memory notification set, and monotonic snapshot revision. An `EventId` uses a provider-supplied identity when present and otherwise a hash of the normalized source type, session, turn, occurrence time, and stable source discriminator.
 
 Each `(session, turn)` is monotonic: a terminal state cannot return to active, while a different turn identifier starts a new generation. A new snapshot is published only after reduction. The displayed state priority is:
 
@@ -120,7 +120,7 @@ Temporary animation overrides never mutate session state. They expire back to th
 Alternatives considered:
 
 - Letting the WebView merge events makes reload recovery and concurrency dependent on browser timing.
-- A database is unnecessary for the first bounded queue; the atomic spool and compact persisted user state cover crash recovery without introducing migrations.
+- The application-owned SQLite store is the authority for the compact latest per-Session projection, plugin evidence, and bounded offline spool. It deliberately does not append event history or persist the in-memory deduplication cache.
 
 ### Treat the Codex v2 manifest as an external compatibility boundary
 

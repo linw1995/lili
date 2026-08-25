@@ -18,7 +18,7 @@
 ## 2. Codex V2 Pet Compatibility
 
 - [x] 2.1 Define the v2 manifest, atlas geometry, row frame counts, exact frame durations, direction order, and immutable `PetDefinition` domain types with contract tests.
-- [x] 2.2 Implement `CODEX_HOME` resolution and confined package discovery that rejects absolute, traversal, escaping-link, duplicate-ID, and oversized manifest cases.
+- [x] 2.2 Implement application-owned Pet-root resolution and confined package discovery that rejects absolute, traversal, escaping-link, duplicate-ID, and oversized manifest cases.
 - [x] 2.3 Implement streaming PNG/WebP metadata and transparency validation for exact `1536x2288` atlases without decoding unbounded images into memory.
 - [x] 2.4 Add an embedded known-good v2 fallback package and selection persistence by identifier with startup revalidation and package-specific diagnostics.
 - [x] 2.5 Serve only approved atlas assets through opaque server identities with MIME, cache, CSP, and package-change invalidation tests.
@@ -27,7 +27,7 @@
 - [x] 2.8 Wire the approved active atlas into the SSR and hydrated shell with the exact six-frame idle loop so `nix run .#dev` visibly exercises the compatibility layer.
 - [x] 2.9 Move opaque atlas delivery outside the signed API namespace so authenticated native image requests work in the desktop WebView, and make desktop smoke wait for decoded atlas dimensions.
 - [x] 2.10 Mark only the pet sprite as the native window-movement hit region and grant the pet window the narrow movement capability, leaving drag animation and placement persistence to task 7.4.
-- [x] 2.11 Use `${CODEX_HOME}/pets/<pet-id>/` as the only user pet package layout, including the external Lili package at `${CODEX_HOME}/pets/lili/`, with no singular-directory discovery or release layout.
+- [x] 2.11 Use the Lili application `pets/<pet-id>/` tree as the only user pet package layout, including the external Lili package at `pets/lili/`; ignore Codex-rooted and singular-directory layouts.
 
 ## 3. Normalized Session Domain and Reducer
 
@@ -36,7 +36,7 @@
 - [x] 3.3 Implement the serialized session reducer with per-turn monotonic terminal states, new-turn generations, deduplication, attention resolution, notification acknowledgement, and snapshot revisions.
 - [x] 3.4 Implement deterministic concurrent-session presentation priority and minimum animation dwell without coupling notification ordering to the currently displayed session.
 - [x] 3.5 Add table-driven and property tests for duplicated, reordered, stale, concurrent, missing-field, and new-provider-field event sequences.
-- [x] 3.6 Add bounded persistence for selected pet, window placement, unread normalized notifications, and reducer metadata with version rejection and atomic replacement tests.
+- [x] 3.6 Add bounded persistence for selected pet, window placement, and one presentation-driving normalized state notification per Session with version rejection and atomic replacement tests; keep event deduplication in memory.
 
 ## 4. Private Event Delivery and Offline Recovery
 
@@ -74,7 +74,7 @@
 - [x] 7.4 Implement pointer gaze, hit-region tracking, click versus double-click disambiguation, drag velocity, running-left/right selection, and final window-position commit.
 - [x] 7.5 Implement logical display-coordinate persistence, scale conversion, work-area clamping, display disconnect handling, and a reachable visible margin on every platform.
 - [x] 7.6 Implement pet-anchored notification cards with priority/recency ordering, immutable session context, bounded safe summaries, independent activation, dismissal, and unread state.
-- [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, integration status, settings, diagnostics, and quit while native event ingestion continues when hidden.
+- [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, settings, diagnostics, and quit while native event ingestion continues when hidden.
 - [x] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
 - [x] 7.9 Keep directional drag animation responsive by replacing modal native drag loops with controlled window movement and smoothing sparse pointer samples.
 - [x] 7.10 Keep the built-in fallback palette consistent across standard animation and look-direction rows, with deterministic color-drift QA.
@@ -115,4 +115,4 @@
 - [x] 10.10 Specify shared native Flake application environments for clean Linux hosts while keeping non-native commands lightweight.
 - [x] 10.11 Reuse one native dependency definition across development shells and every Flake application that compiles or runs the desktop workspace.
 - [x] 10.12 Add Flake contract checks that reject native application wrappers missing the shared environment and verify the Linux native dependency closure.
-- [x] 10.13 Document the complete configuration path for source and packaged use, including Codex home selection, pet packages, reviewed integration installation, interaction actions, reload boundaries, verification, troubleshooting, and uninstall; ship the same guide in release bundles and link it from the README.
+- [x] 10.13 Document the complete configuration path for source and packaged use, including the Lili application storage root, Pet packages, the explicit Codex integration boundary, reviewed integration installation, interaction actions, reload boundaries, verification, troubleshooting, and uninstall; ship the same guide in release bundles and link it from the README.

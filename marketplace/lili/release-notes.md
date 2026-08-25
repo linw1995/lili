@@ -11,6 +11,14 @@ Initial Marketplace package for setting up and diagnosing the separately install
 - Safe migration guidance from the legacy direct Codex configuration, including rollback and cleanup previews.
 - Bounded local spooling when the desktop application is temporarily unavailable.
 
+## Breaking storage change
+
+- Application metadata, one latest state projection per Session, latest plugin evidence, and unconsumed offline events now live in a versioned SQLite database under Lili's platform-native application data directory. Event history and the in-memory deduplication cache are not persisted.
+- Pet assets remain in the Lili-owned `pets/` file tree; user action configuration remains in the Lili-owned `config/actions.toml`; runtime credentials remain owner-only instance files.
+- The desktop runtime and Hook no longer use `CODEX_HOME` for storage or forwarding.
+- Existing `${CODEX_HOME}/lili`, `${CODEX_HOME}/pets`, and `${CODEX_HOME}/pet` data is intentionally ignored. It is not migrated, deleted, or backward-compatible.
+- Users must explicitly rerun the supported integration or Plugin Directory workflow if a Hook requires reconfiguration.
+
 ## Boundaries
 
 - ChatGPT supports setup, compatibility, migration, and troubleshooting guidance only. ChatGPT lifecycle observation is not supported.

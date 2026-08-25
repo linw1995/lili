@@ -5,18 +5,23 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use lili_storage::{ApplicationPaths, JsonDocument, open};
+use lili_storage::{
+    models::NewPluginEvidence,
+    repository::{load_plugin_evidence, save_plugin_evidence},
+};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     CodexAdapterDiagnostics, ForwardingAck, ForwardingCredentialRecord, ForwardingCredentials,
     ForwardingMessage, ForwardingProtocolError, MAX_FORWARDING_FRAME_BYTES, PlatformEndpoint,
+    codex_home_identity,
 };
 
 const CREDENTIAL_FILE_NAME: &str = "forwarding.json";
 const MAX_CREDENTIAL_FILE_BYTES: u64 = 16 * 1024;
-const CODEX_EVIDENCE_FILE_NAME: &str = "codex-plugin-evidence.json";
-const MAX_CODEX_EVIDENCE_FILE_BYTES: u64 = 64 * 1024;
+const MAX_CODEX_EVIDENCE_BYTES: usize = 64 * 1024;
 const CODEX_EVIDENCE_SIGNATURE_DOMAIN: &str = "codex-plugin-diagnostics";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -71,32 +76,78 @@ pub struct ForwardingCredentialStore {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodexPluginEvidenceStore {
-    path: PathBuf,
+    paths: ApplicationPaths,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthenticatedCodexPluginEvidence {
+    #[serde(default)]
+    codex_home: Option<String>,
     diagnostics: CodexAdapterDiagnostics,
     authentication: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPluginEvidenceSigningPayload<'a> {
+    codex_home: Option<&'a str>,
+    diagnostics: &'a CodexAdapterDiagnostics,
+}
+
 impl CodexPluginEvidenceStore {
-    pub fn for_codex_home(codex_home: &Path) -> Self {
-        Self {
-            path: codex_home.join("lili").join(CODEX_EVIDENCE_FILE_NAME),
-        }
+    pub fn for_application(paths: ApplicationPaths) -> Self {
+        Self { paths }
     }
 
     pub fn load(
         &self,
         credentials: &ForwardingCredentials,
     ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
-        let payload = read_private_codex_evidence(&self.path)?;
-        let evidence: AuthenticatedCodexPluginEvidence = serde_json::from_slice(&payload)
-            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
-        let diagnostics_payload = serde_json::to_vec(&evidence.diagnostics)
-            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let evidence = self.load_record()?;
+        self.verify_record(&evidence, credentials)?;
+        Ok(evidence.diagnostics)
+    }
+
+    pub fn load_for_codex_home(
+        &self,
+        codex_home: &Path,
+        credentials: &ForwardingCredentials,
+    ) -> Result<CodexAdapterDiagnostics, ForwardingTransportError> {
+        let codex_home = codex_home_identity(codex_home)
+            .ok_or(ForwardingTransportError::MalformedEvidenceFile)?;
+        let evidence = self.load_record()?;
+        self.verify_record(&evidence, credentials)?;
+        if evidence.codex_home.as_deref() != Some(codex_home.as_str()) {
+            return Err(ForwardingTransportError::EvidenceHomeMismatch);
+        }
+        Ok(evidence.diagnostics)
+    }
+
+    fn load_record(&self) -> Result<AuthenticatedCodexPluginEvidence, ForwardingTransportError> {
+        let mut database = open(&self.paths)
+            .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?;
+        let row = load_plugin_evidence(database.connection())
+            .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?
+            .ok_or_else(|| {
+                ForwardingTransportError::EvidenceStorage("evidence record is missing".to_owned())
+            })?;
+        let evidence: AuthenticatedCodexPluginEvidence =
+            serde_json::from_str(row.evidence_json.as_str())
+                .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        Ok(evidence)
+    }
+
+    fn verify_record(
+        &self,
+        evidence: &AuthenticatedCodexPluginEvidence,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let diagnostics_payload = serde_json::to_vec(&CodexPluginEvidenceSigningPayload {
+            codex_home: evidence.codex_home.as_deref(),
+            diagnostics: &evidence.diagnostics,
+        })
+        .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
         credentials
             .verify_evidence(
                 CODEX_EVIDENCE_SIGNATURE_DOMAIN,
@@ -104,7 +155,7 @@ impl CodexPluginEvidenceStore {
                 &evidence.authentication,
             )
             .map_err(|_| ForwardingTransportError::UnauthenticatedEvidenceFile)?;
-        Ok(evidence.diagnostics)
+        Ok(())
     }
 
     pub fn save(
@@ -112,22 +163,72 @@ impl CodexPluginEvidenceStore {
         diagnostics: &CodexAdapterDiagnostics,
         credentials: &ForwardingCredentials,
     ) -> Result<(), ForwardingTransportError> {
-        let diagnostics_payload = serde_json::to_vec(diagnostics)
-            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let existing_codex_home = self
+            .load_record()
+            .ok()
+            .and_then(|evidence| evidence.codex_home);
+        let observed_codex_home = diagnostics
+            .plugin
+            .last_accepted_plugin_event
+            .as_ref()
+            .and_then(|event| event.codex_home_identity.clone());
+        if existing_codex_home
+            .as_deref()
+            .zip(observed_codex_home.as_deref())
+            .is_some_and(|(existing, observed)| existing != observed)
+        {
+            return Ok(());
+        }
+        let codex_home = existing_codex_home.or(observed_codex_home);
+        self.save_with_codex_home(codex_home.as_deref(), diagnostics, credentials)
+    }
+
+    fn save_with_codex_home(
+        &self,
+        codex_home: Option<&str>,
+        diagnostics: &CodexAdapterDiagnostics,
+        credentials: &ForwardingCredentials,
+    ) -> Result<(), ForwardingTransportError> {
+        let diagnostics_payload = serde_json::to_vec(&CodexPluginEvidenceSigningPayload {
+            codex_home,
+            diagnostics,
+        })
+        .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
         let authentication = credentials
             .authenticate_evidence(CODEX_EVIDENCE_SIGNATURE_DOMAIN, &diagnostics_payload)?;
         let evidence = AuthenticatedCodexPluginEvidence {
+            codex_home: codex_home.map(str::to_owned),
             diagnostics: diagnostics.clone(),
             authentication,
         };
-        let mut payload = serde_json::to_vec(&evidence)
+        let payload = serde_json::to_string(&evidence)
             .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
-        payload.push(b'\n');
-        if payload.len() as u64 > MAX_CODEX_EVIDENCE_FILE_BYTES {
+        if payload.len() > MAX_CODEX_EVIDENCE_BYTES {
             return Err(ForwardingTransportError::EvidenceFileTooLarge);
         }
-        write_private_atomic(&self.path, ".codex-evidence", &payload)
+        let evidence_json = JsonDocument::parse(payload)
+            .map_err(|_| ForwardingTransportError::MalformedEvidenceFile)?;
+        let mut database = open(&self.paths)
+            .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?;
+        save_plugin_evidence(
+            database.connection(),
+            &NewPluginEvidence {
+                id: 1,
+                evidence_json: &evidence_json,
+                updated_at_ms: unix_time_ms(),
+            },
+        )
+        .map_err(|error| ForwardingTransportError::EvidenceStorage(error.to_string()))?;
+        Ok(())
     }
+}
+
+fn unix_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,56 +313,6 @@ impl ForwardingCredentialStore {
         sync_directory(directory)?;
         Ok(())
     }
-}
-
-fn read_private_codex_evidence(path: &Path) -> Result<Vec<u8>, ForwardingTransportError> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(ForwardingTransportError::UnsafeEvidenceFile);
-    }
-    validate_private_file(path, &metadata)?;
-    if metadata.len() > MAX_CODEX_EVIDENCE_FILE_BYTES {
-        return Err(ForwardingTransportError::EvidenceFileTooLarge);
-    }
-    let mut payload = Vec::with_capacity(metadata.len() as usize);
-    File::open(path)?
-        .take(MAX_CODEX_EVIDENCE_FILE_BYTES + 1)
-        .read_to_end(&mut payload)?;
-    if payload.len() as u64 > MAX_CODEX_EVIDENCE_FILE_BYTES {
-        return Err(ForwardingTransportError::EvidenceFileTooLarge);
-    }
-    Ok(payload)
-}
-
-fn write_private_atomic(
-    path: &Path,
-    temporary_prefix: &str,
-    payload: &[u8],
-) -> Result<(), ForwardingTransportError> {
-    let directory = path.parent().expect("private file path must have a parent");
-    ensure_private_runtime_dir(directory)?;
-    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-    let temporary = directory.join(format!(
-        "{temporary_prefix}-{}-{sequence}.tmp",
-        std::process::id()
-    ));
-    let mut guard = TemporaryFileGuard::new(temporary.clone());
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary)?;
-    #[cfg(windows)]
-    crate::windows_acl::enforce_owner_only(&temporary, false)?;
-    file.write_all(payload)?;
-    file.sync_all()?;
-    crate::replace_file_atomically(&temporary, path)?;
-    guard.commit();
-    sync_directory(directory)?;
-    Ok(())
 }
 
 pub struct BoundForwardingEndpoint {
@@ -464,6 +515,50 @@ fn sync_directory(_directory: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
+fn unix_socket_directory_name(runtime_dir: &Path) -> String {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    digest.update(runtime_dir.to_string_lossy().as_bytes());
+    digest.update(rustix::process::geteuid().as_raw().to_be_bytes());
+    let mut name = String::from("lili-");
+    for byte in digest.finalize() {
+        write!(&mut name, "{byte:02x}").expect("writing a socket name cannot fail");
+    }
+    name
+}
+
+#[cfg(unix)]
+fn unix_socket_directory(runtime_dir: &Path) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    const MAX_SOCKET_PATH_BYTES: usize = 100;
+
+    let directory_name = unix_socket_directory_name(runtime_dir);
+    let fallback = PathBuf::from("/tmp").join(&directory_name);
+    let Some(runtime_base) = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    else {
+        return fallback;
+    };
+    let candidate = runtime_base.join(&directory_name).join("endpoint.sock");
+    if candidate.as_os_str().as_bytes().len() >= MAX_SOCKET_PATH_BYTES {
+        fallback
+    } else {
+        runtime_base.join(directory_name)
+    }
+}
+
+#[cfg(unix)]
+fn unix_socket_path(runtime_dir: &Path) -> PathBuf {
+    unix_socket_directory(runtime_dir).join("endpoint.sock")
+}
+
+#[cfg(unix)]
 struct PlatformListener {
     listener: tokio::net::UnixListener,
     endpoint: PlatformEndpoint,
@@ -475,7 +570,8 @@ impl PlatformListener {
     fn bind(runtime_dir: &Path, _instance_id: &str) -> Result<Self, ForwardingTransportError> {
         use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
-        let path = runtime_dir.join("forwarding.sock");
+        ensure_private_runtime_dir(&unix_socket_directory(runtime_dir))?;
+        let path = unix_socket_path(runtime_dir);
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink()
@@ -792,14 +888,16 @@ pub enum ForwardingTransportError {
     CredentialFileTooLarge,
     #[error("forwarding credential file is malformed")]
     MalformedCredentialFile,
-    #[error("Codex plugin evidence file is unsafe")]
-    UnsafeEvidenceFile,
-    #[error("Codex plugin evidence file exceeds 64 KiB")]
+    #[error("Codex plugin evidence record exceeds 64 KiB")]
     EvidenceFileTooLarge,
-    #[error("Codex plugin evidence file is malformed")]
+    #[error("Codex plugin evidence record is malformed")]
     MalformedEvidenceFile,
-    #[error("Codex plugin evidence file could not be authenticated")]
+    #[error("Codex plugin evidence record could not be authenticated")]
     UnauthenticatedEvidenceFile,
+    #[error("Codex plugin evidence belongs to another Codex home")]
+    EvidenceHomeMismatch,
+    #[error("Codex plugin evidence storage failed: {0}")]
+    EvidenceStorage(String),
     #[error("forwarding endpoint is unsafe")]
     UnsafeEndpoint,
     #[error("forwarding endpoint is already in use")]
@@ -825,9 +923,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{
-        ForwardingAckDisposition, ProviderCapabilitiesInputV1, ProviderInputV1,
-        normalize_provider_input,
+        CodexIntegrationSurface, DESKTOP_VERSION, ForwardingAckDisposition, LastAcceptedCodexEvent,
+        ProviderCapabilitiesInputV1, ProviderInputV1, SessionEventKind, normalize_provider_input,
     };
+    use diesel::prelude::*;
 
     use super::*;
 
@@ -892,6 +991,14 @@ mod tests {
                 & 0o777,
             0o600
         );
+        assert_eq!(
+            fs::metadata(endpoint.endpoint().unix_path().unwrap().parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
 
         let message = record.credentials().unwrap().sign(event(), 1_000).unwrap();
         let server = async {
@@ -943,7 +1050,9 @@ mod tests {
         credential_store
             .save_inner(&previous_record, TransportFault::None)
             .unwrap();
-        let evidence_store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let evidence_store = CodexPluginEvidenceStore::for_application(
+            lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap(),
+        );
         let diagnostics = CodexAdapterDiagnostics::default();
         evidence_store
             .save(&diagnostics, &previous_credentials)
@@ -982,7 +1091,9 @@ mod tests {
         credential_store
             .save_inner(&previous_record, TransportFault::None)
             .unwrap();
-        let evidence_store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let evidence_store = CodexPluginEvidenceStore::for_application(
+            lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap(),
+        );
         let diagnostics = CodexAdapterDiagnostics::default();
         evidence_store
             .save(&diagnostics, &previous_credentials)
@@ -1002,25 +1113,39 @@ mod tests {
     }
 
     #[test]
-    fn codex_plugin_evidence_round_trips_through_an_owner_only_file() {
+    fn codex_plugin_evidence_round_trips_through_an_owner_only_database() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = TempDir::new();
-        let store = CodexPluginEvidenceStore::for_codex_home(&temp.0);
+        let paths = lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap();
+        let store = CodexPluginEvidenceStore::for_application(paths.clone());
         let credentials = ForwardingCredentials::generate().unwrap();
         let diagnostics = CodexAdapterDiagnostics::default();
         store.save(&diagnostics, &credentials).unwrap();
-        let path = temp.0.join("lili").join(CODEX_EVIDENCE_FILE_NAME);
         assert_eq!(store.load(&credentials).unwrap(), diagnostics);
         assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            fs::metadata(paths.database_path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600
         );
 
+        let mut database = lili_storage::open(&paths).unwrap();
+        let evidence = lili_storage::repository::load_plugin_evidence(database.connection())
+            .unwrap()
+            .unwrap();
         let mut edited: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            serde_json::from_str(evidence.evidence_json.as_str()).unwrap();
         edited["diagnostics"]["plugin"]["desktopVersion"] = serde_json::json!("9.9.9");
-        fs::write(&path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        let edited =
+            lili_storage::JsonDocument::parse(serde_json::to_string(&edited).unwrap()).unwrap();
+        diesel::update(lili_storage::schema::plugin_evidence::table.find(1))
+            .set(lili_storage::schema::plugin_evidence::evidence_json.eq(edited))
+            .execute(database.connection())
+            .unwrap();
+        drop(database);
         assert!(matches!(
             store.load(&credentials),
             Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
@@ -1031,10 +1156,34 @@ mod tests {
             store.load(&unrelated),
             Err(ForwardingTransportError::UnauthenticatedEvidenceFile)
         ));
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn codex_plugin_evidence_is_bound_to_the_selected_codex_home() {
+        let temp = TempDir::new();
+        let paths = lili_storage::ApplicationPaths::from_root(temp.0.join("app")).unwrap();
+        let store = CodexPluginEvidenceStore::for_application(paths);
+        let credentials = ForwardingCredentials::generate().unwrap();
+        let codex_home = Path::new("/tmp/codex-home-a");
+        let mut diagnostics = CodexAdapterDiagnostics::default();
+        diagnostics.plugin.last_accepted_plugin_event = Some(LastAcceptedCodexEvent {
+            event_id: "plugin-event".to_owned(),
+            event_type: SessionEventKind::TurnCompleted,
+            occurred_at_ms: 1,
+            surface: CodexIntegrationSurface::Stop,
+            plugin_id: Some("lili@test-marketplace".to_owned()),
+            codex_home_identity: codex_home_identity(codex_home),
+            plugin_version: Some(DESKTOP_VERSION.to_owned()),
+        });
+        store.save(&diagnostics, &credentials).unwrap();
+
+        assert_eq!(
+            store.load_for_codex_home(codex_home, &credentials).unwrap(),
+            diagnostics
+        );
         assert!(matches!(
-            store.load(&credentials),
-            Err(ForwardingTransportError::WrongOwner)
+            store.load_for_codex_home(Path::new("/tmp/codex-home-b"), &credentials),
+            Err(ForwardingTransportError::EvidenceHomeMismatch)
         ));
     }
 
@@ -1085,7 +1234,8 @@ mod tests {
         use std::os::unix::{fs::symlink, net::UnixListener};
 
         let temp = TempDir::new();
-        let socket_path = temp.0.join("forwarding.sock");
+        let socket_path = unix_socket_path(&temp.0);
+        fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
 
         fs::write(&socket_path, b"not a socket").unwrap();
         assert!(matches!(
@@ -1112,6 +1262,18 @@ mod tests {
         ));
         drop(live);
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn unix_socket_path_is_bounded_for_long_runtime_roots() {
+        let runtime_dir = PathBuf::from("/").join("runtime".repeat(256));
+        let socket_path = unix_socket_path(&runtime_dir);
+
+        assert_eq!(
+            socket_path.file_name().and_then(|name| name.to_str()),
+            Some("endpoint.sock")
+        );
+        assert!(socket_path.to_string_lossy().len() < 100);
     }
 
     #[test]

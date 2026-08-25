@@ -90,7 +90,7 @@ Normal development, build, and CI commands SHALL NOT rewrite lockfiles. Toolchai
 - **THEN** the resulting lockfile diff, tool versions, cross-system evaluation, workspace checks, and build entry points are reviewed as one change
 
 ### Requirement: Ship an actionable configuration guide
-The project SHALL maintain a configuration guide linked from the README and included in release bundles. The guide SHALL distinguish source development from packaged operation and SHALL document Codex home selection, default and additional pet packages, reviewed Session integration installation, interaction action configuration, configuration reload boundaries, verification, troubleshooting, and provenance-aware uninstall using only supported public interfaces.
+The project SHALL maintain a configuration guide linked from the README and included in release bundles. The guide SHALL distinguish source development from packaged operation and SHALL document the Lili application storage root, default and additional Pet packages, the explicit Codex configuration boundary used by reviewed Session integration installation, interaction action configuration, configuration reload boundaries, verification, troubleshooting, and provenance-aware uninstall using only supported public interfaces.
 
 #### Scenario: User configures a release from a clean environment
 - **WHEN** a user opens the release README without prior project knowledge

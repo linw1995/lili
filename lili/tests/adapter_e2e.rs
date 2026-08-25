@@ -15,6 +15,7 @@ use lili_app_state::{
 use lili_session::{
     BoundForwardingEndpoint, CodexIntegrationSurface, ForwardingConnection, NotificationKind,
 };
+use lili_storage::ApplicationPaths;
 
 const NOTIFY_FIXTURE: &str =
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/agent-turn-complete.json");
@@ -27,8 +28,8 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
         let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "lili-adapter-e2e-{}-{sequence}",
+        let path = PathBuf::from(format!(
+            "/tmp/lili-adapter-e2e-{}-{sequence}",
             std::process::id()
         ));
         fs::create_dir_all(&path).unwrap();
@@ -77,8 +78,10 @@ async fn run_fixture(
     expected_surface: CodexIntegrationSurface,
 ) {
     let temp = TempDir::new();
+    let home = short_home();
+    let application_paths = application_paths(&home);
     let state = AppState::default();
-    let endpoint = BoundForwardingEndpoint::bind(&temp.0.join("lili").join("runtime")).unwrap();
+    let endpoint = BoundForwardingEndpoint::bind(&application_paths.runtime_root()).unwrap();
     let (handle, actor) = NativeIngestionActor::channel(
         state.clone(),
         endpoint.credentials(),
@@ -88,11 +91,13 @@ async fn run_fixture(
     let actor_task = tokio::spawn(actor.run());
     let server_task = tokio::spawn(serve_one(endpoint, handle.clone()));
 
-    let codex_home = temp.0.clone();
-    let output =
-        tokio::task::spawn_blocking(move || invoke_packaged_hook(&codex_home, invocation, fixture))
-            .await
-            .unwrap();
+    let output = tokio::task::spawn_blocking({
+        let home = home.clone();
+        let codex_home = temp.0.join("codex-home");
+        move || invoke_packaged_hook(&home, &codex_home, invocation, fixture)
+    })
+    .await
+    .unwrap();
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
@@ -112,10 +117,11 @@ async fn run_fixture(
             .surface,
         expected_surface
     );
-    assert!(!temp.0.join("lili").join("spool").exists());
+    assert!(!application_paths.database_path().exists());
 
     drop(handle);
     actor_task.await.unwrap();
+    fs::remove_dir_all(home).unwrap();
 }
 
 async fn serve_one(endpoint: BoundForwardingEndpoint, handle: NativeIngestionHandle) {
@@ -133,6 +139,7 @@ async fn ingest_one(mut connection: ForwardingConnection, handle: NativeIngestio
 }
 
 fn invoke_packaged_hook(
+    home: &Path,
     codex_home: &Path,
     invocation: HookInvocation,
     fixture: &str,
@@ -141,12 +148,16 @@ fn invoke_packaged_hook(
         HookInvocation::JsonArgv => Command::new(env!("CARGO_BIN_EXE_lili-hook"))
             .args(["--json-argv", fixture])
             .env("CODEX_HOME", codex_home)
+            .env("HOME", home)
+            .env("XDG_STATE_HOME", home.join("state"))
             .output()
             .unwrap(),
         HookInvocation::JsonStdin => {
             let mut child = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
                 .arg("--json-stdin")
                 .env("CODEX_HOME", codex_home)
+                .env("HOME", home)
+                .env("XDG_STATE_HOME", home.join("state"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -161,6 +172,29 @@ fn invoke_packaged_hook(
             child.wait_with_output().unwrap()
         }
     }
+}
+
+fn application_paths(home: &Path) -> ApplicationPaths {
+    #[cfg(target_os = "macos")]
+    let root = home
+        .join("Library")
+        .join("Application Support")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    #[cfg(target_os = "linux")]
+    let root = home
+        .join("state")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    ApplicationPaths::from_root(root).unwrap()
+}
+
+fn short_home() -> PathBuf {
+    let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let home = PathBuf::from(format!(
+        "/tmp/lili-adapter-home-{}-{sequence}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&home).unwrap();
+    home
 }
 
 fn unix_time_ms() -> u64 {

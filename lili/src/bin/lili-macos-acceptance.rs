@@ -25,6 +25,7 @@ mod macos {
     use lili_lib::acceptance_marketplace::{
         MACOS_ARM64, install_local_marketplace_plugin, invoke_installed_plugin_hook,
     };
+    use lili_storage::ApplicationPaths;
 
     const PAYLOAD: &[u8] = include_bytes!(
         "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
@@ -80,13 +81,9 @@ mod macos {
             &hook_binary,
             MACOS_ARM64,
         )?;
-        let mut app = spawn_app(&app_binary, workspace.path())?;
-        let credential_path = workspace
-            .path()
-            .join("lili")
-            .join("runtime")
-            .join("forwarding.json");
-        if !wait_for_file(&credential_path, Duration::from_secs(15)) {
+        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home())?;
+        let credential_path = workspace.application_paths().credentials_path();
+        if !wait_for_file(&credential_path, Duration::from_secs(30)) {
             terminate(&mut app);
             return Err("packaged app did not publish forwarding credentials".to_owned());
         }
@@ -94,6 +91,7 @@ mod macos {
         if let Err(error) = invoke_installed_plugin_hook(
             &plugin,
             workspace.path(),
+            workspace.home(),
             PAYLOAD,
             &codex_binary,
             &repository_root,
@@ -127,10 +125,16 @@ mod macos {
         }
     }
 
-    fn spawn_app(binary: &Path, codex_home: &Path) -> Result<Child, String> {
+    fn spawn_app(
+        binary: &Path,
+        codex_home: &Path,
+        application_home: &Path,
+    ) -> Result<Child, String> {
         Command::new(binary)
             .arg("--desktop-acceptance")
             .env("CODEX_HOME", codex_home)
+            .env("HOME", application_home)
+            .env("XDG_STATE_HOME", application_home.join("state"))
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
@@ -153,7 +157,10 @@ mod macos {
         let _ = child.wait();
     }
 
-    struct AcceptanceWorkspace(PathBuf);
+    struct AcceptanceWorkspace {
+        path: PathBuf,
+        home: PathBuf,
+    }
 
     impl AcceptanceWorkspace {
         fn new() -> Result<Self, String> {
@@ -165,18 +172,39 @@ mod macos {
                     .map_err(|error| error.to_string())?
                     .as_nanos()
             ));
-            fs::create_dir_all(path.join("lili"))
+            let home = PathBuf::from(format!("/tmp/lm-{}", std::process::id()));
+            fs::create_dir_all(&path)
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
-            Ok(Self(path))
+            fs::create_dir_all(&home)
+                .map_err(|error| format!("application home could not be created: {error}"))?;
+            Ok(Self { path, home })
         }
 
         fn path(&self) -> &Path {
-            &self.0
+            &self.path
+        }
+
+        fn home(&self) -> &Path {
+            &self.home
+        }
+
+        fn application_paths(&self) -> ApplicationPaths {
+            ApplicationPaths::from_root(
+                self.home
+                    .join("Library")
+                    .join("Application Support")
+                    .join(lili_storage::APPLICATION_IDENTIFIER),
+            )
+            .expect("acceptance application path must be absolute")
         }
 
         fn write_action_config(&self) -> Result<(), String> {
+            let application_paths = self.application_paths();
+            fs::create_dir_all(application_paths.config_root()).map_err(|error| {
+                format!("application config directory could not be created: {error}")
+            })?;
             fs::write(
-                self.0.join("lili").join("actions.toml"),
+                application_paths.actions_path(),
                 r#"version = 1
 
 [[action]]
@@ -192,7 +220,8 @@ timeout_ms = 100
 
     impl Drop for AcceptanceWorkspace {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let _ = fs::remove_dir_all(&self.path);
+            let _ = fs::remove_dir_all(&self.home);
         }
     }
 }

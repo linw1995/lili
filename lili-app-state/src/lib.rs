@@ -230,6 +230,31 @@ impl AppState {
         outcome
     }
 
+    pub async fn apply_session_event_persisted(
+        &self,
+        event: NormalizedSessionEvent,
+        store: &AppStateStore,
+    ) -> Result<ReductionOutcome, PersistenceError> {
+        let selected_pet_id =
+            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+        let mut reducer = self.session_reducer.lock().await;
+        let previous = reducer.clone();
+        let outcome = reducer.reduce(event.clone());
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            let persistent =
+                PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
+            if let Err(error) = store.save(&persistent) {
+                *reducer = previous;
+                return Err(error);
+            }
+        }
+        drop(reducer);
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            self.publish_presentation().await;
+        }
+        Ok(outcome)
+    }
+
     pub async fn acknowledge_notification(
         &self,
         id: &NotificationId,
@@ -244,6 +269,32 @@ impl AppState {
             self.publish_presentation().await;
         }
         outcome
+    }
+
+    pub async fn acknowledge_notification_persisted(
+        &self,
+        id: &NotificationId,
+        now_ms: u64,
+        store: &AppStateStore,
+    ) -> Result<ReductionOutcome, PersistenceError> {
+        let selected_pet_id =
+            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+        let mut reducer = self.session_reducer.lock().await;
+        let previous = reducer.clone();
+        let outcome = reducer.acknowledge_notification(id, now_ms);
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            let persistent =
+                PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
+            if let Err(error) = store.save(&persistent) {
+                *reducer = previous;
+                return Err(error);
+            }
+        }
+        drop(reducer);
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            self.publish_presentation().await;
+        }
+        Ok(outcome)
     }
 
     pub async fn notification_context(&self, id: &NotificationId) -> Option<Notification> {
@@ -588,6 +639,7 @@ mod tests {
         ProviderCapabilitiesInputV1, ProviderInputV1, ProviderProjectInputV1, SessionPhase,
         normalize_provider_input,
     };
+    use lili_storage::ApplicationPaths;
 
     use super::*;
 
@@ -678,6 +730,95 @@ mod tests {
             SessionPhase::Completed
         );
         assert_eq!(snapshot.session_state.notifications.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persisted_event_commit_restores_after_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "lili-app-state-transition-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = ApplicationPaths::from_root(root).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-transition".to_owned()),
+            session_id: Some("session-transition".to_owned()),
+            turn_id: Some("turn-transition".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            state
+                .apply_session_event_persisted(event, &store)
+                .await
+                .unwrap(),
+            ReductionOutcome::Applied { revision: 1 }
+        ));
+        let persisted = store.load().unwrap().unwrap();
+        let restored = AppState::with_persistent_state(PetCatalog::default(), persisted).unwrap();
+        assert_eq!(restored.snapshot().await.session_state.revision, 1);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn persisted_notification_acknowledgement_survives_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "lili-app-state-acknowledgement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = ApplicationPaths::from_root(root).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-acknowledgement".to_owned()),
+            session_id: Some("session-acknowledgement".to_owned()),
+            turn_id: Some("turn-acknowledgement".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+
+        state
+            .apply_session_event_persisted(event, &store)
+            .await
+            .unwrap();
+        let notification_id = state.snapshot().await.session_state.notifications[0]
+            .id
+            .clone();
+        assert!(matches!(
+            state
+                .acknowledge_notification_persisted(&notification_id, 11, &store)
+                .await
+                .unwrap(),
+            ReductionOutcome::Applied { revision: 2 }
+        ));
+
+        let persisted = store.load().unwrap().unwrap();
+        let restored = AppState::with_persistent_state(PetCatalog::default(), persisted).unwrap();
+        assert!(
+            restored
+                .snapshot()
+                .await
+                .session_state
+                .notifications
+                .is_empty()
+        );
+        std::fs::remove_dir_all(paths.root()).unwrap();
     }
 
     #[tokio::test]

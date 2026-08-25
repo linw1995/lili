@@ -1,0 +1,17 @@
+[package]
+name = "lili-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+diesel.workspace = true
+diesel_migrations.workspace = true
+libsqlite3-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

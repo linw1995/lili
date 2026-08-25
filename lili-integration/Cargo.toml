@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 lili-session = { path = "../lili-session" }
+lili-storage = { path = "../lili-storage" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

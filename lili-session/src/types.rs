@@ -7,7 +7,7 @@ use crate::SESSION_SCHEMA_VERSION;
 const MAX_ID_BYTES: usize = 256;
 pub const MAX_PROJECT_LABEL_CHARS: usize = 128;
 pub const MAX_SUMMARY_CHARS: usize = 320;
-pub const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 128;
+pub const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 256;
 
 macro_rules! bounded_identity {
     ($name:ident, $label:literal) => {

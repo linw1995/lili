@@ -61,6 +61,7 @@ class PluginLauncherContractTests(unittest.TestCase):
             "Get-Content",
         ):
             self.assertNotIn(forbidden, windows)
+        self.assertIn('plugin_data_name=${plugin_data##*/}', posix)
         self.assertIn(
             'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
             posix,
@@ -97,6 +98,9 @@ class PluginLauncherContractTests(unittest.TestCase):
             forwarder.chmod(0o755)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment.pop("CODEX_HOME", None)
+            environment.pop("LILI_PLUGIN_CODEX_HOME", None)
             payload = b'{"text":"$(touch should-not-exist)"}\n'
             result = subprocess.run(
                 [str(launcher)],
@@ -142,6 +146,8 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PATH"] = str(utility_root)
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             payload = b"{}\n"
             result = subprocess.run(
                 [str(launcher)],
@@ -169,6 +175,8 @@ class PluginLauncherContractTests(unittest.TestCase):
             launcher.chmod(0o755)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             started = time.monotonic()
             result = subprocess.run(
                 [str(launcher)],
@@ -205,6 +213,8 @@ class PluginLauncherContractTests(unittest.TestCase):
             forwarder.symlink_to(external)
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
+            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
             result = subprocess.run(
                 [str(launcher)],
                 input=b"{}\n",

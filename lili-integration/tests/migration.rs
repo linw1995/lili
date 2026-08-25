@@ -85,6 +85,7 @@ fn plugin_diagnostics(legacy_active: bool, version: &str) -> CodexAdapterDiagnos
         occurred_at_ms: 42,
         surface: CodexIntegrationSurface::Stop,
         plugin_id: Some("lili@test-marketplace".to_owned()),
+        codex_home_identity: None,
         plugin_version: Some(version.to_owned()),
     });
     diagnostics

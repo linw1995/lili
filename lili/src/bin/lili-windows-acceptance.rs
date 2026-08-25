@@ -31,6 +31,7 @@ mod windows {
     use lili_lib::acceptance_marketplace::{
         WINDOWS_X86_64, install_local_marketplace_plugin, invoke_installed_plugin_hook,
     };
+    use lili_storage::ApplicationPaths;
 
     const PAYLOAD: &[u8] = include_bytes!(
         "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
@@ -60,12 +61,8 @@ mod windows {
             &hook_binary,
             WINDOWS_X86_64,
         )?;
-        let mut app = spawn_app(&app_binary, workspace.path())?;
-        let credential_path = workspace
-            .path()
-            .join("lili")
-            .join("runtime")
-            .join("forwarding.json");
+        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home())?;
+        let credential_path = workspace.application_paths().credentials_path();
         if !wait_for_file(&credential_path, Duration::from_secs(20)) {
             terminate(&mut app);
             return Err("packaged app did not publish forwarding credentials".to_owned());
@@ -73,6 +70,7 @@ mod windows {
         if let Err(error) = invoke_installed_plugin_hook(
             &plugin,
             workspace.path(),
+            workspace.home(),
             PAYLOAD,
             &codex_binary,
             &repository_root,
@@ -123,10 +121,16 @@ mod windows {
             .ok_or_else(|| format!("{label} path is not a directory"))
     }
 
-    fn spawn_app(binary: &Path, codex_home: &Path) -> Result<Child, String> {
+    fn spawn_app(
+        binary: &Path,
+        codex_home: &Path,
+        application_home: &Path,
+    ) -> Result<Child, String> {
         Command::new(binary)
             .arg("--desktop-acceptance")
             .env("CODEX_HOME", codex_home)
+            .env("LOCALAPPDATA", application_home)
+            .env("HOME", application_home)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
@@ -197,6 +201,7 @@ mod windows {
 
     struct AcceptanceWorkspace {
         path: PathBuf,
+        home: PathBuf,
         process_ids: PathBuf,
         acceptance_result: PathBuf,
     }
@@ -211,14 +216,23 @@ mod windows {
                     .map_err(|error| error.to_string())?
                     .as_nanos()
             ));
-            fs::create_dir_all(path.join("lili"))
+            let home = path.join("application-home");
+            fs::create_dir_all(&path)
                 .map_err(|error| format!("acceptance workspace could not be created: {error}"))?;
             let process_ids = path.join("action-processes.txt");
-            let acceptance_result = path.join("lili").join("desktop-acceptance-result");
+            fs::create_dir_all(&home)
+                .map_err(|error| format!("application home could not be created: {error}"))?;
+            let application_paths =
+                ApplicationPaths::from_root(home.join(lili_storage::APPLICATION_IDENTIFIER))
+                    .expect("acceptance application path must be absolute");
+            fs::create_dir_all(application_paths.config_root()).map_err(|error| {
+                format!("application config directory could not be created: {error}")
+            })?;
+            let acceptance_result = application_paths.root().join("desktop-acceptance-result");
             let command = toml_string(&action_fixture);
             let output = toml_string(&process_ids);
             fs::write(
-                path.join("lili").join("actions.toml"),
+                application_paths.actions_path(),
                 format!(
                     "version = 1\n\n[[action]]\nid = \"windows-tree-timeout\"\ntrigger = \"notification_activate\"\ncommand = [{command}, \"--parent\", {output}]\ntimeout_ms = 5000\n"
                 ),
@@ -226,6 +240,7 @@ mod windows {
             .map_err(|error| format!("acceptance action config could not be written: {error}"))?;
             Ok(Self {
                 path,
+                home,
                 process_ids,
                 acceptance_result,
             })
@@ -233,6 +248,15 @@ mod windows {
 
         fn path(&self) -> &Path {
             &self.path
+        }
+
+        fn home(&self) -> &Path {
+            &self.home
+        }
+
+        fn application_paths(&self) -> ApplicationPaths {
+            ApplicationPaths::from_root(self.home.join(lili_storage::APPLICATION_IDENTIFIER))
+                .expect("acceptance application path must be absolute")
         }
 
         fn process_ids(&self) -> &Path {

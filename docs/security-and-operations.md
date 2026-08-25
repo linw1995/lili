@@ -7,7 +7,7 @@ For ordered setup and verification steps, see the [Configuration guide](configur
 Lili separates display code from native authority.
 
 - The WebView and `lili-web` fixture build receive presentation snapshots, approved opaque pet asset identities, settings, and interaction endpoints. They do not receive filesystem paths, forwarding credentials, action configuration values, or process handles.
-- The desktop process owns pet discovery, persistent state, Codex integration changes, authenticated local forwarding, spool recovery, and action execution.
+- The desktop process owns Pet discovery, SQLite state, authenticated local forwarding, spool recovery, and action execution. Only explicitly invoked integration commands own Codex configuration changes.
 - Provider payloads, pet packages, action configuration, persisted state, spool records, and browser requests are untrusted inputs. Native parsers apply size, schema, path, identity, replay, and ownership checks before state mutation.
 - The local forwarding endpoint is restricted to the current operating-system user. Instance credentials rotate when the desktop service starts, messages carry a nonce and MAC, and accepted nonces cannot be replayed inside the replay window.
 - The WebView communicates with an ephemeral HTTPS loopback origin. Desktop navigation pins its generated certificate, mutating requests require a narrow native signature, and the WebView has no general shell or filesystem command.
@@ -16,33 +16,32 @@ This boundary protects Lili from page content and malformed inputs. It is not an
 
 ## Local data layout
 
-`${CODEX_HOME}` defaults to `~/.codex`. An absolute `CODEX_HOME` override changes every path below.
+The desktop runtime and Hook use the platform-native Lili application root. `CODEX_HOME` is not a desktop storage root. The paths below that use `CODEX_HOME` belong only to explicitly invoked integration commands that manage Codex configuration.
 
 | Path | Lifetime | Contents |
 | --- | --- | --- |
-| `${CODEX_HOME}/pets/<id>/` | User managed | Compatible Codex v2 pet packages, including Lili at `${CODEX_HOME}/pets/lili/`. |
-| `${CODEX_HOME}/lili/actions.toml` | User managed | Action identifiers, filters, executable argv, limits, working-directory policy, and explicit environment additions. |
-| `${CODEX_HOME}/lili/state.json` | Persistent | Selected pet identifier, logical window placement, bounded reducer metadata, bounded session records, and unread notifications required for restart recovery. |
-| `${CODEX_HOME}/lili/selected-pet.json` | Persistent compatibility state | Selected pet identifier only. |
-| `${CODEX_HOME}/lili/spool/` | Bounded and recoverable | Normalized events waiting for desktop ingestion plus aggregate drop metrics. |
-| `${CODEX_HOME}/lili/runtime/forwarding.json` | Current desktop instance | Instance identifier, local endpoint, and secret used to authenticate forwarding. Owner-only and removed on orderly shutdown. |
-| `${CODEX_HOME}/lili/runtime/forwarding.sock` | Current desktop instance on Unix | Owner-only local forwarding socket. Windows uses a user-scoped named pipe. |
-| `${CODEX_HOME}/lili/integration.json` | Until complete uninstall | Managed integration provenance, file hashes, owned hook commands, prior notify argv, backup paths, and install timestamp. |
-| `${CODEX_HOME}/config.toml.lili-backup-<timestamp>` | Until manually removed | Pre-install configuration backup when `config.toml` was updated. |
-| `${CODEX_HOME}/hooks.json.lili-backup-<timestamp>` | Until manually removed | Pre-install hook backup when `hooks.json` was updated. |
+| `<LILI_DATA>/lili.sqlite3` | Persistent | Application metadata, one latest state projection per Session, unconsumed offline spool records, and the latest plugin evidence. |
+| `<LILI_DATA>/pets/<id>/` | User managed | Validated Pet v2 manifests and spritesheets owned by Lili. |
+| `<LILI_DATA>/config/actions.toml` | User managed | Action identifiers, filters, executable argv, limits, working-directory policy, and explicit environment additions. |
+| `<LILI_DATA>/runtime/forwarding.json` | Current desktop instance | Instance identifier, local endpoint, and secret used to authenticate forwarding. Owner-only and removed on orderly shutdown. |
+| `<XDG_RUNTIME_DIR>/lili-<hash>/endpoint.sock` or `/tmp/lili-<hash>/endpoint.sock` (recorded in runtime credentials) | Current desktop instance on Unix | Short local forwarding socket inside an owner-only runtime directory; the `/tmp` form is the bounded fallback when no suitable XDG runtime directory exists. Windows uses a user-scoped named pipe. |
+| `${CODEX_HOME}/lili/integration.json` | Until complete uninstall; integration only | Managed integration provenance, file hashes, owned hook commands, prior notify argv, backup paths, and install timestamp. |
+| `${CODEX_HOME}/config.toml.lili-backup-<timestamp>` | Until manually removed; integration only | Pre-install configuration backup when `config.toml` was updated. |
+| `${CODEX_HOME}/hooks.json.lili-backup-<timestamp>` | Until manually removed; integration only | Pre-install configuration backup when `hooks.json` was updated. |
 
-`state.json` is persistent so window placement, the selected pet, monotonic reducer metadata, and unread notifications survive an application restart. Deleting it while Lili is stopped resets that recovery state; it is recreated on the next persisted shutdown.
+`<LILI_DATA>` is `~/Library/Application Support/dev.linw1995.lili/` on macOS, `$XDG_STATE_HOME/dev.linw1995.lili/` or `~/.local/state/dev.linw1995.lili/` on Linux, and `%LOCALAPPDATA%\dev.linw1995.lili\` on Windows. Deleting `lili.sqlite3` while Lili is stopped resets application state; it does not touch Codex configuration or user Pet files.
 
 ## Retained metadata and excluded content
 
-Lili retains only the metadata needed for display, deduplication, recovery, and audit:
+Lili retains only the metadata needed for display and recovery:
 
-- provider, event, session, and optional turn identities;
-- normalized lifecycle kind and occurrence time;
-- bounded project label and display-safe summary;
-- unread notification state and bounded reducer ordering metadata;
+- the latest provider, event, session, and optional turn identities for each persisted Session projection;
+- the latest normalized lifecycle kind and occurrence time for each persisted Session projection;
+- a bounded project label and display-safe summary for the presentation-driving Session notification;
+- unread state for at most one presentation-driving notification per Session;
 - action identifier, trigger, event identity, timing, outcome, exit code, and output byte counts;
-- aggregate ingestion and spool counters.
+- unconsumed normalized spool records until they are delivered or evicted;
+- aggregate expired, limit, and malformed-drop counters for the temporary spool.
 
 The action audit is memory-only and bounded to recent entries. Captured child stdout and stderr are used only to classify the current result; their content is not included in the audit or diagnostics response.
 
@@ -77,7 +76,7 @@ Plugin removal and migration rollback invoke only the supported `codex plugin re
 
 ## Action authority
 
-Actions are opt-in native programs configured in `${CODEX_HOME}/lili/actions.toml`.
+Actions are opt-in native programs configured in `<LILI_DATA>/config/actions.toml`.
 
 Lili resolves an executable, passes argv directly without a shell, clears the inherited environment, adds a minimal platform environment plus explicit configured values, and sends one bounded `InteractionContextV1` JSON document on standard input. Event text is never interpolated into argv. Timeouts, debounce, concurrency, queue capacity, output capture, and process-tree termination are bounded.
 
@@ -92,11 +91,11 @@ Use this order for a complete removal:
 1. Run `lili integrate uninstall` while the installed Lili binary is still available.
 2. Review the JSON result. `complete: true` means owned notify and hook entries were removed or restored and integration provenance was deleted. If `complete` is false, resolve the reported conflicts before editing or deleting provenance manually.
 3. Quit Lili and remove the application bundle or installed binaries.
-4. After `complete: true`, remove `${CODEX_HOME}/lili/` if local Lili state is no longer needed. This deletes actions, state, spool data, and runtime remnants. Do not remove this directory to bypass an incomplete integration uninstall.
+4. After `complete: true`, remove the Lili application root if local state is no longer needed. This deletes the SQLite database, actions, spool data, runtime remnants, and application-owned Pet packages. Do not remove Codex directories to bypass an incomplete integration uninstall.
 5. Review timestamped `*.lili-backup-*` files under `${CODEX_HOME}` and remove them only after confirming the active Codex configuration.
-6. Pet packages are deliberately not removed by integration uninstall. Remove a package under `${CODEX_HOME}/pets/` only if it is not used elsewhere.
+6. Existing `${CODEX_HOME}/pets/` and `${CODEX_HOME}/lili/` data is not migrated or deleted by the new desktop runtime.
 
-For a state-only reset, quit Lili and remove `${CODEX_HOME}/lili/state.json` and `${CODEX_HOME}/lili/selected-pet.json`. Leave `integration.json` intact unless the integration has been uninstalled or its conflicts have been resolved.
+For a state-only reset, quit Lili and remove `<LILI_DATA>/lili.sqlite3`. Leave `<LILI_DATA>/pets/` and `${CODEX_HOME}/lili/integration.json` intact unless you explicitly intend to remove those user-managed resources.
 
 ## Unsupported Codex surfaces
 

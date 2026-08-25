@@ -24,6 +24,10 @@ pub fn info_with_counts(
     );
 }
 
+pub fn info(component: &'static str, operation: &'static str, code: &'static str) {
+    tracing::info!(component, operation, outcome = "success", code);
+}
+
 pub fn warn(component: &'static str, operation: &'static str, code: &'static str) {
     tracing::warn!(component, operation, outcome = "failure", code);
 }

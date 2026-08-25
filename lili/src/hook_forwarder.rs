@@ -1,6 +1,5 @@
 use std::{
     ffi::OsString,
-    fs,
     io::Read,
     path::Path,
     process::{Command, Stdio},
@@ -8,13 +7,14 @@ use std::{
 };
 
 use lili_integration::LILI_INTEGRATION_ID;
-use lili_pet::resolve_codex_home;
 use lili_session::{
-    ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolStore,
-    deliver_forwarding_message, mark_plugin_hook_event, normalize_hook_json,
+    ForwardingCredentialStore, MAX_PROVIDER_PAYLOAD_BYTES, SpoolEnqueueOutcome, SpoolError,
+    SqliteSpoolStore, codex_home_identity, deliver_forwarding_message, mark_plugin_hook_event,
+    mark_plugin_hook_event_with_home, normalize_hook_json,
 };
+use lili_storage::ApplicationPaths;
 
-pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(150);
+pub const CONNECTION_DEADLINE: Duration = Duration::from_millis(25);
 pub const ONLINE_FORWARDING_BUDGET: Duration = Duration::from_millis(250);
 pub const OFFLINE_FALLBACK_BUDGET: Duration = Duration::from_millis(750);
 pub const UNRESPONSIVE_ENDPOINT_BUDGET: Duration = Duration::from_millis(750);
@@ -77,7 +77,7 @@ impl HookResult {
 enum HookInvocation {
     Direct {
         payload: Vec<u8>,
-        plugin_attributed: bool,
+        plugin_hook: bool,
     },
     Coexist {
         original_argv: Vec<String>,
@@ -92,52 +92,79 @@ pub async fn run_from_environment() -> HookResult {
         Ok(invocation) => invocation,
         Err(result) => return result,
     };
-    let codex_home = match resolve_codex_home() {
-        Ok(codex_home) => codex_home,
-        Err(_) => {
-            return HookResult::failure(
-                HookExitCode::DeliveryFailed,
-                "Codex home could not be resolved",
-            );
-        }
-    };
     match invocation {
         HookInvocation::Direct {
             payload,
-            plugin_attributed,
+            plugin_hook,
         } => {
-            let plugin_id = plugin_attributed
-                .then(|| installed_plugin_selector(&codex_home))
-                .flatten();
-            if plugin_attributed && plugin_id.is_none() {
-                return HookResult::failure(
-                    HookExitCode::InvalidInput,
-                    "plugin invocation identity could not be verified",
-                );
-            }
-            process_payload_with_source(&codex_home, &payload, unix_time_ms(), plugin_id.as_deref())
-                .await
+            let plugin_id = if plugin_hook {
+                match plugin_identity_from_environment() {
+                    Some(plugin_id) => Some(plugin_id),
+                    None => {
+                        return HookResult::failure(
+                            HookExitCode::InvalidInput,
+                            "plugin invocation identity is unavailable",
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            let plugin_home = if plugin_hook {
+                plugin_home_identity_from_environment()
+            } else {
+                None
+            };
+            let application_paths = match ApplicationPaths::resolve() {
+                Ok(application_paths) => application_paths,
+                Err(_) => return application_storage_failure(),
+            };
+            process_payload_with_source(
+                &application_paths,
+                &payload,
+                unix_time_ms(),
+                plugin_id.as_deref(),
+                plugin_home.as_deref(),
+            )
+            .await
         }
         HookInvocation::Coexist {
             original_argv,
             payload,
         } => {
             let original_started = launch_original_notify(&original_argv, &payload);
-            let lili_result = process_payload(&codex_home, &payload, unix_time_ms()).await;
+            let lili_result = match ApplicationPaths::resolve() {
+                Ok(application_paths) => {
+                    process_payload(&application_paths, &payload, unix_time_ms()).await
+                }
+                Err(_) => application_storage_failure(),
+            };
             isolate_coexistence_result(original_started, lili_result)
         }
     }
 }
 
-pub async fn process_payload(codex_home: &Path, payload: &[u8], now_ms: u64) -> HookResult {
-    process_payload_with_source(codex_home, payload, now_ms, None).await
+fn application_storage_failure() -> HookResult {
+    HookResult::failure(
+        HookExitCode::DeliveryFailed,
+        "Lili application storage could not be resolved",
+    )
+}
+
+pub async fn process_payload(
+    application_paths: &ApplicationPaths,
+    payload: &[u8],
+    now_ms: u64,
+) -> HookResult {
+    process_payload_with_source(application_paths, payload, now_ms, None, None).await
 }
 
 async fn process_payload_with_source(
-    codex_home: &Path,
+    application_paths: &ApplicationPaths,
     payload: &[u8],
     now_ms: u64,
     plugin_id: Option<&str>,
+    plugin_home: Option<&str>,
 ) -> HookResult {
     let mut event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
@@ -148,15 +175,23 @@ async fn process_payload_with_source(
             );
         }
     };
-    if plugin_id.is_some_and(|plugin_id| !mark_plugin_hook_event(&mut event, plugin_id)) {
-        return HookResult::failure(
-            HookExitCode::InvalidInput,
-            "plugin invocation requires a supported Codex lifecycle event",
-        );
+    if let Some(plugin_id) = plugin_id {
+        let marked = match plugin_home {
+            Some(plugin_home) => {
+                mark_plugin_hook_event_with_home(&mut event, plugin_id, Some(plugin_home))
+            }
+            None => mark_plugin_hook_event(&mut event, plugin_id),
+        };
+        if !marked {
+            return HookResult::failure(
+                HookExitCode::InvalidInput,
+                "plugin invocation requires a supported Codex lifecycle event",
+            );
+        }
     }
 
     let credential_store =
-        ForwardingCredentialStore::for_runtime_dir(&codex_home.join("lili").join("runtime"));
+        ForwardingCredentialStore::for_runtime_dir(&application_paths.runtime_root());
     let online = credential_store.load().ok().and_then(|record| {
         record
             .credentials()
@@ -175,53 +210,27 @@ async fn process_payload_with_source(
         return HookResult::success(HookOutcome::Delivered);
     }
 
-    match SpoolStore::for_codex_home(codex_home).enqueue(&event, now_ms) {
+    match SqliteSpoolStore::for_hook(application_paths.clone()).enqueue(&event, now_ms) {
         Ok(SpoolEnqueueOutcome::Stored) => HookResult::success(HookOutcome::Spooled),
         Ok(SpoolEnqueueOutcome::DroppedByLimit) => HookResult::failure(
             HookExitCode::DeliveryFailed,
             "hook event was dropped by the offline spool limit",
         ),
-        Err(_) => HookResult::failure(
-            HookExitCode::DeliveryFailed,
-            "hook event could not be delivered or spooled",
-        ),
+        Err(error) => {
+            let diagnostic = match error {
+                SpoolError::Database(message) if message.contains("locked") => {
+                    "hook SQLite spool was locked"
+                }
+                SpoolError::Database(message) if message.contains("migration") => {
+                    "hook SQLite migration was unavailable"
+                }
+                SpoolError::Database(_) => "hook SQLite spool was unavailable",
+                SpoolError::Io(_) => "hook local spool I/O failed",
+                _ => "hook event could not be delivered or spooled",
+            };
+            HookResult::failure(HookExitCode::DeliveryFailed, diagnostic)
+        }
     }
-}
-
-fn installed_plugin_selector(codex_home: &Path) -> Option<String> {
-    let plugin_root = std::env::var_os("PLUGIN_ROOT")?;
-    installed_plugin_selector_for_root(codex_home, Path::new(&plugin_root))
-}
-
-fn installed_plugin_selector_for_root(codex_home: &Path, plugin_root: &Path) -> Option<String> {
-    let plugin_root = fs::canonicalize(plugin_root).ok()?;
-    let codex_home = fs::canonicalize(codex_home).ok()?;
-    let version = plugin_root.file_name()?.to_str()?;
-    let plugin_directory = plugin_root.parent()?;
-    let plugin_name = plugin_directory.file_name()?.to_str()?;
-    let marketplace_directory = plugin_directory.parent()?;
-    let marketplace_name = marketplace_directory.file_name()?.to_str()?;
-    let cache_directory = marketplace_directory.parent()?;
-    let plugins_directory = cache_directory.parent()?;
-    if version != env!("CARGO_PKG_VERSION")
-        || cache_directory.file_name()?.to_str()? != "cache"
-        || plugins_directory.file_name()?.to_str()? != "plugins"
-        || plugins_directory.parent()? != codex_home
-    {
-        return None;
-    }
-    let manifest_path = plugin_root.join(".codex-plugin").join("plugin.json");
-    if fs::metadata(&manifest_path).ok()?.len() > 64 * 1024 {
-        return None;
-    }
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
-    if manifest.get("name").and_then(serde_json::Value::as_str) != Some(plugin_name)
-        || manifest.get("version").and_then(serde_json::Value::as_str) != Some(version)
-    {
-        return None;
-    }
-    Some(format!("{plugin_name}@{marketplace_name}"))
 }
 
 #[cfg(test)]
@@ -284,19 +293,19 @@ fn read_hook_invocation<R: Read>(
         [mode, payload] if mode == "--json-argv" => {
             bounded_argv_payload(payload).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_attributed: false,
+                plugin_hook: false,
             })
         }
         [mode] if mode == "--json-stdin" => {
             bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_attributed: false,
+                plugin_hook: false,
             })
         }
         [plugin, mode] if plugin == "--plugin-hook" && mode == "--json-stdin" => {
             bounded_stdin_payload(stdin).map(|payload| HookInvocation::Direct {
                 payload,
-                plugin_attributed: true,
+                plugin_hook: true,
             })
         }
         _ => Err(HookResult::failure(
@@ -304,6 +313,33 @@ fn read_hook_invocation<R: Read>(
             "usage: lili-hook [--plugin-hook] --json-stdin | --json-argv <json>",
         )),
     }
+}
+
+fn plugin_identity_from_environment() -> Option<String> {
+    let data_root = std::env::var_os("PLUGIN_DATA")?;
+    plugin_identity_from_data_root(Path::new(&data_root))
+}
+
+fn plugin_home_identity_from_environment() -> Option<String> {
+    let codex_home = std::env::var_os("LILI_PLUGIN_CODEX_HOME")?;
+    codex_home_identity(Path::new(&codex_home))
+}
+
+fn plugin_identity_from_data_root(data_root: &Path) -> Option<String> {
+    if !data_root.is_absolute() {
+        return None;
+    }
+    let directory_name = data_root.file_name()?.to_str()?;
+    let marketplace = directory_name.strip_prefix("lili-")?;
+    if marketplace.is_empty()
+        || marketplace.len() > 123
+        || marketplace
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some(format!("lili@{marketplace}"))
 }
 
 fn bounded_stdin_payload<R: Read>(stdin: &mut R) -> Result<Vec<u8>, HookResult> {
@@ -496,42 +532,30 @@ mod tests {
         assert!(matches!(
             invocation,
             HookInvocation::Direct {
-                plugin_attributed: true,
+                plugin_hook: true,
                 ..
             }
         ));
     }
 
     #[test]
-    fn installed_plugin_selector_is_bound_to_cache_path_and_manifest() {
-        let temp = TempDir::new();
-        let root = temp
-            .0
-            .join("plugins/cache/marketplace-a/lili")
-            .join(env!("CARGO_PKG_VERSION"));
-        fs::create_dir_all(root.join(".codex-plugin")).unwrap();
-        fs::write(
-            root.join(".codex-plugin/plugin.json"),
-            format!(
-                r#"{{"name":"lili","version":"{}"}}"#,
-                env!("CARGO_PKG_VERSION")
-            ),
-        )
-        .unwrap();
-
+    fn plugin_identity_is_derived_from_the_absolute_data_root() {
         assert_eq!(
-            installed_plugin_selector_for_root(&temp.0, &root).as_deref(),
-            Some("lili@marketplace-a")
+            plugin_identity_from_data_root(Path::new("/tmp/lili-lili-local")),
+            Some("lili@lili-local".to_owned())
         );
-
-        let copied = temp.0.join("copied-plugin");
-        fs::create_dir_all(copied.join(".codex-plugin")).unwrap();
-        fs::copy(
-            root.join(".codex-plugin/plugin.json"),
-            copied.join(".codex-plugin/plugin.json"),
-        )
-        .unwrap();
-        assert!(installed_plugin_selector_for_root(&temp.0, &copied).is_none());
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("relative/lili-lili-local")),
+            None
+        );
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("/tmp/lili-other.marketplace")),
+            Some("lili@other.marketplace".to_owned())
+        );
+        assert_eq!(
+            plugin_identity_from_data_root(Path::new("/tmp/lili-invalid/marketplace")),
+            None
+        );
     }
 
     #[test]
@@ -551,9 +575,10 @@ mod tests {
     #[tokio::test]
     async fn unavailable_endpoint_falls_back_to_one_normalized_spool_record() {
         let temp = TempDir::new();
-        let result = process_payload(&temp.0, &payload(), 1_000).await;
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let result = process_payload(&paths, &payload(), 1_000).await;
         assert_eq!(result, HookResult::success(HookOutcome::Spooled));
-        let spool = SpoolStore::for_codex_home(&temp.0);
+        let spool = SqliteSpoolStore::for_application(paths);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
         assert_eq!(claim.event().event_id.as_str(), "event-1");
         claim.commit().unwrap();
@@ -562,13 +587,15 @@ mod tests {
     #[tokio::test]
     async fn plugin_invocation_spools_attributed_event_without_changing_identity() {
         let temp = TempDir::new();
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
         let lifecycle =
             br#"{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1"}"#;
         let legacy = normalize_hook_json(lifecycle, 1_000).unwrap();
         let result =
-            process_payload_with_source(&temp.0, lifecycle, 1_000, Some("lili@lili-local")).await;
+            process_payload_with_source(&paths, lifecycle, 1_000, Some("lili@lili-local"), None)
+                .await;
         assert_eq!(result, HookResult::success(HookOutcome::Spooled));
-        let spool = SpoolStore::for_codex_home(&temp.0);
+        let spool = SqliteSpoolStore::for_application(paths);
         let claim = spool.claim_next(1_001).unwrap().unwrap();
         assert_eq!(claim.event().event_id, legacy.event_id);
         assert!(claim.event().source_discriminator.starts_with("plugin:"));
@@ -578,9 +605,10 @@ mod tests {
     #[tokio::test]
     async fn malformed_payload_has_a_deterministic_exit_code_without_spooling() {
         let temp = TempDir::new();
-        let result = process_payload(&temp.0, b"not-json", 1_000).await;
+        let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
+        let result = process_payload(&paths, b"not-json", 1_000).await;
         assert_eq!(result.exit_code, HookExitCode::InvalidInput);
-        assert!(!SpoolStore::for_codex_home(&temp.0).directory().exists());
+        assert!(!paths.database_path().exists());
     }
 
     #[test]

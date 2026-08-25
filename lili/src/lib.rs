@@ -23,22 +23,21 @@ use std::{
 use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
-use lili_actions::{
-    ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, action_config_path, load_actions_file,
-};
+use lili_actions::{ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, load_actions_file};
 use lili_app_state::{
     AppState, AppStateStore, DEFAULT_INGESTION_QUEUE_CAPACITY, DEFAULT_VISIBLE_WINDOW_MARGIN,
-    DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, WindowPlacement,
-    resolve_window_placement,
+    DisplayWorkArea, NativeIngestionActor, NativeIngestionHandle, PersistenceError,
+    WindowPlacement, resolve_window_placement,
 };
 use lili_core::PetId;
-use lili_integration::{IntegrationKind, inspect};
-use lili_pet::{PetCatalog, persist_selected_pet, resolve_codex_home};
-use lili_server::{NativeDiagnosticsRefresh, StaticAssets, build_native_router_with_diagnostics};
+use lili_pet::PetCatalog;
+use lili_server::{StaticAssets, build_native_router_with_diagnostics_and_persistence};
 use lili_session::{
-    BoundForwardingEndpoint, ClaimedSpoolRecord, CodexPluginEvidenceStore,
-    ForwardingCredentialStore, ForwardingTransportError, SpoolStore,
+    BoundForwardingEndpoint, ClaimedSqliteSpoolRecord, CodexPluginEvidenceStore,
+    ForwardingCredentialStore, ForwardingTransportError, SqliteSpoolStore,
 };
+#[cfg(test)]
+use lili_session::{ClaimedSpoolRecord, SpoolStore};
 use loopback::LoopbackServer;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
@@ -69,7 +68,7 @@ const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 #[derive(Clone)]
 struct PetContextActions {
     state: AppState,
-    codex_home: Option<PathBuf>,
+    pets_root: PathBuf,
     always_on_top: CheckMenuItem<tauri::Wry>,
     pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
 }
@@ -82,6 +81,8 @@ struct ContextMenuNavigation {
     url: tauri::Url,
     certificate_sha256: [u8; 32],
 }
+
+pub use lili_storage::{ApplicationPaths, PathError as ApplicationPathError};
 
 pub fn run() {
     diagnostics::init();
@@ -123,35 +124,43 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         cfg!(debug_assertions),
     )
     .map(StaticAssets::new);
-    let (state, state_store, codex_home, saved_window_placement) = load_app_state();
+    let application_paths =
+        ApplicationPaths::resolve().expect("failed to resolve Lili application storage paths");
+    diagnostics::info("storage", "initialize", "legacy_paths_ignored");
+    let (state, state_store, saved_window_placement) = match load_app_state(&application_paths) {
+        Ok(value) => value,
+        Err(_) => {
+            diagnostics::error("storage", "open", "unavailable");
+            std::process::exit(1);
+        }
+    };
     app.state::<DesktopAcceptanceState>()
-        .configure(codex_home.clone(), state.clone());
-    let native_ingestion =
-        configure_native_runtime(!smoke || acceptance, codex_home.as_deref(), &state);
+        .configure(application_paths.clone(), state.clone());
+    let _native_ingestion = configure_native_runtime(
+        !smoke || acceptance,
+        state_store.clone(),
+        &application_paths,
+        &state,
+    );
     app.manage(DesktopPersistence {
-        state: state.clone(),
         store: state_store.clone(),
     });
     app.manage(WindowDragState::default());
+    let pets_root = application_paths.pets_root();
     app.manage(PetContextMenuTarget::default());
-    let tray_menu = setup_tray(&app, state.clone(), codex_home.as_deref())
-        .expect("failed to configure tray lifecycle");
+    let tray_menu =
+        setup_tray(&app, state.clone(), &pets_root).expect("failed to configure tray lifecycle");
     app.manage(PetContextActions {
         state: state.clone(),
-        codex_home: codex_home.clone(),
+        pets_root: pets_root.clone(),
         always_on_top: tray_menu.always_on_top.clone(),
         pet_items: tray_menu.pet_items.clone(),
     });
-    let diagnostics_refresh =
-        native_ingestion
-            .zip(codex_home.clone())
-            .map(|(ingestion, codex_home)| {
-                NativeDiagnosticsRefresh::new(ingestion, move || inspect(&codex_home).codex_adapter)
-            });
-    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics(
+    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics_and_persistence(
         state.clone(),
         assets,
-        diagnostics_refresh,
+        None,
+        state_store.clone(),
     ))
     .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
@@ -197,15 +206,15 @@ fn configure_desktop_companion_application(_app: &tauri::App) -> tauri::Result<(
 
 fn configure_native_runtime(
     enabled: bool,
-    codex_home: Option<&Path>,
+    state_store: Option<AppStateStore>,
+    application_paths: &ApplicationPaths,
     state: &AppState,
 ) -> Option<NativeIngestionHandle> {
     if !enabled {
         return None;
     }
-    let codex_home = codex_home?;
-    configure_native_actions(codex_home, state);
-    match start_native_ingestion(codex_home, state.clone()) {
+    configure_native_actions(application_paths, state);
+    match start_native_ingestion(application_paths, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
             diagnostics::warn("ingestion", "start", "transport_unavailable");
@@ -420,15 +429,20 @@ fn persist_desktop_state(app: &tauri::AppHandle, state: &AppState, store: Option
         .get_webview_window("pet")
         .as_ref()
         .and_then(current_window_placement);
-    let persistent = tauri::async_runtime::block_on(state.persistent_state(placement));
+    let persistent = tauri::async_runtime::block_on(state.persistent_state(placement.clone()));
     if store.save(&persistent).is_err() {
         diagnostics::warn("state", "persist", "write_failed");
     }
+    if let Some(placement) = placement
+        && store.save_window_placement(&placement).is_err()
+    {
+        diagnostics::warn("state", "persist_window", "write_failed");
+    }
 }
 
-fn configure_native_actions(codex_home: &Path, state: &AppState) {
-    let context = ActionLoadContext::for_codex_home(codex_home);
-    let loaded = load_actions_file(&action_config_path(codex_home), &context);
+fn configure_native_actions(application_paths: &ApplicationPaths, state: &AppState) {
+    let context = ActionLoadContext::for_application(application_paths.root());
+    let loaded = load_actions_file(&application_paths.actions_path(), &context);
     let enabled_count = loaded.enabled().len();
     let diagnostic_count = loaded.effective().diagnostics.len();
     let configured =
@@ -446,61 +460,46 @@ fn configure_native_actions(codex_home: &Path, state: &AppState) {
     }
 }
 
-type LoadedAppState = (
-    AppState,
-    Option<AppStateStore>,
-    Option<PathBuf>,
-    Option<WindowPlacement>,
-);
+type LoadedAppState = (AppState, Option<AppStateStore>, Option<WindowPlacement>);
 
-fn load_app_state() -> LoadedAppState {
-    let codex_home = match resolve_codex_home() {
-        Ok(codex_home) => codex_home,
-        Err(_) => {
-            diagnostics::warn("configuration", "resolve_home", "invalid_home");
-            return (AppState::default(), None, None, None);
-        }
-    };
-    load_resolved_app_state(codex_home)
-}
-
-fn load_resolved_app_state(codex_home: PathBuf) -> LoadedAppState {
-    let store = AppStateStore::for_codex_home(&codex_home);
-    match store.load() {
-        Ok(Some(state)) => {
+fn load_app_state(
+    application_paths: &ApplicationPaths,
+) -> Result<LoadedAppState, PersistenceError> {
+    let store = AppStateStore::for_application(application_paths.clone());
+    match store.load()? {
+        Some(state) => {
             let window_placement = state.window_placement().cloned();
-            let pet_catalog = PetCatalog::load_with_selection(&codex_home, state.selected_pet_id());
+            let pet_catalog = PetCatalog::load_with_selection(
+                &application_paths.pets_root(),
+                state.selected_pet_id(),
+            );
             let state = AppState::with_persistent_state(pet_catalog, state)
                 .expect("validated application state must restore");
-            (state, Some(store), Some(codex_home), window_placement)
+            Ok((state, Some(store), window_placement))
         }
-        Ok(None) => {
-            let state = AppState::with_pet_catalog(PetCatalog::load(&codex_home));
-            (state, Some(store), Some(codex_home), None)
-        }
-        Err(_) => {
-            diagnostics::warn("state", "restore", "invalid_state");
-            (
-                AppState::with_pet_catalog(PetCatalog::load(&codex_home)),
-                None,
-                Some(codex_home),
-                None,
-            )
-        }
+        None => Ok((
+            AppState::with_pet_catalog(PetCatalog::load(&application_paths.pets_root())),
+            Some(store),
+            None,
+        )),
     }
 }
 
 fn start_native_ingestion(
-    codex_home: &Path,
+    application_paths: &ApplicationPaths,
     state: AppState,
+    state_store: Option<AppStateStore>,
 ) -> Result<NativeIngestionHandle, ForwardingTransportError> {
-    let runtime_dir = codex_home.join("lili").join("runtime");
+    let runtime_dir = application_paths.runtime_root();
+    let evidence_store = CodexPluginEvidenceStore::for_application(application_paths.clone());
     let previous_credentials = ForwardingCredentialStore::for_runtime_dir(&runtime_dir)
         .load()
         .ok()
         .and_then(|record| record.credentials().ok());
-    let codex_adapter = inspect(codex_home).codex_adapter;
-    let evidence_store = CodexPluginEvidenceStore::for_codex_home(codex_home);
+    let codex_adapter = previous_credentials
+        .as_ref()
+        .and_then(|credentials| evidence_store.load(credentials).ok())
+        .unwrap_or_default();
     let (endpoint, handle, actor) = tauri::async_runtime::block_on(async {
         let endpoint = BoundForwardingEndpoint::bind_with_credentials_rotation(
             &runtime_dir,
@@ -519,29 +518,91 @@ fn start_native_ingestion(
             Some(evidence_store),
         )
         .await;
+        let actor = match state_store {
+            Some(store) => actor.with_persistence_store(store),
+            None => actor,
+        };
         Ok::<_, ForwardingTransportError>((endpoint, handle, actor))
     })?;
     tauri::async_runtime::spawn(actor.run());
-    let spool = SpoolStore::for_codex_home(codex_home);
-    tauri::async_runtime::spawn(run_native_services(endpoint, handle.clone(), spool));
+    let spool = SqliteSpoolStore::for_application(application_paths.clone());
+    tauri::async_runtime::spawn(run_sqlite_native_services(endpoint, handle.clone(), spool));
     Ok(handle)
 }
 
-async fn run_native_services(
+async fn run_sqlite_native_services(
     endpoint: BoundForwardingEndpoint,
     handle: NativeIngestionHandle,
-    spool: SpoolStore,
+    spool: SqliteSpoolStore,
 ) {
-    if spool.recover_claims().is_err() {
+    if tokio::task::spawn_blocking({
+        let spool = spool.clone();
+        move || spool.recover_claims(unix_time_ms())
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .is_none()
+    {
         diagnostics::warn("spool", "recover_claims", "recovery_failed");
     }
-    drain_offline_spool(&spool, &handle).await;
+    drain_sqlite_spool(&spool, &handle).await;
     tokio::join!(
         serve_native_ingestion(endpoint, handle.clone()),
-        drain_offline_spool_continuously(spool, handle),
+        drain_sqlite_spool_continuously(spool, handle),
     );
 }
 
+async fn drain_sqlite_spool_continuously(spool: SqliteSpoolStore, handle: NativeIngestionHandle) {
+    loop {
+        tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;
+        drain_sqlite_spool(&spool, &handle).await;
+    }
+}
+
+async fn drain_sqlite_spool(spool: &SqliteSpoolStore, handle: &NativeIngestionHandle) {
+    while let Some(claim) = next_sqlite_spool_claim(spool).await {
+        if !ingest_sqlite_spool_claim(claim, handle).await {
+            break;
+        }
+    }
+    publish_sqlite_spool_metrics(spool, handle).await;
+}
+
+async fn publish_sqlite_spool_metrics(spool: &SqliteSpoolStore, handle: &NativeIngestionHandle) {
+    let spool = spool.clone();
+    if let Ok(Ok(metrics)) = tokio::task::spawn_blocking(move || spool.metrics()).await {
+        let _ = handle.set_spool_metrics(metrics).await;
+    }
+}
+
+async fn next_sqlite_spool_claim(spool: &SqliteSpoolStore) -> Option<ClaimedSqliteSpoolRecord> {
+    let spool = spool.clone();
+    match tokio::task::spawn_blocking(move || spool.claim_next(unix_time_ms())).await {
+        Ok(Ok(claim)) => claim,
+        Ok(Err(_)) | Err(_) => {
+            diagnostics::warn("spool", "claim", "read_failed");
+            None
+        }
+    }
+}
+
+async fn ingest_sqlite_spool_claim(
+    claim: ClaimedSqliteSpoolRecord,
+    handle: &NativeIngestionHandle,
+) -> bool {
+    match handle.ingest_spooled(claim.event().clone()).await {
+        Ok(_) => tokio::task::spawn_blocking(move || claim.commit())
+            .await
+            .is_ok_and(|result| result.is_ok()),
+        Err(_) => {
+            let _ = tokio::task::spawn_blocking(move || claim.release()).await;
+            false
+        }
+    }
+}
+
+#[cfg(test)]
 async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeIngestionHandle) {
     loop {
         tokio::time::sleep(SPOOL_DRAIN_INTERVAL).await;
@@ -549,6 +610,7 @@ async fn drain_offline_spool_continuously(spool: SpoolStore, handle: NativeInges
     }
 }
 
+#[cfg(test)]
 async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle) {
     while let Some(claim) = next_spool_claim(spool).await {
         if !ingest_spool_claim(claim, handle).await {
@@ -558,6 +620,7 @@ async fn drain_offline_spool(spool: &SpoolStore, handle: &NativeIngestionHandle)
     publish_spool_metrics(spool, handle).await;
 }
 
+#[cfg(test)]
 async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandle) {
     let spool = spool.clone();
     if let Ok(Ok(metrics)) = tokio::task::spawn_blocking(move || spool.metrics()).await {
@@ -565,6 +628,7 @@ async fn publish_spool_metrics(spool: &SpoolStore, handle: &NativeIngestionHandl
     }
 }
 
+#[cfg(test)]
 async fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
     let spool = spool.clone();
     match tokio::task::spawn_blocking(move || spool.claim_next(unix_time_ms())).await {
@@ -576,6 +640,7 @@ async fn next_spool_claim(spool: &SpoolStore) -> Option<ClaimedSpoolRecord> {
     }
 }
 
+#[cfg(test)]
 async fn ingest_spool_claim(claim: ClaimedSpoolRecord, handle: &NativeIngestionHandle) -> bool {
     match handle.ingest_spooled(claim.event().clone()).await {
         Ok(_) => {
@@ -772,7 +837,6 @@ fn ensure_window_reachable(window: &tauri::WebviewWindow) {
 
 #[derive(Clone)]
 struct DesktopPersistence {
-    state: AppState,
     store: Option<AppStateStore>,
 }
 
@@ -915,7 +979,7 @@ fn run_pet_context_action(
             &app,
             action,
             &actions.state,
-            actions.codex_home.as_deref(),
+            &actions.pets_root,
             &actions.pet_items,
             &actions.always_on_top,
         ),
@@ -1052,19 +1116,14 @@ async fn commit_window_position(
     };
     let placement = current_window_placement(&window)
         .ok_or_else(|| "window placement could not be determined".to_owned())?;
-    let state = persistence.state.persistent_state(Some(placement)).await;
     store
-        .save(&state)
+        .save_window_placement(&placement)
         .map_err(|error| format!("window placement could not be saved: {error}"))?;
     Ok(true)
 }
 
-fn setup_tray(
-    app: &tauri::App,
-    state: AppState,
-    codex_home: Option<&Path>,
-) -> tauri::Result<TrayMenu> {
-    let tray_menu = build_tray_menu(app, &state, codex_home)?;
+fn setup_tray(app: &tauri::App, state: AppState, pets_root: &Path) -> tauri::Result<TrayMenu> {
+    let tray_menu = build_tray_menu(app, &state, pets_root)?;
     let event_menu = tray_menu.clone();
     let icon = app
         .default_window_icon()
@@ -1078,13 +1137,13 @@ fn setup_tray(
         .menu(&tray_menu.menu)
         .on_tray_icon_event(handle_tray_icon_event)
         .on_menu_event({
-            let codex_home = codex_home.map(Path::to_path_buf);
+            let pets_root = pets_root.to_path_buf();
             move |app, event| {
                 handle_tray_menu_event(
                     app,
                     TrayAction::parse(event.id().as_ref()),
                     &state,
-                    codex_home.as_deref(),
+                    &pets_root,
                     &event_menu.pet_items,
                     &event_menu.always_on_top,
                 );
@@ -1104,9 +1163,9 @@ struct TrayMenu {
 fn build_tray_menu(
     app: &tauri::App,
     state: &AppState,
-    codex_home: Option<&Path>,
+    pets_root: &Path,
 ) -> tauri::Result<TrayMenu> {
-    let parts = TrayMenuParts::new(app, state, codex_home)?;
+    let parts = TrayMenuParts::new(app, state, pets_root)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -1114,7 +1173,6 @@ fn build_tray_menu(
             &parts.window.hide,
             &parts.window.always_on_top,
             &parts.pet.menu,
-            &parts.integration,
             &parts.utility.settings,
             &parts.utility.diagnostics,
             &parts.utility.separator,
@@ -1131,16 +1189,14 @@ fn build_tray_menu(
 struct TrayMenuParts {
     window: TrayWindowItems,
     pet: TrayPetItems,
-    integration: MenuItem<tauri::Wry>,
     utility: TrayUtilityItems,
 }
 
 impl TrayMenuParts {
-    fn new(app: &tauri::App, state: &AppState, codex_home: Option<&Path>) -> tauri::Result<Self> {
+    fn new(app: &tauri::App, state: &AppState, _pets_root: &Path) -> tauri::Result<Self> {
         Ok(Self {
             window: build_tray_window_items(app, state)?,
             pet: build_tray_pet_items(app, state)?,
-            integration: build_tray_integration_item(app, codex_home)?,
             utility: build_tray_utility_items(app)?,
         })
     }
@@ -1198,22 +1254,6 @@ fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<Tra
     })
 }
 
-fn build_tray_integration_item(
-    app: &tauri::App,
-    codex_home: Option<&Path>,
-) -> tauri::Result<MenuItem<tauri::Wry>> {
-    let integration_status = codex_home.map_or(TrayIntegrationStatus::Unavailable, |codex_home| {
-        TrayIntegrationStatus::from_inspection(&inspect(codex_home))
-    });
-    MenuItem::with_id(
-        app,
-        "integration-status",
-        integration_status.label(),
-        false,
-        None::<&str>,
-    )
-}
-
 struct TrayUtilityItems {
     settings: MenuItem<tauri::Wry>,
     diagnostics: MenuItem<tauri::Wry>,
@@ -1254,7 +1294,7 @@ fn handle_tray_menu_event(
     app: &tauri::AppHandle,
     action: TrayAction,
     state: &AppState,
-    codex_home: Option<&Path>,
+    pets_root: &Path,
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
@@ -1263,10 +1303,10 @@ fn handle_tray_menu_event(
             handle_window_tray_action(app, action, state, always_on_top);
         }
         TrayAction::SelectPet(pet_id) => {
-            handle_pet_selection(app, state, codex_home, pet_items, &pet_id);
+            handle_pet_selection(app, state, pets_root, pet_items, &pet_id);
         }
         TrayAction::Settings | TrayAction::Diagnostics => handle_tray_view_action(app, action),
-        TrayAction::IntegrationStatus | TrayAction::Quit | TrayAction::Unknown => {
+        TrayAction::Quit | TrayAction::Unknown => {
             handle_application_tray_action(app, action);
         }
     }
@@ -1330,14 +1370,12 @@ fn set_always_on_top(
 fn handle_pet_selection(
     app: &tauri::AppHandle,
     state: &AppState,
-    codex_home: Option<&Path>,
+    pets_root: &Path,
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
     pet_id: &PetId,
 ) {
-    let Some(codex_home) = codex_home else {
-        return;
-    };
-    if select_pet(state, codex_home, pet_id).is_err() {
+    let persistence = app.state::<DesktopPersistence>();
+    if select_pet(state, pets_root, pet_id, persistence.store.as_ref()).is_err() {
         return;
     }
     for (candidate, item) in pet_items {
@@ -1369,7 +1407,6 @@ enum TrayAction {
     Hide,
     AlwaysOnTop,
     SelectPet(PetId),
-    IntegrationStatus,
     Settings,
     Diagnostics,
     Quit,
@@ -1382,7 +1419,6 @@ impl TrayAction {
             "show" => Self::Show,
             "hide" => Self::Hide,
             "always-on-top" => Self::AlwaysOnTop,
-            "integration-status" => Self::IntegrationStatus,
             "settings" => Self::Settings,
             "diagnostics" => Self::Diagnostics,
             "quit" => Self::Quit,
@@ -1394,56 +1430,23 @@ impl TrayAction {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TrayIntegrationStatus {
-    Installed,
-    Partial,
-    NotConfigured,
-    NeedsAttention,
-    Unavailable,
-}
-
-impl TrayIntegrationStatus {
-    fn from_inspection(inspection: &lili_integration::IntegrationInspection) -> Self {
-        let notify_installed = inspection.notify.kind == IntegrationKind::Lili;
-        let installed_hooks = inspection
-            .hook_surfaces
-            .iter()
-            .filter(|surface| surface.lili_handlers > 0)
-            .count();
-        if notify_installed && installed_hooks == inspection.hook_surfaces.len() {
-            Self::Installed
-        } else if notify_installed || installed_hooks > 0 {
-            Self::Partial
-        } else if inspection.notify.kind == IntegrationKind::Missing
-            && inspection
-                .hook_surfaces
-                .iter()
-                .all(|surface| surface.other_handlers == 0)
-        {
-            Self::NotConfigured
-        } else {
-            Self::NeedsAttention
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Installed => "Integration: Installed",
-            Self::Partial => "Integration: Partial",
-            Self::NotConfigured => "Integration: Not Configured",
-            Self::NeedsAttention => "Integration: Needs Attention",
-            Self::Unavailable => "Integration: Unavailable",
-        }
-    }
-}
-
-fn select_pet(state: &AppState, codex_home: &Path, pet_id: &PetId) -> Result<(), String> {
-    let catalog = PetCatalog::load_with_selection(codex_home, Some(pet_id));
+fn select_pet(
+    state: &AppState,
+    pets_root: &Path,
+    pet_id: &PetId,
+    store: Option<&AppStateStore>,
+) -> Result<(), String> {
+    let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
     if catalog.active().definition().id() != pet_id {
         return Err("selected pet is unavailable".to_owned());
     }
-    persist_selected_pet(codex_home, pet_id).map_err(|error| error.to_string())?;
+    if let Some(store) = store {
+        let persistent = tauri::async_runtime::block_on(state.persistent_state(None))
+            .with_selected_pet_id(Some(pet_id.clone()));
+        store
+            .save_selected_pet(&persistent)
+            .map_err(|error| format!("selected pet could not be saved: {error}"))?;
+    }
     tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));
     Ok(())
 }
@@ -1608,31 +1611,25 @@ mod tests {
     }
 
     #[test]
-    fn missing_configuration_reports_not_configured_in_tray() {
-        let root =
-            std::env::temp_dir().join(format!("lili-tray-integration-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let inspection = lili_integration::inspect_with_version(&root, Some("0.147.0".to_owned()));
-        assert_eq!(
-            TrayIntegrationStatus::from_inspection(&inspection),
-            TrayIntegrationStatus::NotConfigured
-        );
+    fn desktop_state_loading_does_not_touch_codex_home() {
+        let root = std::env::temp_dir().join(format!(
+            "lili-desktop-storage-isolation-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let application_paths = ApplicationPaths::from_root(root.join("application")).unwrap();
+        let codex_home = root.join("codex-home");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        let marker = codex_home.join("marker");
+        std::fs::write(&marker, b"untouched").unwrap();
+
+        let (_state, store, placement) = load_app_state(&application_paths).unwrap();
+
+        assert!(store.is_some());
+        assert!(placement.is_none());
+        assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
+        assert!(!codex_home.join("lili").exists());
+        assert!(!codex_home.join("pets").exists());
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn tray_integration_statuses_have_stable_labels() {
-        let statuses = [
-            TrayIntegrationStatus::Installed,
-            TrayIntegrationStatus::Partial,
-            TrayIntegrationStatus::NotConfigured,
-            TrayIntegrationStatus::NeedsAttention,
-            TrayIntegrationStatus::Unavailable,
-        ];
-
-        for status in statuses {
-            assert!(status.label().starts_with("Integration: "));
-        }
     }
 
     #[test]

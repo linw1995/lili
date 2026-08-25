@@ -16,9 +16,9 @@ Lili may process and retain the following data on the user's device:
 
 | Category | Examples | Purpose |
 | --- | --- | --- |
-| Normalized session metadata | Provider, event, session and optional turn identifiers; lifecycle kind; occurrence time; bounded project basename; bounded redacted display summary | Present the pet state and notifications, order events, and deduplicate repeated delivery |
-| Application state | Selected pet identifier, window placement, bounded session reducer state, and unread notifications | Restore the local desktop experience after restart |
-| Offline delivery records | Normalized events and aggregate expired, limit, and malformed-drop counters | Recover bounded events while the desktop endpoint is unavailable |
+| Normalized session metadata | Latest provider, event, session and optional turn identifiers; lifecycle kind; occurrence time; bounded project basename; bounded redacted display summary | Present the pet state and presentation-driving notification for each Session |
+| Application state | Selected pet identifier, window placement, and one bounded latest-state projection per Session in the local SQLite database | Restore the local desktop experience after restart |
+| Offline delivery records | Normalized events and aggregate expired, limit, and malformed-drop counters in the local SQLite database | Recover bounded events while the desktop endpoint is unavailable |
 | Integration metadata | Installed/enabled status, versions, hook source, IPC compatibility, last accepted plugin event metadata, legacy provenance, expected hashes, and backup paths | Diagnose compatibility, migrate safely, and remove only Lili-owned legacy entries |
 | Local authentication material | Rotating instance identifier, endpoint address, message-authentication secret, and replay nonces | Authenticate the local forwarder to the current desktop instance |
 | Pet and action configuration | Pet packages, action identifiers, filters, executable argv, working-directory policy, limits, and explicit environment additions | Render user-selected pets and run user-configured local actions |
@@ -42,9 +42,9 @@ Visiting GitHub pages, downloading a release, opening a support issue, or using 
 
 ## Retention
 
-- Application state remains until it is replaced by newer bounded state or the user deletes it.
-- Unread notifications and bounded reducer metadata remain in application state for restart recovery.
-- Offline spool records are bounded to 256 records, 4 MiB total, and 24 hours by default; older and excess records are dropped.
+- SQLite application state remains until it is replaced by a newer bounded projection or the user deletes the Lili application data.
+- At most one presentation-driving unread notification and current state projection per Session remain in application state for restart recovery.
+- Offline spool records are hard-capped at 256 records, 4 MiB total, and 24 hours; older and excess records are dropped.
 - Runtime forwarding credentials last only for the current desktop instance and are removed on orderly shutdown.
 - The action audit is memory-only and bounded to recent entries; captured stdout and stderr content is not included in the audit.
 - Legacy integration provenance and timestamped configuration backups remain until successful cleanup or manual removal.
@@ -54,7 +54,7 @@ Visiting GitHub pages, downloading a release, opening a support issue, or using 
 
 Users can stop processing by quitting Lili and disabling or removing the plugin through supported Codex plugin controls. Plugin removal does not delete the desktop application or local Lili data.
 
-For legacy integration cleanup, run `lili integrate uninstall` and require `complete: true`. To remove persistent Lili data, quit Lili and delete `${CODEX_HOME}/lili/` after successful legacy cleanup. Pet packages under `${CODEX_HOME}/pets/` and timestamped backups are user-managed and must be reviewed separately. The [security and operations guide](security-and-operations.md#backup-reset-and-uninstall) contains the complete order and safety checks.
+For legacy integration cleanup, run `lili integrate uninstall` and require `complete: true`. To remove persistent Lili data, quit Lili and delete the platform-native Lili application data directory described in the [security and operations guide](security-and-operations.md#local-data-layout). This removes the SQLite database, application-owned Pet packages, action configuration, and runtime files; it does not remove Codex configuration or backups. The [security and operations guide](security-and-operations.md#backup-reset-and-uninstall) contains the complete order and safety checks.
 
 Because Lili has no account or remote session-data store, there is no separate server-side Lili profile to export or delete. Data voluntarily submitted to GitHub or another third party must be managed through that service.
 
