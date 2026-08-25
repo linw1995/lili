@@ -167,6 +167,11 @@ The hook forwarder MUST load Lili runtime credentials, deliver authenticated eve
 - **WHEN** multiple direct and plugin-attributed hooks forward events at the same time
 - **THEN** all records use the shared Lili-owned spool and runtime roots, retain stable identities, and remain deduplicable without consulting Codex files
 
+#### Scenario: Plugin hook omits optional Codex-home provenance
+
+- **WHEN** a supported plugin launcher provides the guaranteed plugin environment but no `CODEX_HOME`
+- **THEN** the forwarder still delivers or spools the attributed event, does not emit a Codex filesystem diagnostic, and records no home-bound evidence that could later be assigned to an integration assessment
+
 ### Requirement: Restrict Codex filesystem access to explicit integration commands
 
 Only an explicitly invoked `lili integrate` command MAY resolve or read/write `CODEX_HOME`. Ordinary desktop startup, tray diagnostics, background event ingestion, and hook forwarding MUST NOT invoke Codex inspection or configuration mutation.

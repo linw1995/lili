@@ -111,15 +111,7 @@ pub async fn run_from_environment() -> HookResult {
                 None
             };
             let plugin_home = if plugin_hook {
-                match plugin_home_identity_from_environment() {
-                    Some(plugin_home) => Some(plugin_home),
-                    None => {
-                        return HookResult::failure(
-                            HookExitCode::InvalidInput,
-                            "plugin Codex home identity is unavailable",
-                        );
-                    }
-                }
+                plugin_home_identity_from_environment()
             } else {
                 None
             };

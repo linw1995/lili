@@ -140,6 +140,40 @@ fn packaged_launcher_forwards_concurrent_events_without_visible_output() {
 }
 
 #[test]
+fn packaged_launcher_accepts_missing_codex_home() {
+    let Some(target) = supported_target() else {
+        return;
+    };
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    let codex_home = temp.0.join("default codex home");
+    let plugin_root = codex_home
+        .join("plugins/cache/lili-local/lili")
+        .join(env!("CARGO_PKG_VERSION"));
+    let launcher = install_plugin_runtime(&plugin_root, target);
+    SqliteSpoolStore::for_application(application_paths(&home))
+        .metrics()
+        .unwrap();
+
+    let output =
+        invoke_without_codex_home(&launcher, &plugin_root, &codex_home, &home, FIXTURES[0]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let spool = SqliteSpoolStore::for_application(application_paths(&home));
+    let claim = spool.claim_next(unix_time_ms()).unwrap().unwrap();
+    assert!(
+        claim
+            .event()
+            .source_discriminator
+            .starts_with("plugin:lili@lili-local:0.1.0:hook:")
+    );
+    assert!(!claim.event().source_discriminator.contains(":home:"));
+    claim.commit().unwrap();
+}
+
+#[test]
 fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
     let Some(target) = supported_target() else {
         return;
@@ -283,6 +317,40 @@ fn invoke(
         .env("CODEX_HOME", codex_home)
         .env("HOME", home)
         .env("XDG_STATE_HOME", home.join("state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(fixture.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn invoke_without_codex_home(
+    launcher: &Path,
+    plugin_root: &Path,
+    codex_home: &Path,
+    home: &Path,
+    fixture: &str,
+) -> std::process::Output {
+    let mut child = Command::new(launcher)
+        .env("PLUGIN_ROOT", plugin_root)
+        .env(
+            "PLUGIN_DATA",
+            codex_home
+                .join("plugins")
+                .join("data")
+                .join("lili-lili-local"),
+        )
+        .env("HOME", home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env_remove("CODEX_HOME")
+        .env_remove("LILI_PLUGIN_CODEX_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

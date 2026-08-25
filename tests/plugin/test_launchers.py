@@ -99,7 +99,8 @@ class PluginLauncherContractTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PLUGIN_ROOT"] = str(plugin_root)
             environment["PLUGIN_DATA"] = str(plugin_root / "data" / "lili-lili-local")
-            environment["CODEX_HOME"] = str(plugin_root / "codex-home")
+            environment.pop("CODEX_HOME", None)
+            environment.pop("LILI_PLUGIN_CODEX_HOME", None)
             payload = b'{"text":"$(touch should-not-exist)"}\n'
             result = subprocess.run(
                 [str(launcher)],
