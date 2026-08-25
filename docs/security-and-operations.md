@@ -24,7 +24,7 @@ The desktop runtime and Hook use the platform-native Lili application root. `COD
 | `<LILI_DATA>/pets/<id>/` | User managed | Validated Pet v2 manifests and spritesheets owned by Lili. |
 | `<LILI_DATA>/config/actions.toml` | User managed | Action identifiers, filters, executable argv, limits, working-directory policy, and explicit environment additions. |
 | `<LILI_DATA>/runtime/forwarding.json` | Current desktop instance | Instance identifier, local endpoint, and secret used to authenticate forwarding. Owner-only and removed on orderly shutdown. |
-| `/tmp/lili-<hash>/endpoint.sock` (recorded in runtime credentials) | Current desktop instance on Unix | Short local forwarding socket inside an owner-only directory derived from the Lili runtime root and user. Windows uses a user-scoped named pipe. |
+| `<XDG_RUNTIME_DIR>/lili-<hash>/endpoint.sock` or `/tmp/lili-<hash>/endpoint.sock` (recorded in runtime credentials) | Current desktop instance on Unix | Short local forwarding socket inside an owner-only runtime directory; the `/tmp` form is the bounded fallback when no suitable XDG runtime directory exists. Windows uses a user-scoped named pipe. |
 | `${CODEX_HOME}/lili/integration.json` | Until complete uninstall; integration only | Managed integration provenance, file hashes, owned hook commands, prior notify argv, backup paths, and install timestamp. |
 | `${CODEX_HOME}/config.toml.lili-backup-<timestamp>` | Until manually removed; integration only | Pre-install configuration backup when `config.toml` was updated. |
 | `${CODEX_HOME}/hooks.json.lili-backup-<timestamp>` | Until manually removed; integration only | Pre-install configuration backup when `hooks.json` was updated. |
@@ -37,8 +37,8 @@ Lili retains only the metadata needed for display and recovery:
 
 - the latest provider, event, session, and optional turn identities for each persisted Session projection;
 - the latest normalized lifecycle kind and occurrence time for each persisted Session projection;
-- a bounded project label and display-safe summary for the latest Session notification;
-- unread state for at most one latest notification per Session;
+- a bounded project label and display-safe summary for the presentation-driving Session notification;
+- unread state for at most one presentation-driving notification per Session;
 - action identifier, trigger, event identity, timing, outcome, exit code, and output byte counts;
 - unconsumed normalized spool records until they are delivered or evicted;
 - aggregate expired, limit, and malformed-drop counters for the temporary spool.

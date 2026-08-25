@@ -214,10 +214,32 @@ impl SessionReducer {
     }
 
     pub fn persistent_state(&self) -> SessionReducerState {
+        let unread_notification_priorities = self
+            .notifications
+            .values()
+            .filter(|notification| notification.state == NotificationState::Unread)
+            .fold(
+                BTreeMap::<(ProviderId, SessionId), u8>::new(),
+                |mut priorities, notification| {
+                    let key = (
+                        notification.provider.clone(),
+                        notification.session_id.clone(),
+                    );
+                    let priority = notification_priority(notification);
+                    priorities
+                        .entry(key)
+                        .and_modify(|current| *current = (*current).max(priority))
+                        .or_insert(priority);
+                    priorities
+                },
+            );
         let mut sessions = self.sessions.values().collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
-            is_state_driving(right)
-                .cmp(&is_state_driving(left))
+            session_persistence_priority(right, &unread_notification_priorities)
+                .cmp(&session_persistence_priority(
+                    left,
+                    &unread_notification_priorities,
+                ))
                 .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
                 .then_with(|| left.provider.cmp(&right.provider))
                 .then_with(|| left.id.cmp(&right.id))
@@ -232,7 +254,7 @@ impl SessionReducer {
             .map(|session| (session.provider.clone(), session.id.clone()))
             .collect::<BTreeSet<_>>();
 
-        let mut latest_notifications = BTreeMap::new();
+        let mut state_notifications = BTreeMap::new();
         for notification in self
             .notifications
             .values()
@@ -248,16 +270,16 @@ impl SessionReducer {
                 notification.provider.clone(),
                 notification.session_id.clone(),
             );
-            let replace = latest_notifications
+            let replace = state_notifications
                 .get(&key)
                 .is_none_or(|current: &Notification| {
                     notification_order(notification) > notification_order(current)
                 });
             if replace {
-                latest_notifications.insert(key, notification.clone());
+                state_notifications.insert(key, notification.clone());
             }
         }
-        let mut notifications = latest_notifications.into_values().collect::<Vec<_>>();
+        let mut notifications = state_notifications.into_values().collect::<Vec<_>>();
         notifications.sort_by(|left, right| {
             notification_priority(right)
                 .cmp(&notification_priority(left))
@@ -731,11 +753,20 @@ fn session_order(session: &SessionRecord) -> (u64, &EventId) {
     (session.updated_at_ms, &session.last_event_id)
 }
 
-fn is_state_driving(session: &SessionRecord) -> bool {
-    matches!(
-        session.summary().phase,
-        SessionPhase::Active | SessionPhase::Attention
-    )
+fn session_persistence_priority(
+    session: &SessionRecord,
+    unread_notification_priorities: &BTreeMap<(ProviderId, SessionId), u8>,
+) -> (u8, u8) {
+    let notification_priority = unread_notification_priorities
+        .get(&(session.provider.clone(), session.id.clone()))
+        .copied()
+        .unwrap_or_default();
+    let state_priority = match session.summary().phase {
+        SessionPhase::Attention => 2,
+        SessionPhase::Active => 1,
+        _ => 0,
+    };
+    (notification_priority, state_priority)
 }
 
 fn turn_order(turn: &TurnRecord) -> (u64, &EventId) {
@@ -764,8 +795,12 @@ fn notification_priority(notification: &Notification) -> u8 {
     }
 }
 
-fn notification_order(notification: &Notification) -> (u64, &NotificationId) {
-    (notification.occurred_at_ms, &notification.id)
+fn notification_order(notification: &Notification) -> (u8, u64, &NotificationId) {
+    (
+        notification_priority(notification),
+        notification.occurred_at_ms,
+        &notification.id,
+    )
 }
 
 #[cfg(test)]
@@ -1108,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn persistence_keeps_one_current_turn_and_latest_notification_per_session() {
+    fn persistence_keeps_one_current_turn_and_state_notification_per_session() {
         let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
         reducer.reduce(event(
             "attention",
@@ -1196,6 +1231,39 @@ mod tests {
     }
 
     #[test]
+    fn persistence_keeps_the_notification_that_drives_presentation() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "attention",
+            "attention_required",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        reducer.reduce(event(
+            "started-2",
+            "turn_started",
+            "session-1",
+            Some("turn-2"),
+            20,
+        ));
+        reducer.reduce(event(
+            "completed-2",
+            "turn_completed",
+            "session-1",
+            Some("turn-2"),
+            30,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.notifications.len(), 1);
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "attention");
+
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Waiting);
+    }
+
+    #[test]
     fn persistence_keeps_notifications_only_for_persisted_sessions() {
         let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
         for index in 0..(MAX_PERSISTED_SESSIONS + 12) {
@@ -1249,6 +1317,38 @@ mod tests {
 
         let restored = SessionReducer::from_persistent_state(persisted).unwrap();
         assert_eq!(restored.snapshot().presentation, PresentationState::Running);
+    }
+
+    #[test]
+    fn persistence_retains_sessions_with_presentation_driving_notifications() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        for index in 0..MAX_PERSISTED_SESSIONS {
+            reducer.reduce(event(
+                &format!("active-{index}"),
+                "turn_started",
+                &format!("active-session-{index}"),
+                Some("turn-1"),
+                index as u64,
+            ));
+        }
+        reducer.reduce(event(
+            "failed",
+            "turn_failed",
+            "failed-session",
+            Some("turn-1"),
+            10_000,
+        ));
+
+        let persisted = reducer.persistent_state();
+        assert_eq!(persisted.sessions.len(), MAX_PERSISTED_SESSIONS);
+        assert!(
+            persisted
+                .sessions
+                .iter()
+                .any(|session| session.id.as_str() == "failed-session")
+        );
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Failed);
     }
 
     #[test]

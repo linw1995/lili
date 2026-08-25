@@ -9,7 +9,7 @@ The compatibility target is the installed Codex v2 pet contract: a package under
 **Goals:**
 
 - Keep pet assets interchangeable with existing Codex v2 packages.
-- Represent concurrent sessions with a deterministic reducer and a restart-safe latest-notification projection.
+- Represent concurrent sessions with a deterministic reducer and a restart-safe state-notification projection.
 - Make hook forwarding fast, observer-only, private to the local user, and tolerant of the UI being offline.
 - Keep rendering, native session authority, and process execution separated by explicit interfaces.
 - Make every configured interaction reproducible and auditable without shell parsing.

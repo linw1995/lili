@@ -87,7 +87,7 @@ Structured state replacement, spool claims, acknowledgements, and retention deci
 
 ### Requirement: Enforce database invariants and bounded retention
 
-The storage layer MUST enforce valid JSON, valid spool state values, unique spool event identities, and bounded retention for temporary offline events. The durable application projection MUST be replaced rather than appended, and MUST contain at most one latest unread notification for each persisted Session rather than a notification history or a separate global notification queue.
+The storage layer MUST enforce valid JSON, valid spool state values, unique spool event identities, and bounded retention for temporary offline events. The durable application projection MUST be replaced rather than appended, and MUST contain at most one presentation-driving unread notification for each persisted Session rather than a notification history or a separate global notification queue. When a Session has multiple unread notifications, the notification with the highest presentation priority MUST be retained, with the newest notification breaking ties.
 
 #### Scenario: Invalid structured detail is written
 
@@ -97,7 +97,7 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 #### Scenario: More than one notification exists for a Session
 
 - **WHEN** a reducer snapshot is persisted after a Session has produced multiple notifications
-- **THEN** the durable projection contains only the latest notification for that Session, while the in-memory reducer may retain the complete current lifecycle
+- **THEN** the durable projection contains only the highest-priority unread notification for that Session, choosing the newest one when priorities tie, while the in-memory reducer may retain the complete current lifecycle
 
 #### Scenario: A notification belongs to a Session outside the persisted projection
 
@@ -108,6 +108,16 @@ The storage layer MUST enforce valid JSON, valid spool state values, unique spoo
 
 - **WHEN** an Active or Attention Session is older than enough ended Sessions to exceed the restart projection bound
 - **THEN** the state-driving Session is retained and the restored presentation is recomputed from the retained Sessions and notifications
+
+#### Scenario: A newer terminal notification follows unresolved attention
+
+- **WHEN** a Session has an unresolved Attention notification for an older turn and a newer Completion or Failure notification
+- **THEN** the durable projection retains the Attention notification so restart restores the same higher-priority Waiting presentation
+
+#### Scenario: A notification-driving Session competes with active Sessions
+
+- **WHEN** the Session projection is full of Active or Attention Sessions and another Session owns an unread Failure or Completion notification
+- **THEN** the notification-driving Session is retained before the projection bound is applied, and restart restores Failed or Review presentation as applicable
 
 #### Scenario: Retention limit is reached
 
