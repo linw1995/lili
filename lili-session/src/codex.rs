@@ -10,7 +10,7 @@ use crate::{
 };
 
 const NOTIFY_EVENT_TYPE: &str = "agent-turn-complete";
-const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 128;
+const MAX_SOURCE_DISCRIMINATOR_CHARS: usize = 256;
 const MAX_AUTHENTICATED_PLUGIN_EVENTS: usize = 16;
 
 const SESSION_START_HOOK: &str = "SessionStart";
@@ -1108,6 +1108,21 @@ mod tests {
             format!("plugin:lili@lili-local:{DESKTOP_VERSION}:hook:Stop")
         );
         assert!(plugin.validate().is_ok());
+    }
+
+    #[test]
+    fn plugin_home_provenance_keeps_the_declared_selector_bound() {
+        let mut event = normalize_lifecycle_json(LIFECYCLE_FIXTURES[2].0, 42).unwrap();
+        let plugin_id = format!("lili@{}", "m".repeat(123));
+        let home_identity = codex_home_identity(Path::new("/tmp/default-codex")).unwrap();
+
+        assert!(mark_plugin_hook_event_with_home(
+            &mut event,
+            &plugin_id,
+            Some(&home_identity)
+        ));
+        assert!(event.source_discriminator.chars().count() <= 256);
+        assert!(event.validate().is_ok());
     }
 
     #[test]
