@@ -1173,7 +1173,7 @@ fn install_context_menu_handlers() {
     use std::{cell::Cell, rc::Rc};
 
     use wasm_bindgen::{JsCast, closure::Closure};
-    use web_sys::{Element, MouseEvent, PointerEvent};
+    use web_sys::{Element, HtmlElement, MouseEvent, PointerEvent};
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -1187,11 +1187,17 @@ fn install_context_menu_handlers() {
         }
     });
     let contextmenu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
-        if event.button() != 2 || !is_pet_context_target(event.target()) {
+        let Some(pet) = pet_context_element(event.target()) else {
+            return;
+        };
+        if event.button() != 2 {
             return;
         }
         event.prevent_default();
         event.stop_immediate_propagation();
+        if let Ok(pet) = pet.dyn_into::<HtmlElement>() {
+            let _ = pet.blur();
+        }
         open_native_pet_context_menu(event.screen_x(), event.screen_y());
     });
     let _ = document.add_event_listener_with_callback_and_bool(
@@ -1212,10 +1218,13 @@ fn install_context_menu_handlers() {
     });
 
     fn is_pet_context_target(target: Option<web_sys::EventTarget>) -> bool {
+        pet_context_element(target).is_some()
+    }
+
+    fn pet_context_element(target: Option<web_sys::EventTarget>) -> Option<Element> {
         target
             .and_then(|target| target.dyn_into::<Element>().ok())
             .and_then(|target| target.closest(".pet-sprite").ok().flatten())
-            .is_some()
     }
 }
 
@@ -1355,6 +1364,9 @@ mod tests {
         assert!(contrast_ratio([120, 215, 255], [24, 28, 36]) >= 3.0);
         let css = include_str!("../../web/lili.css");
         assert!(css.contains(":focus-visible"));
+        assert!(css.contains(".pet-sprite:focus-visible"));
+        assert!(css.contains("filter: drop-shadow"));
+        assert!(css.contains("outline: none"));
         assert!(css.contains("prefers-reduced-motion: reduce"));
     }
 

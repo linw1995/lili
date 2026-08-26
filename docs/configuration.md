@@ -81,7 +81,7 @@ A v2 manifest uses camel-case field names:
 
 The atlas must be a transparent PNG or WebP image with exact dimensions `1536x2288`: eight `192x208` columns by eleven rows. The package path must be an ordinary directory rather than a symbolic link, `pet.json` must be an ordinary file, and the atlas must resolve inside the package directory.
 
-Restart Lili after adding or replacing a package. Select an installed package from the tray menu under **Pet**. Invalid packages are skipped and reported under **Diagnostics**; the embedded Lili package remains available.
+Restart Lili after adding or replacing a package. Select an installed package from the tray menu under **Pet**. Invalid packages are skipped and recorded in local diagnostics; the embedded Lili package remains available.
 
 ## 4. Enable legacy fallback Session notifications
 
@@ -212,17 +212,17 @@ Lili writes one `InteractionContextV1` JSON document to the action's standard in
 
 Pet interactions use the same envelope with `notification: null`. The configured executable decides how to parse the JSON and what local operation to perform. Lili bounds runtime, output capture, concurrency, and process-tree cleanup, but the executable still has the current operating-system user's authority.
 
-Restart Lili after editing `actions.toml`. Invalid entries are disabled independently; valid entries continue to load. Review the effective redacted action configuration and diagnostic codes from the tray **Diagnostics** view.
+Restart Lili after editing `actions.toml`. Invalid entries are disabled independently; valid entries continue to load. Review the effective redacted action configuration and diagnostic codes from the diagnostics endpoint.
 
 ## 6. Verify and troubleshoot
 
 Use this sequence after configuration:
 
-1. Confirm the desktop pet is visible. Use tray **Show** if it was hidden.
-2. Open **Diagnostics** from the tray and confirm the current plugin or Hook delivery state there.
+1. Confirm the desktop pet is visible. Use the tray **Show / Hide** toggle if it was hidden.
+2. Inspect the diagnostics endpoint and confirm the current plugin or Hook delivery state there.
 3. Run `"$LILI_RELEASE/bin/lili" integrate inspect` and review `warnings`, notify ownership, configured hooks, and detected Codex version.
 4. Start a new Codex Session and produce a completion or attention event.
-5. Activate the notification or interact with the pet, then inspect action feedback and tray **Diagnostics**.
+5. Activate the notification or interact with the pet, then inspect action feedback and the diagnostics endpoint.
 
 If the pet package does not load, confirm the manifest field names, atlas dimensions and transparency, and package paths. Lili falls back to the embedded package instead of rendering an invalid image.
 

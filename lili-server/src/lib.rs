@@ -33,20 +33,23 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
     :root { color-scheme: light dark; font-family: ui-rounded, system-ui, sans-serif; }
-    html, body { margin: 0; background: transparent; }
+    html, body { width: 100%; height: 100%; margin: 0; background: transparent; overflow: hidden; }
     menu {
       backdrop-filter: blur(14px);
       background: rgb(24 28 36 / 96%);
-      border: 1px solid rgb(255 255 255 / 24%);
+      border: 0;
       border-radius: 10px;
+      box-sizing: border-box;
       box-shadow: 0 10px 28px rgb(0 0 0 / 32%);
       color: #fff;
       display: grid;
       gap: 3px;
+      height: 100%;
       list-style: none;
       margin: 0;
-      min-width: 184px;
+      min-width: 0;
       padding: 5px;
+      width: 100%;
     }
     button {
       background: transparent;
@@ -64,11 +67,8 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
 </head>
 <body>
   <menu aria-label="Pet menu" role="menu">
-    <button type="button" role="menuitem" data-action="show">Show</button>
-    <button type="button" role="menuitem" data-action="hide">Hide</button>
+    <button type="button" role="menuitem" data-action="toggle-visibility">Show / Hide</button>
     <button type="button" role="menuitem" data-action="always-on-top">Always on Top</button>
-    <button type="button" role="menuitem" data-action="settings">Settings</button>
-    <button type="button" role="menuitem" data-action="diagnostics">Diagnostics</button>
     <button type="button" role="menuitem" data-action="quit">Quit</button>
   </menu>
 </body>
@@ -761,7 +761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_menu_contains_only_native_actions() {
+    async fn context_menu_contains_only_supported_actions() {
         let response = build_router(AppState::default(), None)
             .oneshot(Request::get("/context-menu").body(Body::empty()).unwrap())
             .await
@@ -769,16 +769,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        for action in [
-            "show",
-            "hide",
-            "always-on-top",
-            "settings",
-            "diagnostics",
-            "quit",
-        ] {
+        for action in ["toggle-visibility", "always-on-top", "quit"] {
             assert!(body.contains(&format!("data-action=\"{action}\"")));
         }
+        for action in ["show", "hide", "settings", "diagnostics"] {
+            assert!(!body.contains(&format!("data-action=\"{action}\"")));
+        }
+        assert_eq!(body.matches("data-action=").count(), 3);
+        assert!(body.contains("height: 100%;"));
+        assert!(body.contains("overflow: hidden;"));
+        assert!(!body.contains("border: 1px solid"));
         assert!(!body.contains("invoke("));
     }
 

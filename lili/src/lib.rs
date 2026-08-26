@@ -50,7 +50,7 @@ use tokio::sync::oneshot;
 const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 const CONTEXT_MENU_WINDOW_LABEL: &str = "pet-context-menu";
 const CONTEXT_MENU_WIDTH: u32 = 196;
-const CONTEXT_MENU_HEIGHT: u32 = 244;
+const CONTEXT_MENU_HEIGHT: u32 = 112;
 const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 (() => {
   const invoke = (action) => {
@@ -68,9 +68,8 @@ const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 #[derive(Clone)]
 struct PetContextActions {
     state: AppState,
-    pets_root: PathBuf,
+    visibility: CheckMenuItem<tauri::Wry>,
     always_on_top: CheckMenuItem<tauri::Wry>,
-    pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
 }
 
 #[derive(Clone, Default)]
@@ -152,9 +151,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         setup_tray(&app, state.clone(), &pets_root).expect("failed to configure tray lifecycle");
     app.manage(PetContextActions {
         state: state.clone(),
-        pets_root: pets_root.clone(),
+        visibility: tray_menu.visibility.clone(),
         always_on_top: tray_menu.always_on_top.clone(),
-        pet_items: tray_menu.pet_items.clone(),
     });
     let loopback = LoopbackServer::bind(build_native_router_with_diagnostics_and_persistence(
         state.clone(),
@@ -321,7 +319,7 @@ fn create_context_menu_window(
     .decorations(false)
     .always_on_top(true)
     .resizable(false)
-    .shadow(true)
+    .shadow(false)
     .skip_taskbar(true)
     .visible(false)
     .focused(false)
@@ -395,7 +393,8 @@ fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
 
 fn handle_pet_close(app: &tauri::AppHandle, api: &tauri::CloseRequestApi) {
     api.prevent_close();
-    hide_pet_window(app);
+    let actions = app.state::<PetContextActions>();
+    hide_pet_window(app, &actions.visibility);
 }
 
 fn handle_pet_move(app: &tauri::AppHandle) {
@@ -901,6 +900,7 @@ fn open_pet_context_menu_at(
     navigation: &ContextMenuNavigation,
     fallback: Option<tauri::PhysicalPosition<i32>>,
 ) -> Result<(), String> {
+    let _ = source.eval("document.activeElement?.blur()");
     let window = context_menu_window(app, navigation)?;
     let pointer = context_menu_pointer(source, fallback)?;
     let position = context_menu_position(source, &window, pointer);
@@ -978,18 +978,13 @@ fn run_pet_context_action(
 ) -> Result<(), String> {
     hide_pet_context_menu(&app);
     match TrayAction::parse(&action) {
+        TrayAction::ToggleVisibility => toggle_pet_window(&app, &actions.visibility),
         TrayAction::AlwaysOnTop => {
             let enabled = !actions.always_on_top.is_checked().unwrap_or(true);
             set_always_on_top(&app, &actions.state, &actions.always_on_top, enabled);
         }
-        action => handle_tray_menu_event(
-            &app,
-            action,
-            &actions.state,
-            &actions.pets_root,
-            &actions.pet_items,
-            &actions.always_on_top,
-        ),
+        TrayAction::Quit => handle_application_tray_action(&app, TrayAction::Quit),
+        TrayAction::SelectPet(_) | TrayAction::Unknown => {}
     }
     Ok(())
 }
@@ -1131,6 +1126,7 @@ async fn commit_window_position(
 
 fn setup_tray(app: &tauri::App, state: AppState, pets_root: &Path) -> tauri::Result<TrayMenu> {
     let tray_menu = build_tray_menu(app, &state, pets_root)?;
+    let icon_menu = tray_menu.clone();
     let event_menu = tray_menu.clone();
     let icon = app
         .default_window_icon()
@@ -1142,7 +1138,9 @@ fn setup_tray(app: &tauri::App, state: AppState, pets_root: &Path) -> tauri::Res
         .tooltip("Lili")
         .show_menu_on_left_click(false)
         .menu(&tray_menu.menu)
-        .on_tray_icon_event(handle_tray_icon_event)
+        .on_tray_icon_event(move |tray, event| {
+            handle_tray_icon_event(tray, event, &icon_menu.visibility);
+        })
         .on_menu_event({
             let pets_root = pets_root.to_path_buf();
             move |app, event| {
@@ -1152,6 +1150,7 @@ fn setup_tray(app: &tauri::App, state: AppState, pets_root: &Path) -> tauri::Res
                     &state,
                     &pets_root,
                     &event_menu.pet_items,
+                    &event_menu.visibility,
                     &event_menu.always_on_top,
                 );
             }
@@ -1163,6 +1162,7 @@ fn setup_tray(app: &tauri::App, state: AppState, pets_root: &Path) -> tauri::Res
 #[derive(Clone)]
 struct TrayMenu {
     menu: Menu<tauri::Wry>,
+    visibility: CheckMenuItem<tauri::Wry>,
     always_on_top: CheckMenuItem<tauri::Wry>,
     pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
 }
@@ -1176,18 +1176,16 @@ fn build_tray_menu(
     let menu = Menu::with_items(
         app,
         &[
-            &parts.window.show,
-            &parts.window.hide,
+            &parts.window.visibility,
             &parts.window.always_on_top,
             &parts.pet.menu,
-            &parts.utility.settings,
-            &parts.utility.diagnostics,
             &parts.utility.separator,
             &parts.utility.quit,
         ],
     )?;
     Ok(TrayMenu {
         menu,
+        visibility: parts.window.visibility,
         always_on_top: parts.window.always_on_top,
         pet_items: parts.pet.items,
     })
@@ -1210,14 +1208,19 @@ impl TrayMenuParts {
 }
 
 struct TrayWindowItems {
-    show: MenuItem<tauri::Wry>,
-    hide: MenuItem<tauri::Wry>,
+    visibility: CheckMenuItem<tauri::Wry>,
     always_on_top: CheckMenuItem<tauri::Wry>,
 }
 
 fn build_tray_window_items(app: &tauri::App, state: &AppState) -> tauri::Result<TrayWindowItems> {
-    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
+    let visibility = CheckMenuItem::with_id(
+        app,
+        "toggle-visibility",
+        "Show / Hide",
+        true,
+        true,
+        None::<&str>,
+    )?;
     let always_on_top = CheckMenuItem::with_id(
         app,
         "always-on-top",
@@ -1227,8 +1230,7 @@ fn build_tray_window_items(app: &tauri::App, state: &AppState) -> tauri::Result<
         None::<&str>,
     )?;
     Ok(TrayWindowItems {
-        show,
-        hide,
+        visibility,
         always_on_top,
     })
 }
@@ -1262,38 +1264,27 @@ fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<Tra
 }
 
 struct TrayUtilityItems {
-    settings: MenuItem<tauri::Wry>,
-    diagnostics: MenuItem<tauri::Wry>,
     separator: PredefinedMenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
 }
 
 fn build_tray_utility_items(app: &tauri::App) -> tauri::Result<TrayUtilityItems> {
-    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-    let diagnostics = MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    Ok(TrayUtilityItems {
-        settings,
-        diagnostics,
-        separator,
-        quit,
-    })
+    Ok(TrayUtilityItems { separator, quit })
 }
 
-fn handle_tray_icon_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
+fn handle_tray_icon_event(
+    tray: &tauri::tray::TrayIcon,
+    event: TrayIconEvent,
+    visibility: &CheckMenuItem<tauri::Wry>,
+) {
     if let TrayIconEvent::Click {
         button: MouseButton::Left,
         ..
     } = event
-        && let Some(window) = tray.app_handle().get_webview_window("pet")
     {
-        let visible = window.is_visible().unwrap_or(false);
-        let _ = if visible {
-            window.hide()
-        } else {
-            window.show()
-        };
+        toggle_pet_window(tray.app_handle(), visibility);
     }
 }
 
@@ -1303,16 +1294,16 @@ fn handle_tray_menu_event(
     state: &AppState,
     pets_root: &Path,
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
+    visibility: &CheckMenuItem<tauri::Wry>,
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
     match action {
-        TrayAction::Show | TrayAction::Hide | TrayAction::AlwaysOnTop => {
-            handle_window_tray_action(app, action, state, always_on_top);
+        TrayAction::ToggleVisibility | TrayAction::AlwaysOnTop => {
+            handle_window_tray_action(app, action, state, visibility, always_on_top);
         }
         TrayAction::SelectPet(pet_id) => {
-            handle_pet_selection(app, state, pets_root, pet_items, &pet_id);
+            handle_pet_selection(app, state, pets_root, pet_items, visibility, &pet_id);
         }
-        TrayAction::Settings | TrayAction::Diagnostics => handle_tray_view_action(app, action),
         TrayAction::Quit | TrayAction::Unknown => {
             handle_application_tray_action(app, action);
         }
@@ -1323,27 +1314,41 @@ fn handle_window_tray_action(
     app: &tauri::AppHandle,
     action: TrayAction,
     state: &AppState,
+    visibility: &CheckMenuItem<tauri::Wry>,
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
     match action {
-        TrayAction::Show => show_pet_window(app),
-        TrayAction::Hide => hide_pet_window(app),
+        TrayAction::ToggleVisibility => toggle_pet_window(app, visibility),
         TrayAction::AlwaysOnTop => update_always_on_top(app, state, always_on_top),
         _ => {}
     }
 }
 
-fn show_pet_window(app: &tauri::AppHandle) {
+fn show_pet_window(app: &tauri::AppHandle, visibility: &CheckMenuItem<tauri::Wry>) {
     if let Some(window) = app.get_webview_window("pet") {
-        clear_tray_view(&window);
-        let _ = window.show();
-        let _ = window.set_focus();
+        if window.show().is_ok() {
+            let _ = visibility.set_checked(true);
+            let _ = window.set_focus();
+        }
     }
 }
 
-fn hide_pet_window(app: &tauri::AppHandle) {
+fn hide_pet_window(app: &tauri::AppHandle, visibility: &CheckMenuItem<tauri::Wry>) {
     if let Some(window) = app.get_webview_window("pet") {
-        let _ = window.hide();
+        if window.hide().is_ok() {
+            let _ = visibility.set_checked(false);
+        }
+    }
+}
+
+fn toggle_pet_window(app: &tauri::AppHandle, visibility: &CheckMenuItem<tauri::Wry>) {
+    let Some(window) = app.get_webview_window("pet") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        hide_pet_window(app, visibility);
+    } else {
+        show_pet_window(app, visibility);
     }
 }
 
@@ -1379,6 +1384,7 @@ fn handle_pet_selection(
     state: &AppState,
     pets_root: &Path,
     pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
+    visibility: &CheckMenuItem<tauri::Wry>,
     pet_id: &PetId,
 ) {
     let persistence = app.state::<DesktopPersistence>();
@@ -1389,16 +1395,9 @@ fn handle_pet_selection(
         let _ = item.set_checked(candidate == pet_id);
     }
     if let Some(window) = app.get_webview_window("pet") {
-        clear_tray_view(&window);
-        let _ = window.show();
-    }
-}
-
-fn handle_tray_view_action(app: &tauri::AppHandle, action: TrayAction) {
-    match action {
-        TrayAction::Settings => show_tray_view(app, TrayView::Settings),
-        TrayAction::Diagnostics => show_tray_view(app, TrayView::Diagnostics),
-        _ => {}
+        if window.show().is_ok() {
+            let _ = visibility.set_checked(true);
+        }
     }
 }
 
@@ -1410,12 +1409,9 @@ fn handle_application_tray_action(app: &tauri::AppHandle, action: TrayAction) {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TrayAction {
-    Show,
-    Hide,
+    ToggleVisibility,
     AlwaysOnTop,
     SelectPet(PetId),
-    Settings,
-    Diagnostics,
     Quit,
     Unknown,
 }
@@ -1423,11 +1419,8 @@ enum TrayAction {
 impl TrayAction {
     fn parse(id: &str) -> Self {
         match id {
-            "show" => Self::Show,
-            "hide" => Self::Hide,
+            "toggle-visibility" => Self::ToggleVisibility,
             "always-on-top" => Self::AlwaysOnTop,
-            "settings" => Self::Settings,
-            "diagnostics" => Self::Diagnostics,
             "quit" => Self::Quit,
             _ => id
                 .strip_prefix("pet:")
@@ -1456,31 +1449,6 @@ fn select_pet(
     }
     tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum TrayView {
-    Settings,
-    Diagnostics,
-}
-
-fn show_tray_view(app: &tauri::AppHandle, view: TrayView) {
-    let Some(window) = app.get_webview_window("pet") else {
-        return;
-    };
-    let value = match view {
-        TrayView::Settings => "settings",
-        TrayView::Diagnostics => "diagnostics",
-    };
-    let _ = window.eval(format!(
-        "document.getElementById('lili-app')?.setAttribute('data-tray-view','{value}')"
-    ));
-    let _ = window.show();
-    let _ = window.set_focus();
-}
-
-fn clear_tray_view(window: &tauri::WebviewWindow) {
-    let _ = window.eval("document.getElementById('lili-app')?.removeAttribute('data-tray-view')");
 }
 
 fn desktop_assets(
@@ -1607,8 +1575,15 @@ mod tests {
 
     #[test]
     fn tray_actions_reject_untrusted_pet_identifiers() {
-        assert_eq!(TrayAction::parse("show"), TrayAction::Show);
+        assert_eq!(
+            TrayAction::parse("toggle-visibility"),
+            TrayAction::ToggleVisibility
+        );
         assert_eq!(TrayAction::parse("always-on-top"), TrayAction::AlwaysOnTop);
+        assert_eq!(TrayAction::parse("show"), TrayAction::Unknown);
+        assert_eq!(TrayAction::parse("hide"), TrayAction::Unknown);
+        assert_eq!(TrayAction::parse("settings"), TrayAction::Unknown);
+        assert_eq!(TrayAction::parse("diagnostics"), TrayAction::Unknown);
         assert_eq!(
             TrayAction::parse("pet:lili"),
             TrayAction::SelectPet(PetId::parse("lili").unwrap())
