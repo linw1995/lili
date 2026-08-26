@@ -195,8 +195,9 @@ fn run_desktop(smoke: bool, acceptance: bool) {
 
 #[cfg(target_os = "macos")]
 fn configure_desktop_companion_application(app: &tauri::App) -> tauri::Result<()> {
-    app.handle()
-        .set_activation_policy(tauri::ActivationPolicy::Accessory)
+    let handle = app.handle();
+    handle.set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+    handle.set_dock_visibility(false)
 }
 
 #[cfg(not(target_os = "macos"))]
