@@ -15,6 +15,23 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSWindowCollectionBehavior, NSWindowSt
 use std::ptr::NonNull;
 
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
+const CURRENT_PROCESS: u32 = 2;
+const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
+
+#[repr(C)]
+struct ProcessSerialNumber {
+    high_long_of_psn: u32,
+    low_long_of_psn: u32,
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    #[link_name = "TransformProcessType"]
+    fn transform_process_type(
+        process_serial_number: *const ProcessSerialNumber,
+        transform_state: i32,
+    ) -> i32;
+}
 
 type ContextMenuHandler = Arc<dyn Fn() + Send + Sync>;
 type ContextMenuTarget = Arc<AtomicBool>;
@@ -72,6 +89,19 @@ pub fn configure(
     }
     install_context_menu_monitor();
     Ok(())
+}
+
+pub fn hide_dock_icon() {
+    let process_serial_number = ProcessSerialNumber {
+        high_long_of_psn: 0,
+        low_long_of_psn: CURRENT_PROCESS,
+    };
+    unsafe {
+        let _ = transform_process_type(
+            &process_serial_number,
+            PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION,
+        );
+    }
 }
 
 pub fn satisfies_desktop_companion_contract(window: &tauri::WebviewWindow) -> bool {
