@@ -197,7 +197,9 @@ fn run_desktop(smoke: bool, acceptance: bool) {
 fn configure_desktop_companion_application(app: &tauri::App) -> tauri::Result<()> {
     let handle = app.handle();
     handle.set_activation_policy(tauri::ActivationPolicy::Accessory)?;
-    handle.set_dock_visibility(false)
+    handle.set_dock_visibility(false)?;
+    macos_panel::hide_dock_icon();
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -411,6 +413,10 @@ fn run_desktop_event_loop(
 ) {
     let mut shutdown_tx = Some(shutdown_tx);
     app.run(move |app, event| {
+        #[cfg(target_os = "macos")]
+        if matches!(event, tauri::RunEvent::Ready) {
+            macos_panel::hide_dock_icon();
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             if !smoke {
                 persist_desktop_state(app, &state, state_store.as_ref());
