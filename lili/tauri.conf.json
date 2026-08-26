@@ -19,6 +19,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
     "licenseFile": "../LICENSE",
     "resources": {
       "../dist/": "web",
