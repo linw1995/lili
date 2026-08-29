@@ -1,5 +1,7 @@
 use std::{
+    collections::HashSet,
     ffi::CStr,
+    ptr::NonNull,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -11,9 +13,9 @@ use objc2::{
     msg_send,
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
-use objc2_app_kit::{NSEvent, NSEventMask, NSWindowCollectionBehavior, NSWindowStyleMask};
-use std::ptr::NonNull;
-
+use objc2_app_kit::{
+    NSEvent, NSEventMask, NSEventType, NSWindowCollectionBehavior, NSWindowStyleMask,
+};
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 const CURRENT_PROCESS: u32 = 2;
 const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
@@ -34,11 +36,19 @@ unsafe extern "C" {
 }
 
 type ContextMenuHandler = Arc<dyn Fn() + Send + Sync>;
-type ContextMenuTarget = Arc<AtomicBool>;
 
-static CONTEXT_MENU_HANDLER: OnceLock<
-    Mutex<Option<(isize, ContextMenuTarget, ContextMenuHandler)>>,
-> = OnceLock::new();
+const PET_SPRITE_HEIGHT: f64 = 208.0;
+const PET_SPRITE_WIDTH: f64 = 192.0;
+const PET_WINDOW_HEIGHT: f64 = 360.0;
+const PET_WINDOW_WIDTH: f64 = 320.0;
+
+#[derive(Default)]
+struct ContextMenuState {
+    pet: Option<(isize, ContextMenuHandler)>,
+    suppressed_windows: HashSet<isize>,
+}
+
+static CONTEXT_MENU_STATE: OnceLock<Mutex<ContextMenuState>> = OnceLock::new();
 thread_local! {
     static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
         const { std::cell::RefCell::new(None) };
@@ -46,24 +56,33 @@ thread_local! {
 
 pub fn configure(
     window: &tauri::WebviewWindow,
-    context_menu_target: ContextMenuTarget,
     context_menu_handler: impl Fn() + Send + Sync + 'static,
 ) -> tauri::Result<()> {
+    let window_number = configure_panel(window)?;
+    let context_menu_handler: ContextMenuHandler = Arc::new(context_menu_handler);
+    let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
+    let mut state = state
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("context menu state".to_owned()))?;
+    state.suppressed_windows.insert(window_number);
+    state.pet = Some((window_number, Arc::clone(&context_menu_handler)));
+    drop(state);
+    install_context_menu_monitor();
+    Ok(())
+}
+
+pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let window_number = configure_panel(window)?;
+    register_context_menu_suppression(window_number)
+}
+
+fn configure_panel(window: &tauri::WebviewWindow) -> tauri::Result<isize> {
     let raw_window = window.ns_window()?;
     if raw_window.is_null() {
         return Err(tauri::Error::InvalidWindowHandle);
     }
     let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
     let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
-    let context_menu_handler: ContextMenuHandler = Arc::new(context_menu_handler);
-    let handler = CONTEXT_MENU_HANDLER.get_or_init(|| Mutex::new(None));
-    *handler
-        .lock()
-        .map_err(|_| tauri::Error::AssetNotFound("context menu handler".to_owned()))? = Some((
-        window_number,
-        context_menu_target,
-        Arc::clone(&context_menu_handler),
-    ));
     let panel_class = panel_class();
     let old_class = native_window.class();
     assert!(
@@ -87,6 +106,26 @@ pub fn configure(
             | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![native_window, setCollectionBehavior: behavior];
     }
+    Ok(window_number)
+}
+
+pub fn suppress_webview_context_menu(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let raw_window = window.ns_window()?;
+    if raw_window.is_null() {
+        return Err(tauri::Error::InvalidWindowHandle);
+    }
+    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
+    register_context_menu_suppression(window_number)
+}
+
+fn register_context_menu_suppression(window_number: isize) -> tauri::Result<()> {
+    let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
+    state
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("context menu state".to_owned()))?
+        .suppressed_windows
+        .insert(window_number);
     install_context_menu_monitor();
     Ok(())
 }
@@ -127,8 +166,9 @@ pub fn satisfies_desktop_companion_contract(window: &tauri::WebviewWindow) -> bo
         | (u16::from(behavior.contains(NSWindowCollectionBehavior::Stationary)) << 5)
         | (u16::from(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle)) << 6)
         | (u16::from(application_is_accessory()) << 7)
-        | (u16::from(webview_accepts_first_mouse(window)) << 8);
-    actual == 0x01ff
+        | (u16::from(webview_accepts_first_mouse(window)) << 8)
+        | (u16::from(webview_suppresses_context_menu(window)) << 9);
+    actual == 0x03ff
 }
 
 fn webview_accepts_first_mouse(window: &tauri::WebviewWindow) -> bool {
@@ -144,6 +184,21 @@ fn webview_accepts_first_mouse(window: &tauri::WebviewWindow) -> bool {
         }
     });
     result.is_ok() && accepted.load(Ordering::Acquire)
+}
+
+fn webview_suppresses_context_menu(window: &tauri::WebviewWindow) -> bool {
+    let Ok(raw_window) = window.ns_window() else {
+        return false;
+    };
+    if raw_window.is_null() {
+        return false;
+    }
+    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
+    CONTEXT_MENU_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .is_some_and(|state| state.suppressed_windows.contains(&window_number))
 }
 
 fn application_is_accessory() -> bool {
@@ -188,22 +243,59 @@ fn install_context_menu_monitor() {
     }
     let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
         let event = unsafe { event.as_ref() };
-        let Some((window_number, target, handler)) = CONTEXT_MENU_HANDLER
-            .get()
-            .and_then(|handler| handler.lock().ok().and_then(|handler| handler.clone()))
-        else {
+        let window_number = event.windowNumber();
+        let event_type = event.r#type();
+        let Some((suppressed, handler)) = CONTEXT_MENU_STATE.get().and_then(|state| {
+            state.lock().ok().map(|state| {
+                let suppressed = state.suppressed_windows.contains(&window_number);
+                let handler = state.pet.as_ref().and_then(|(pet_window_number, handler)| {
+                    (event_type == NSEventType::RightMouseDown
+                        && window_number == *pet_window_number
+                        && event_hits_pet_sprite(event))
+                    .then(|| Arc::clone(handler))
+                });
+                (suppressed, handler)
+            })
+        }) else {
             return event as *const NSEvent as *mut NSEvent;
         };
-        if event.windowNumber() != window_number || !target.load(Ordering::Acquire) {
+        if !suppressed {
             return event as *const NSEvent as *mut NSEvent;
         }
-        handler();
+        if let Some(handler) = handler {
+            handler();
+        }
         std::ptr::null_mut()
     });
-    let monitor = unsafe {
-        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::RightMouseDown, &block)
-    };
+    let mask = NSEventMask::RightMouseDown | NSEventMask::RightMouseUp;
+    let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
     if let Some(monitor) = monitor {
         CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
+}
+
+fn event_hits_pet_sprite(event: &NSEvent) -> bool {
+    let location = event.locationInWindow();
+    pet_sprite_contains(location.x, location.y)
+}
+
+fn pet_sprite_contains(x: f64, y: f64) -> bool {
+    let min_x = (PET_WINDOW_WIDTH - PET_SPRITE_WIDTH) / 2.0;
+    let min_y = (PET_WINDOW_HEIGHT - PET_SPRITE_HEIGHT) / 2.0;
+    (min_x..=min_x + PET_SPRITE_WIDTH).contains(&x)
+        && (min_y..=min_y + PET_SPRITE_HEIGHT).contains(&y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pet_sprite_contains;
+
+    #[test]
+    fn pet_hit_region_is_centered_and_includes_its_edges() {
+        assert!(pet_sprite_contains(64.0, 76.0));
+        assert!(pet_sprite_contains(256.0, 284.0));
+        assert!(pet_sprite_contains(160.0, 180.0));
+        assert!(!pet_sprite_contains(63.9, 180.0));
+        assert!(!pet_sprite_contains(160.0, 284.1));
     }
 }

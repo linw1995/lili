@@ -73,7 +73,7 @@
 - [x] 7.3 Implement lifecycle animation mapping, temporary wave and jump overlays, deterministic return to reducer state, and interruption rules for attention and failure.
 - [x] 7.4 Implement pointer gaze, hit-region tracking, click versus double-click disambiguation, drag velocity, running-left/right selection, and final window-position commit.
 - [x] 7.5 Implement logical display-coordinate persistence, scale conversion, work-area clamping, display disconnect handling, and a reachable visible margin on every platform.
-- [x] 7.6 Implement pet-anchored notification cards with priority/recency ordering, immutable session context, bounded safe summaries, independent activation, dismissal, and unread state.
+- [x] 7.6 Implement pet-anchored notification cards in a separate coordinated window, with newest-at-bottom recency ordering, immutable session context, bounded safe summaries, independent activation, dismissal, and unread state.
 - [x] 7.7 Add tray controls for show, hide, always-on-top, pet selection, settings, diagnostics, and quit while native event ingestion continues when hidden.
 - [x] 7.8 Add reduced-motion rendering, keyboard operation, screen-reader labels, focus behavior, contrast checks, and automated accessibility assertions.
 - [x] 7.9 Keep directional drag animation responsive by replacing modal native drag loops with controlled window movement and smoothing sparse pointer samples.

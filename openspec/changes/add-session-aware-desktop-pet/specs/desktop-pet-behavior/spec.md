@@ -71,7 +71,63 @@ On macOS, the desktop pet window SHALL be backed by a non-activating `NSPanel` c
 - **THEN** the final window position is clamped so the configured visible portion remains reachable
 
 ### Requirement: Present privacy-safe session notifications
-The system SHALL render pet-anchored notification cards with event type, project label, relative time, and a bounded display-safe summary. Raw prompts, full assistant messages, commands, and approval arguments SHALL be hidden by default.
+The system SHALL render pet-anchored notification cards in a separate transparent native window with event type, project label, relative time, and a bounded display-safe summary. Cards SHALL fill from the bottom upward, with the newest notification occupying the bottom slot closest to the pet and older notifications ordered upward by recency regardless of lifecycle priority. The notification window SHALL anchor to the visible sprite boundary with a 4 logical pixel visual gap, SHALL follow the pet window, share its visibility and always-on-top policy, remain within the selected display work area, and SHALL NOT depend on content overflowing the pet WebView bounds. On macOS, the notification window SHALL use the same non-activating companion panel and cross-Space collection behavior as the Pet window without installing a second Pet context-menu handler. Raw prompts, full assistant messages, commands, and approval arguments SHALL be hidden by default.
+
+#### Scenario: Notification content is shorter than the maximum stack
+- **WHEN** one or more cards occupy less than the 142 pixel scroll bound
+- **THEN** the native notification window shrinks to the measured content plus bounded visual padding and reanchors, avoiding a large transparent native hit-test region
+
+#### Scenario: User right-clicks an application surface
+- **WHEN** a context-menu gesture occurs on a notification, transparent background, or the Lili context-menu window itself
+- **THEN** the preloaded surface's root context-menu handler and native AppKit event handling suppress the browser menu, and no Reload, inspection, or additional Pet context action is exposed
+
+#### Scenario: Initial blank menu document finishes loading
+- **WHEN** the hidden context-menu WebView reports its initial `about:blank` page as finished
+- **THEN** the popup remains unready until the exact authenticated context-menu URL finishes loading
+
+#### Scenario: Notification WebView is still initializing
+- **WHEN** a context-menu gesture occurs on the notification window before authenticated navigation or hydration completes
+- **THEN** a document-start blocker suppresses the browser menu on every supported platform
+
+#### Scenario: User right-clicks the Pet sprite
+- **WHEN** a true secondary-button gesture occurs on the Pet sprite
+- **THEN** the bounded Lili context menu opens without exposing browser reload or inspection actions
+
+#### Scenario: First interaction is a Pet right-click
+- **WHEN** the non-activating Pet panel has received no prior left click or DOM pointer movement and the user right-clicks the visible sprite
+- **THEN** native event coordinates match the sprite hit region and open the Lili context menu on that first gesture
+
+#### Scenario: Pet moves while notifications are visible
+- **WHEN** the pet window moves within or between display work areas
+- **THEN** the notification window remains anchored above the pet, falls below it with cards top-aligned when the upper edge has insufficient space, preserves the 4 pixel visual gap, and stays fully inside the selected work area
+
+#### Scenario: Notification window changes display scale
+- **WHEN** moving the companion surfaces causes the notification window to receive a new scale factor
+- **THEN** placement is recomputed using its new physical size so centering and work-area clamping remain correct
+
+#### Scenario: Notification document finishes after native placement
+- **WHEN** native placement is computed before the authenticated notification page finishes loading
+- **THEN** the retained above/below mode is reapplied to the final document so card alignment matches the native window position
+
+#### Scenario: Hidden notification window receives new content
+- **WHEN** unread content causes the notification window to be shown while another application has focus
+- **THEN** the window appears without taking focus until the user clicks it or uses the explicit keyboard focus route
+
+#### Scenario: Pet visibility changes
+- **WHEN** the user hides or restores the pet while unread notifications exist
+- **THEN** the separate notification window is hidden or restored with the pet without affecting native session ingestion
+
+#### Scenario: Notification window receives a close shortcut
+- **WHEN** unread notifications exist and the operating system requests that the notification window close
+- **THEN** the close is prevented and the notification window remains reconciled with the visible Pet and unread state
+
+#### Scenario: Pet receives focus over the notification window
+- **WHEN** Pet and notification windows overlap through the Pet transparent margin and the Pet becomes focused
+- **THEN** the notification window is raised again so its Open and Dismiss controls remain interactive
+
+#### Scenario: macOS Space changes with unread notifications
+- **WHEN** the user switches Spaces while Pet and notification windows are visible
+- **THEN** both non-activating companion panels remain together at their anchored positions without activating the application
 
 #### Scenario: Completion contains a long assistant message
 - **WHEN** a completion event includes provider text beyond the display-safe bound
@@ -79,7 +135,7 @@ The system SHALL render pet-anchored notification cards with event type, project
 
 #### Scenario: Multiple notifications are queued
 - **WHEN** more than one unread event exists
-- **THEN** cards are ordered by attention priority and recency and each can be dismissed independently
+- **THEN** cards fill upward from the bottom in reverse-recency order and each can be dismissed independently
 
 ### Requirement: Respect reduced motion and keyboard access
 The system SHALL honor the operating-system reduced-motion preference, expose keyboard-reachable notification and tray actions, and provide accessible labels independent of sprite imagery.
@@ -88,9 +144,17 @@ The system SHALL honor the operating-system reduced-motion preference, expose ke
 - **WHEN** the operating system requests reduced motion
 - **THEN** the pet uses stable representative frames and state changes without looping movement while notifications remain fully usable
 
+#### Scenario: Notification surface is active
+- **WHEN** the separate notification WebView is loaded
+- **THEN** it updates relative time on a low-frequency clock and does not run the Pet animation, gaze, or click polling loop
+
 #### Scenario: Notification is operated by keyboard
 - **WHEN** focus reaches a notification card and the user activates or dismisses it
 - **THEN** the same action or dismissal semantics apply as for pointer input
+
+#### Scenario: Keyboard focus crosses companion windows
+- **WHEN** the Pet has keyboard focus and unread notifications are visible
+- **THEN** `Alt+N` focuses the first notification control and `Escape` from the notification surface returns focus to the Pet
 
 ### Requirement: Recover the rendered shell without losing native ingestion
 The application SHALL keep session ingestion and lifecycle aggregation in the native runtime and SHALL recover the UI after a renderer reload or stream reconnect without duplicating notifications.
