@@ -7,6 +7,8 @@ fn main() {
             "move_window_to",
             "commit_window_position",
             "open_pet_context_menu",
+            "focus_notification_window",
+            "focus_pet_window",
             "run_pet_context_action",
             "complete_desktop_smoke",
         ]));

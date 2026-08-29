@@ -89,7 +89,7 @@ pub fn App(
                 class="pet-sprite"
                 role="button"
                 tabindex="0"
-                aria-keyshortcuts="Enter Space"
+                aria-keyshortcuts="Enter Space Alt+N"
                 aria-label=move || {
                     let state = presentation.get();
                     format!("{}, {}", state.pet_label, state.lifecycle.as_str())
@@ -177,6 +177,12 @@ pub fn App(
                     }
                 }
                 on:keydown=move |event| {
+                    if event.alt_key() && event.key().eq_ignore_ascii_case("n") {
+                        event.prevent_default();
+                        event.stop_propagation();
+                        focus_native_notifications();
+                        return;
+                    }
                     if matches!(event.key().as_str(), "Enter" | " ") {
                         event.prevent_default();
                         controller.update(|controller| {
@@ -199,7 +205,7 @@ pub fn App(
             class="pet-sprite"
             role="button"
             tabindex="0"
-            aria-keyshortcuts="Enter Space"
+            aria-keyshortcuts="Enter Space Alt+N"
             aria-label=move || {
                 let state = presentation.get();
                 format!("{}, {}", state.pet_label, state.lifecycle.as_str())
@@ -1146,6 +1152,18 @@ export function openNativePetContextMenu(screenX, screenY) {
   if (!invoke) return;
   void invoke('open_pet_context_menu', { screenX, screenY }).catch(() => {});
 }
+
+export function focusNativeNotifications() {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('focus_notification_window').catch(() => {});
+}
+
+export function focusNativePetWindow() {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('focus_pet_window').catch(() => {});
+}
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
@@ -1159,6 +1177,12 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = openNativePetContextMenu)]
     fn open_native_pet_context_menu(screen_x: i32, screen_y: i32);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativeNotifications)]
+    fn focus_native_notifications();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativePetWindow)]
+    fn focus_native_pet_window();
 }
 
 #[cfg(feature = "hydrate")]
@@ -1182,6 +1206,7 @@ struct ContextMenuHandlers {
 #[cfg(feature = "hydrate")]
 struct NotificationContextMenuHandler {
     _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
+    _keydown: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
 }
 
 #[cfg(feature = "hydrate")]
@@ -1232,7 +1257,7 @@ pub fn hydrate() {
 #[cfg(feature = "hydrate")]
 fn install_notification_context_menu_blocker() {
     use wasm_bindgen::{JsCast, closure::Closure};
-    use web_sys::MouseEvent;
+    use web_sys::{KeyboardEvent, MouseEvent};
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -1241,9 +1266,21 @@ fn install_notification_context_menu_blocker() {
         event.prevent_default();
         event.stop_immediate_propagation();
     });
+    let keydown = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        if event.key() == "Escape" {
+            event.prevent_default();
+            event.stop_immediate_propagation();
+            focus_native_pet_window();
+        }
+    });
     let _ = document.add_event_listener_with_callback_and_bool(
         "contextmenu",
         contextmenu.as_ref().unchecked_ref(),
+        true,
+    );
+    let _ = document.add_event_listener_with_callback_and_bool(
+        "keydown",
+        keydown.as_ref().unchecked_ref(),
         true,
     );
     NOTIFICATION_CONTEXT_MENU_HANDLER.with(|handler| {
@@ -1251,6 +1288,7 @@ fn install_notification_context_menu_blocker() {
             .borrow_mut()
             .replace(NotificationContextMenuHandler {
                 _contextmenu: contextmenu,
+                _keydown: keydown,
             });
     });
 }

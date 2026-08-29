@@ -89,6 +89,10 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 - **WHEN** the pet window moves within or between display work areas
 - **THEN** the notification window remains anchored above the pet, falls below it with cards top-aligned when the upper edge has insufficient space, preserves the 4 pixel visual gap, and stays fully inside the selected work area
 
+#### Scenario: Notification window changes display scale
+- **WHEN** moving the companion surfaces causes the notification window to receive a new scale factor
+- **THEN** placement is recomputed using its new physical size so centering and work-area clamping remain correct
+
 #### Scenario: Pet visibility changes
 - **WHEN** the user hides or restores the pet while unread notifications exist
 - **THEN** the separate notification window is hidden or restored with the pet without affecting native session ingestion
@@ -123,6 +127,10 @@ The system SHALL honor the operating-system reduced-motion preference, expose ke
 #### Scenario: Notification is operated by keyboard
 - **WHEN** focus reaches a notification card and the user activates or dismisses it
 - **THEN** the same action or dismissal semantics apply as for pointer input
+
+#### Scenario: Keyboard focus crosses companion windows
+- **WHEN** the Pet has keyboard focus and unread notifications are visible
+- **THEN** `Alt+N` focuses the first notification control and `Escape` from the notification surface returns focus to the Pet
 
 ### Requirement: Recover the rendered shell without losing native ingestion
 The application SHALL keep session ingestion and lifecycle aggregation in the native runtime and SHALL recover the UI after a renderer reload or stream reconnect without duplicating notifications.

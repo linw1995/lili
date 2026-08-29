@@ -138,6 +138,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             move_window_to,
             commit_window_position,
             open_pet_context_menu,
+            focus_notification_window,
+            focus_pet_window,
             run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -285,7 +287,8 @@ fn register_loopback_capability(
         .permission("allow-begin-window-drag")
         .permission("allow-move-window-to")
         .permission("allow-commit-window-position")
-        .permission("allow-open-pet-context-menu");
+        .permission("allow-open-pet-context-menu")
+        .permission("allow-focus-notification-window");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
     } else if smoke {
@@ -313,7 +316,8 @@ fn register_notification_window_capability(
         .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
         .local(false)
         .window(NOTIFICATION_WINDOW_LABEL)
-        .permission("allow-sign-loopback-request");
+        .permission("allow-sign-loopback-request")
+        .permission("allow-focus-pet-window");
     app.add_capability(capability)
 }
 
@@ -520,11 +524,13 @@ fn register_pet_window_events(window: &tauri::WebviewWindow, app: tauri::AppHand
 }
 
 fn register_notification_window_events(window: &tauri::WebviewWindow, app: tauri::AppHandle) {
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             sync_notification_window_from_state(&app);
         }
+        tauri::WindowEvent::ScaleFactorChanged { .. } => position_notification_window(&app),
+        _ => {}
     });
 }
 
@@ -1268,6 +1274,33 @@ fn context_menu_position(
     let max_y =
         (work_area.position.y + work_area.size.height as i32 - size.height as i32).max(min_y);
     tauri::PhysicalPosition::new(pointer.x.clamp(min_x, max_x), pointer.y.clamp(min_y, max_y))
+}
+
+#[tauri::command]
+fn focus_notification_window(app: tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) else {
+        return Ok(false);
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return Ok(false);
+    }
+    window.set_focus().map_err(|error| error.to_string())?;
+    let _ = window
+        .eval("document.querySelector('.notification-activate, .notification-dismiss')?.focus()");
+    Ok(true)
+}
+
+#[tauri::command]
+fn focus_pet_window(app: tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window("pet") else {
+        return Ok(false);
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return Ok(false);
+    }
+    window.set_focus().map_err(|error| error.to_string())?;
+    let _ = window.eval("document.querySelector('.pet-sprite')?.focus()");
+    Ok(true)
 }
 
 #[tauri::command]

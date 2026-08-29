@@ -465,6 +465,48 @@ test("notification surface suppresses the browser context menu", async ({
   expect(result).toEqual({ dispatchResult: false, defaultPrevented: true });
 });
 
+test("keyboard shortcuts move focus between companion surfaces", async ({
+  page,
+}) => {
+  await openPet(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await page.locator(".pet-sprite").focus();
+  await page.keyboard.press("Alt+n");
+  await expect
+    .poll(() => page.evaluate(() => window.__LILI_INVOKES__))
+    .toContainEqual({ name: "focus_notification_window", args: undefined });
+
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("keyboard-focus", "completion", "Workspace", "Done", now),
+    ],
+  });
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await page.locator(".notification-activate").focus();
+  await page.keyboard.press("Escape");
+  await expect
+    .poll(() => page.evaluate(() => window.__LILI_INVOKES__))
+    .toContainEqual({ name: "focus_pet_window", args: undefined });
+});
+
 test("action outcomes use bounded user-facing feedback", async ({ page }) => {
   await openPet(page);
   for (const [kind, message] of [
