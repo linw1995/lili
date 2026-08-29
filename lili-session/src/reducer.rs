@@ -216,6 +216,12 @@ impl SessionReducer {
         }
     }
 
+    pub fn restart_activity_reminder(&mut self, started_at_ms: u64) {
+        self.activity_reminder_until_ms =
+            started_at_ms.saturating_add(DEFAULT_ACTIVITY_REMINDER_DURATION_MS);
+        self.refresh_presentation(started_at_ms);
+    }
+
     pub fn acknowledge_notification(
         &mut self,
         id: &NotificationId,

@@ -227,12 +227,12 @@ impl AppState {
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
-        let accepted_at_ms = self.monotonic_time_ms();
-        let outcome = self
-            .session_reducer
-            .lock()
-            .await
-            .reduce_at(event, accepted_at_ms);
+        let (outcome, accepted_at_ms) = {
+            let mut reducer = self.session_reducer.lock().await;
+            let accepted_at_ms = self.monotonic_time_ms();
+            let outcome = reducer.reduce_at(event, accepted_at_ms);
+            (outcome, accepted_at_ms)
+        };
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
             if starts_activity_reminder {
@@ -248,12 +248,13 @@ impl AppState {
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
-        let accepted_at_ms = self.monotonic_time_ms();
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
+        let accepted_at_ms = self.monotonic_time_ms();
         let outcome = reducer.reduce_at(event.clone(), accepted_at_ms);
+        let mut activity_reminder_started_at_ms = None;
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             let persistent =
                 PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
@@ -261,12 +262,18 @@ impl AppState {
                 *reducer = previous;
                 return Err(error);
             }
+            if starts_activity_reminder {
+                // Start the user-visible window after synchronous persistence completes.
+                let started_at_ms = self.monotonic_time_ms();
+                reducer.restart_activity_reminder(started_at_ms);
+                activity_reminder_started_at_ms = Some(started_at_ms);
+            }
         }
         drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
-            if starts_activity_reminder {
-                self.schedule_activity_reminder_expiry(accepted_at_ms);
+            if let Some(started_at_ms) = activity_reminder_started_at_ms {
+                self.schedule_activity_reminder_expiry(started_at_ms);
             }
         }
         Ok(outcome)
