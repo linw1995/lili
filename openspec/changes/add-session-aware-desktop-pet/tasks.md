@@ -37,6 +37,7 @@
 - [x] 3.4 Implement deterministic concurrent-session presentation priority and minimum animation dwell without coupling notification ordering to the currently displayed session.
 - [x] 3.5 Add table-driven and property tests for duplicated, reordered, stale, concurrent, missing-field, and new-provider-field event sequences.
 - [x] 3.6 Add bounded persistence for selected pet, window placement, and one presentation-driving normalized state notification per Session with version rejection and atomic replacement tests; keep event deduplication in memory.
+- [x] 3.7 Make ActivityReminder a bounded event-driven display pulse separate from persisted SessionPhase, and return it to Idle without inferring a terminal Session event.
 
 ## 4. Private Event Delivery and Offline Recovery
 

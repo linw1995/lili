@@ -344,7 +344,8 @@ pub enum SessionPhase {
 pub enum PresentationState {
     #[default]
     Idle,
-    Running,
+    #[serde(alias = "running")]
+    ActivityReminder,
     Review,
     Failed,
     Waiting,

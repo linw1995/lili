@@ -49,7 +49,8 @@ pub enum NotificationFilterKind {
 #[serde(rename_all = "snake_case")]
 pub enum PetLifecycleSnapshotV1 {
     Idle,
-    Running,
+    #[serde(alias = "running")]
+    ActivityReminder,
     Review,
     Failed,
     Waiting,
