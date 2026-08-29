@@ -85,6 +85,10 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 - **WHEN** the hidden context-menu WebView reports its initial `about:blank` page as finished
 - **THEN** the popup remains unready until the exact authenticated context-menu URL finishes loading
 
+#### Scenario: Notification WebView is still initializing
+- **WHEN** a context-menu gesture occurs on the notification window before authenticated navigation or hydration completes
+- **THEN** a document-start blocker suppresses the browser menu on every supported platform
+
 #### Scenario: User right-clicks the Pet sprite
 - **WHEN** a true secondary-button gesture occurs on the Pet sprite
 - **THEN** the bounded Lili context menu opens without exposing browser reload or inspection actions
@@ -139,6 +143,10 @@ The system SHALL honor the operating-system reduced-motion preference, expose ke
 #### Scenario: Reduced motion is enabled
 - **WHEN** the operating system requests reduced motion
 - **THEN** the pet uses stable representative frames and state changes without looping movement while notifications remain fully usable
+
+#### Scenario: Notification surface is active
+- **WHEN** the separate notification WebView is loaded
+- **THEN** it updates relative time on a low-frequency clock and does not run the Pet animation, gaze, or click polling loop
 
 #### Scenario: Notification is operated by keyboard
 - **WHEN** focus reaches a notification card and the user activates or dismisses it

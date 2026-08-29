@@ -72,18 +72,22 @@ pub fn App(
         let clicks = RwSignal::new(ClickDisambiguator::default());
         let gaze = RwSignal::new(None::<LookFrame>);
         connect_presentation_stream(presentation, controller);
-        start_animation_clock(
-            controller,
-            AnimationClockSignals {
-                animation,
-                frame,
-                clicks,
-                gaze,
-                wall_clock,
-                presentation,
-                reduced_motion,
-            },
-        );
+        if surface == AppSurface::Pet {
+            start_animation_clock(
+                controller,
+                AnimationClockSignals {
+                    animation,
+                    frame,
+                    clicks,
+                    gaze,
+                    wall_clock,
+                    presentation,
+                    reduced_motion,
+                },
+            );
+        } else {
+            start_notification_clock(wall_clock);
+        }
         let pet_view = view! {
             <section
                 class="pet-sprite"
@@ -1022,8 +1026,37 @@ fn start_animation_clock(
     ) else {
         return;
     };
-    ANIMATION_CLOCK.with(|clock| {
-        if let Some(previous) = clock.borrow_mut().replace(AnimationClock {
+    install_ui_clock(window, interval_id, callback);
+}
+
+#[cfg(feature = "hydrate")]
+fn start_notification_clock(wall_clock: RwSignal<u64>) {
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    wall_clock.set(js_sys::Date::now().max(0.0) as u64);
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        wall_clock.set(js_sys::Date::now().max(0.0) as u64);
+    });
+    let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        30_000,
+    ) else {
+        return;
+    };
+    install_ui_clock(window, interval_id, callback);
+}
+
+#[cfg(feature = "hydrate")]
+fn install_ui_clock(
+    window: web_sys::Window,
+    interval_id: i32,
+    callback: wasm_bindgen::closure::Closure<dyn FnMut()>,
+) {
+    UI_CLOCK.with(|clock| {
+        if let Some(previous) = clock.borrow_mut().replace(UiClock {
             window,
             interval_id,
             _callback: callback,
@@ -1192,7 +1225,7 @@ struct PresentationStream {
 }
 
 #[cfg(feature = "hydrate")]
-struct AnimationClock {
+struct UiClock {
     window: web_sys::Window,
     interval_id: i32,
     _callback: wasm_bindgen::closure::Closure<dyn FnMut()>,
@@ -1217,7 +1250,7 @@ thread_local! {
 
 #[cfg(feature = "hydrate")]
 thread_local! {
-    static ANIMATION_CLOCK: std::cell::RefCell<Option<AnimationClock>> =
+    static UI_CLOCK: std::cell::RefCell<Option<UiClock>> =
         const { std::cell::RefCell::new(None) };
     static CONTEXT_MENU_HANDLERS: std::cell::RefCell<Option<ContextMenuHandlers>> =
         const { std::cell::RefCell::new(None) };

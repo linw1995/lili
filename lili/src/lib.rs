@@ -57,6 +57,12 @@ const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
 const NOTIFICATION_WINDOW_MIN_HEIGHT: u32 = 16;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
+const DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
+document.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+"#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NotificationWindowPlacement {
@@ -406,6 +412,7 @@ fn create_notification_window(
         NOTIFICATION_WINDOW_LABEL,
         WebviewUrl::External("about:blank".parse().expect("valid bootstrap URL")),
     )
+    .initialization_script(DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT)
     .initialization_script(FETCH_SIGNER_SCRIPT)
     .accept_first_mouse(true)
     .devtools(false)
