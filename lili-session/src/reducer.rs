@@ -234,7 +234,13 @@ impl SessionReducer {
             return ReductionOutcome::IgnoredStale;
         }
         notification.state = NotificationState::Acknowledged;
-        self.refresh_presentation(now_ms);
+        let desired = self.desired_presentation(now_ms);
+        if desired != self.presentation.state {
+            self.presentation = PresentationTracker {
+                state: desired,
+                since_ms: now_ms,
+            };
+        }
         self.revision = self.revision.saturating_add(1);
         ReductionOutcome::Applied {
             revision: self.revision,
@@ -1149,6 +1155,28 @@ mod tests {
             reducer.snapshot().notifications[0].state,
             NotificationState::Acknowledged
         );
+    }
+
+    #[test]
+    fn acknowledging_a_restored_notification_bypasses_presentation_dwell() {
+        let mut reducer = SessionReducer::default();
+        reducer.reduce(event(
+            "event-1",
+            "turn_failed",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        let id = reducer.snapshot().notifications[0].id.clone();
+        let mut restored = SessionReducer::from_persistent_state(reducer.persistent_state())
+            .expect("failed notification should restore");
+
+        assert_eq!(restored.snapshot().presentation, PresentationState::Failed);
+        assert_eq!(
+            restored.acknowledge_notification(&id, 1),
+            ReductionOutcome::Applied { revision: 2 }
+        );
+        assert_eq!(restored.snapshot().presentation, PresentationState::Idle);
     }
 
     #[test]
