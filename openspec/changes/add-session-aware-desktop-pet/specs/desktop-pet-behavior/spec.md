@@ -75,7 +75,7 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 
 #### Scenario: User right-clicks an application surface
 - **WHEN** a context-menu gesture occurs on a notification, transparent background, or the Lili context-menu window itself
-- **THEN** the browser default context menu is suppressed at the native WebView layer and no Reload, inspection, or additional Pet context action is exposed
+- **THEN** the browser default context menu is suppressed at the native AppKit event layer and no Reload, inspection, or additional Pet context action is exposed
 
 #### Scenario: User right-clicks the Pet sprite
 - **WHEN** a true secondary-button gesture occurs on the Pet sprite
