@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -70,12 +70,40 @@ impl NotificationWindowPlacement {
             Self::Below => "below",
         }
     }
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::Above => 0,
+            Self::Below => 1,
+        }
+    }
+
+    const fn from_code(code: u8) -> Self {
+        if code == Self::Below.code() {
+            Self::Below
+        } else {
+            Self::Above
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NotificationWindowLayout {
     position: tauri::PhysicalPosition<i32>,
     placement: NotificationWindowPlacement,
+}
+
+#[derive(Clone, Default)]
+struct NotificationWindowState(Arc<AtomicU8>);
+
+impl NotificationWindowState {
+    fn get(&self) -> NotificationWindowPlacement {
+        NotificationWindowPlacement::from_code(self.0.load(Ordering::Acquire))
+    }
+
+    fn set(&self, placement: NotificationWindowPlacement) {
+        self.0.store(placement.code(), Ordering::Release);
+    }
 }
 
 const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
@@ -177,6 +205,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         store: state_store.clone(),
     });
     app.manage(WindowDragState::default());
+    app.manage(NotificationWindowState::default());
     let pets_root = application_paths.pets_root();
     let tray_menu =
         setup_tray(&app, state.clone(), &pets_root).expect("failed to configure tray lifecycle");
@@ -368,6 +397,7 @@ fn create_notification_window(
 ) -> tauri::Result<tauri::WebviewWindow> {
     let allowed_origin = origin.origin();
     let always_on_top = tauri::async_runtime::block_on(state.settings()).always_on_top;
+    let placement_state = app.state::<NotificationWindowState>().inner().clone();
     let builder = WebviewWindowBuilder::new(
         app.handle(),
         NOTIFICATION_WINDOW_LABEL,
@@ -388,6 +418,14 @@ fn create_notification_window(
     .shadow(false)
     .skip_taskbar(true)
     .visible(false)
+    .focused(false)
+    .on_page_load(move |window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            && payload.url().path() == "/notifications"
+        {
+            apply_notification_window_placement(&window, placement_state.get());
+        }
+    })
     .on_navigation(move |url| url.origin() == allowed_origin);
     let window = if acceptance {
         builder
@@ -410,6 +448,7 @@ fn create_context_menu_window(
     let focus_state = Arc::clone(&has_been_focused);
     let ready = Arc::clone(&navigation.ready);
     let pending_position = Arc::clone(&navigation.pending_position);
+    let menu_url = navigation.url.clone();
     let window = WebviewWindowBuilder::new(
         app,
         CONTEXT_MENU_WINDOW_LABEL,
@@ -431,16 +470,19 @@ fn create_context_menu_window(
     .visible(false)
     .focused(false)
     .on_page_load(move |window, payload| {
-        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-            let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
-            ready.store(true, Ordering::Release);
-            let pending = pending_position
-                .lock()
-                .ok()
-                .and_then(|mut pending| pending.take());
-            if let Some(position) = pending {
-                let _ = position_context_menu(&window, position);
-            }
+        if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            || payload.url() != &menu_url
+        {
+            return;
+        }
+        let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
+        ready.store(true, Ordering::Release);
+        let pending = pending_position
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+        if let Some(position) = pending {
+            let _ = position_context_menu(&window, position);
         }
     })
     .build()
@@ -639,13 +681,21 @@ fn position_notification_window(app: &tauri::AppHandle) {
         gap,
     );
     let _ = notification.set_position(layout.position);
-    let _ = notification.eval(format!(
-        "document.documentElement.dataset.notificationPlacement = '{}';",
-        layout.placement.as_str()
-    ));
+    app.state::<NotificationWindowState>().set(layout.placement);
+    apply_notification_window_placement(&notification, layout.placement);
     if notification.is_visible().unwrap_or(false) {
         let _ = notification.show();
     }
+}
+
+fn apply_notification_window_placement(
+    notification: &tauri::WebviewWindow,
+    placement: NotificationWindowPlacement,
+) {
+    let _ = notification.eval(format!(
+        "document.documentElement.dataset.notificationPlacement = '{}';",
+        placement.as_str()
+    ));
 }
 
 fn notification_window_layout(

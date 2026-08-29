@@ -77,6 +77,10 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 - **WHEN** a context-menu gesture occurs on a notification, transparent background, or the Lili context-menu window itself
 - **THEN** the preloaded surface's root context-menu handler and native AppKit event handling suppress the browser menu, and no Reload, inspection, or additional Pet context action is exposed
 
+#### Scenario: Initial blank menu document finishes loading
+- **WHEN** the hidden context-menu WebView reports its initial `about:blank` page as finished
+- **THEN** the popup remains unready until the exact authenticated context-menu URL finishes loading
+
 #### Scenario: User right-clicks the Pet sprite
 - **WHEN** a true secondary-button gesture occurs on the Pet sprite
 - **THEN** the bounded Lili context menu opens without exposing browser reload or inspection actions
@@ -92,6 +96,14 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 #### Scenario: Notification window changes display scale
 - **WHEN** moving the companion surfaces causes the notification window to receive a new scale factor
 - **THEN** placement is recomputed using its new physical size so centering and work-area clamping remain correct
+
+#### Scenario: Notification document finishes after native placement
+- **WHEN** native placement is computed before the authenticated notification page finishes loading
+- **THEN** the retained above/below mode is reapplied to the final document so card alignment matches the native window position
+
+#### Scenario: Hidden notification window receives new content
+- **WHEN** unread content causes the notification window to be shown while another application has focus
+- **THEN** the window appears without taking focus until the user clicks it or uses the explicit keyboard focus route
 
 #### Scenario: Pet visibility changes
 - **WHEN** the user hides or restores the pet while unread notifications exist
