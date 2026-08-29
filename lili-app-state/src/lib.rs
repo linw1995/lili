@@ -292,20 +292,9 @@ impl AppState {
     }
 
     pub async fn acknowledge_notification(&self, id: &NotificationId) -> ReductionOutcome {
-        self.acknowledge_notification_at(id, self.monotonic_time_ms())
-            .await
-    }
-
-    async fn acknowledge_notification_at(
-        &self,
-        id: &NotificationId,
-        now_ms: u64,
-    ) -> ReductionOutcome {
-        let outcome = self
-            .session_reducer
-            .lock()
-            .await
-            .acknowledge_notification(id, now_ms);
+        let mut reducer = self.session_reducer.lock().await;
+        let outcome = reducer.acknowledge_notification(id, self.monotonic_time_ms());
+        drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
         }
@@ -317,21 +306,11 @@ impl AppState {
         id: &NotificationId,
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
-        self.acknowledge_notification_persisted_at(id, self.monotonic_time_ms(), store)
-            .await
-    }
-
-    async fn acknowledge_notification_persisted_at(
-        &self,
-        id: &NotificationId,
-        now_ms: u64,
-        store: &AppStateStore,
-    ) -> Result<ReductionOutcome, PersistenceError> {
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
-        let outcome = reducer.acknowledge_notification(id, now_ms);
+        let outcome = reducer.acknowledge_notification(id, self.monotonic_time_ms());
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             let persistent =
                 PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
