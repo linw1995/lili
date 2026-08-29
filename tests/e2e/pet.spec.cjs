@@ -259,6 +259,36 @@ test("left drag continues to use native window movement", async ({ page }) => {
   expect(await page.evaluate(() => window.__LILI_DRAG_STARTS__)).toBe(0);
 });
 
+test("pet window content cannot be selected", async ({ page }) => {
+  await openPet(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification(
+        "non-selectable",
+        "completion",
+        "Workspace",
+        "Finished safely",
+        now,
+      ),
+    ],
+  });
+
+  for (const selector of [
+    "#lili-app",
+    ".pet-sprite",
+    ".notification-card",
+    ".notification-summary",
+    ".notification-activate",
+  ]) {
+    await expect
+      .poll(() =>
+        page.locator(selector).evaluate((element) => getComputedStyle(element).userSelect),
+      )
+      .toBe("none");
+  }
+});
+
 test("look direction follows all four quadrants", async ({ page }) => {
   await openPet(page);
   await replacePresentation(page);
