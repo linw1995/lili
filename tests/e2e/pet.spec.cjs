@@ -440,6 +440,43 @@ test("below-pet placement keeps the newest card at the top edge", async ({
   expect(cardTop).toBe(4);
 });
 
+test("notification surface reports a compact native window height", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("compact-window", "completion", "Workspace", "Done", now),
+    ],
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__
+          .filter((call) => call.name === "resize_notification_window")
+          .at(-1)?.args?.height,
+      ),
+    )
+    .toBeGreaterThanOrEqual(16);
+  const height = await page.evaluate(() =>
+    window.__LILI_INVOKES__
+      .filter((call) => call.name === "resize_notification_window")
+      .at(-1).args.height,
+  );
+  expect(height).toBeLessThan(158);
+});
+
 test("notification surface suppresses the browser context menu", async ({
   page,
 }) => {

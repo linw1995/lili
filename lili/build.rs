@@ -9,6 +9,7 @@ fn main() {
             "open_pet_context_menu",
             "focus_notification_window",
             "focus_pet_window",
+            "resize_notification_window",
             "run_pet_context_action",
             "complete_desktop_smoke",
         ]));

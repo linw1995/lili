@@ -54,6 +54,7 @@ const CONTEXT_MENU_HEIGHT: u32 = 112;
 const NOTIFICATION_WINDOW_LABEL: &str = "pet-notifications";
 const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
 const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
+const NOTIFICATION_WINDOW_MIN_HEIGHT: u32 = 16;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 
@@ -168,6 +169,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             open_pet_context_menu,
             focus_notification_window,
             focus_pet_window,
+            resize_notification_window,
             run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -346,7 +348,8 @@ fn register_notification_window_capability(
         .local(false)
         .window(NOTIFICATION_WINDOW_LABEL)
         .permission("allow-sign-loopback-request")
-        .permission("allow-focus-pet-window");
+        .permission("allow-focus-pet-window")
+        .permission("allow-resize-notification-window");
     app.add_capability(capability)
 }
 
@@ -1358,6 +1361,27 @@ fn focus_pet_window(app: tauri::AppHandle) -> Result<bool, String> {
     }
     window.set_focus().map_err(|error| error.to_string())?;
     let _ = window.eval("document.querySelector('.pet-sprite')?.focus()");
+    Ok(true)
+}
+
+#[tauri::command]
+fn resize_notification_window(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    height: u32,
+) -> Result<bool, String> {
+    if window.label() != NOTIFICATION_WINDOW_LABEL
+        || !(NOTIFICATION_WINDOW_MIN_HEIGHT..=NOTIFICATION_WINDOW_HEIGHT).contains(&height)
+    {
+        return Ok(false);
+    }
+    window
+        .set_size(tauri::LogicalSize::new(
+            f64::from(NOTIFICATION_WINDOW_WIDTH),
+            f64::from(height),
+        ))
+        .map_err(|error| error.to_string())?;
+    position_notification_window(&app);
     Ok(true)
 }
 
