@@ -284,7 +284,12 @@ impl AppState {
         outcome
     }
 
-    pub async fn acknowledge_notification(
+    pub async fn acknowledge_notification(&self, id: &NotificationId) -> ReductionOutcome {
+        self.acknowledge_notification_at(id, self.monotonic_time_ms())
+            .await
+    }
+
+    async fn acknowledge_notification_at(
         &self,
         id: &NotificationId,
         now_ms: u64,
@@ -301,6 +306,15 @@ impl AppState {
     }
 
     pub async fn acknowledge_notification_persisted(
+        &self,
+        id: &NotificationId,
+        store: &AppStateStore,
+    ) -> Result<ReductionOutcome, PersistenceError> {
+        self.acknowledge_notification_persisted_at(id, self.monotonic_time_ms(), store)
+            .await
+    }
+
+    async fn acknowledge_notification_persisted_at(
         &self,
         id: &NotificationId,
         now_ms: u64,
@@ -861,7 +875,7 @@ mod tests {
             .clone();
         assert!(matches!(
             state
-                .acknowledge_notification_persisted(&notification_id, 11, &store)
+                .acknowledge_notification_persisted(&notification_id, &store)
                 .await
                 .unwrap(),
             ReductionOutcome::Applied { revision: 2 }
@@ -1300,6 +1314,58 @@ debounce_ms = 1000
         assert_eq!(
             presentations.borrow_and_update().lifecycle,
             PetLifecycleState::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_acknowledgement_reveals_the_activity_reminder() {
+        let state = AppState::default();
+        let completed = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-activity-notification".to_owned()),
+            session_id: Some("session-activity-notification".to_owned()),
+            turn_id: Some("turn-completed".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(completed).await;
+        let notification_id = state.snapshot().await.session_state.notifications[0]
+            .id
+            .clone();
+
+        let started = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_started".to_owned()),
+            event_id: Some("event-activity-started".to_owned()),
+            session_id: Some("session-activity-notification".to_owned()),
+            turn_id: Some("turn-active".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(started).await;
+        assert_eq!(
+            state.pet_presentation().await.lifecycle,
+            PetLifecycleState::Review
+        );
+
+        assert!(matches!(
+            state.acknowledge_notification(&notification_id).await,
+            ReductionOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            state.pet_presentation().await.lifecycle,
+            PetLifecycleState::ActivityReminder
         );
     }
 

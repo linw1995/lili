@@ -536,7 +536,7 @@ async fn dismiss_notification(
     let outcome = if let Some(store) = &state.persistence_store {
         match state
             .app
-            .acknowledge_notification_persisted(&notification_id, unix_time_ms(), store)
+            .acknowledge_notification_persisted(&notification_id, store)
             .await
         {
             Ok(outcome) => outcome,
@@ -548,10 +548,7 @@ async fn dismiss_notification(
             }
         }
     } else {
-        state
-            .app
-            .acknowledge_notification(&notification_id, unix_time_ms())
-            .await
+        state.app.acknowledge_notification(&notification_id).await
     };
     let accepted = matches!(outcome, ReductionOutcome::Applied { .. });
     (
