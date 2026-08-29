@@ -99,9 +99,15 @@ test("package selection replaces the approved presentation identity", async ({
 test("every standard animation state is observable", async ({ page }) => {
   await openPet(page);
   const app = page.locator("#lili-app");
-  for (const lifecycle of ["idle", "running", "review", "failed", "waiting"]) {
+  for (const [lifecycle, animation] of [
+    ["idle", "idle"],
+    ["activity_reminder", "running"],
+    ["review", "review"],
+    ["failed", "failed"],
+    ["waiting", "waiting"],
+  ]) {
     await replacePresentation(page, { lifecycle });
-    await expect(app).toHaveAttribute("data-animation", lifecycle);
+    await expect(app).toHaveAttribute("data-animation", animation);
   }
 
   await replacePresentation(page);
@@ -592,12 +598,12 @@ test("reload recovers the latest snapshot", async ({ page }) => {
 test("reduced motion freezes loops and disables gaze", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openPet(page);
-  await replacePresentation(page, { lifecycle: "running" });
+  await replacePresentation(page, { lifecycle: "activity_reminder" });
   const app = page.locator("#lili-app");
   const pet = page.locator(".pet-sprite");
   const atlas = page.locator(".pet-atlas");
   await expect(app).toHaveAttribute("data-reduced-motion", "true");
-  await expect(app).toHaveAttribute("data-lifecycle", "running");
+  await expect(app).toHaveAttribute("data-lifecycle", "activity-reminder");
   await expect(app).toHaveAttribute("data-animation", "running");
   const frame = [
     await atlas.getAttribute("data-frame-row"),
