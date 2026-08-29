@@ -1196,21 +1196,29 @@ fn open_pet_context_menu_at(
     let window = context_menu_window(app, navigation)?;
     let pointer = context_menu_pointer(source, fallback)?;
     let position = context_menu_position(source, &window, pointer);
-    if navigation.ready.load(Ordering::Acquire) {
-        position_context_menu(&window, position)
+    if queue_context_menu_until_ready(navigation, position)? {
+        Ok(())
     } else {
-        let mut pending = navigation
-            .pending_position
-            .lock()
-            .map_err(|_| "pet context menu pending position is unavailable")?;
-        if navigation.ready.load(Ordering::Acquire) {
-            drop(pending);
-            position_context_menu(&window, position)
-        } else {
-            *pending = Some(position);
-            Ok(())
-        }
+        position_context_menu(&window, position)
     }
+}
+
+fn queue_context_menu_until_ready(
+    navigation: &ContextMenuNavigation,
+    position: tauri::PhysicalPosition<i32>,
+) -> Result<bool, String> {
+    if navigation.ready.load(Ordering::Acquire) {
+        return Ok(false);
+    }
+    let mut pending = navigation
+        .pending_position
+        .lock()
+        .map_err(|_| "pet context menu pending position is unavailable")?;
+    let should_queue = !navigation.ready.load(Ordering::Acquire);
+    if should_queue {
+        *pending = Some(position);
+    }
+    Ok(should_queue)
 }
 
 fn context_menu_window(
