@@ -1284,14 +1284,14 @@ fn install_context_menu_handlers() {
         }
     });
     let contextmenu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        event.prevent_default();
+        event.stop_immediate_propagation();
         let Some(pet) = pet_context_element(event.target()) else {
             return;
         };
         if event.button() != 2 {
             return;
         }
-        event.prevent_default();
-        event.stop_immediate_propagation();
         if let Ok(pet) = pet.dyn_into::<HtmlElement>() {
             let _ = pet.blur();
         }

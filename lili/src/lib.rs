@@ -58,6 +58,11 @@ const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 (() => {
+  document.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+
   const invoke = (action) => {
     const nativeInvoke = window.__TAURI_INTERNALS__?.invoke;
     if (!nativeInvoke) return;
@@ -305,6 +310,7 @@ fn create_pet_window(
     )
     .initialization_script(FETCH_SIGNER_SCRIPT)
     .accept_first_mouse(true)
+    .devtools(false)
     .title("Lili")
     .inner_size(320.0, 360.0)
     .transparent(true)
@@ -342,6 +348,7 @@ fn create_notification_window(
     )
     .initialization_script(FETCH_SIGNER_SCRIPT)
     .accept_first_mouse(true)
+    .devtools(false)
     .title("Lili Notifications")
     .inner_size(
         f64::from(NOTIFICATION_WINDOW_WIDTH),
@@ -355,13 +362,15 @@ fn create_notification_window(
     .skip_taskbar(true)
     .visible(false)
     .on_navigation(move |url| url.origin() == allowed_origin);
-    if acceptance {
+    let window = if acceptance {
         builder
             .initialization_script(desktop_acceptance::NOTIFICATION_SCRIPT)
             .build()
     } else {
         builder.build()
-    }
+    }?;
+    suppress_webview_context_menu(&window)?;
+    Ok(window)
 }
 
 fn create_context_menu_window(
@@ -377,6 +386,7 @@ fn create_context_menu_window(
         WebviewUrl::External("about:blank".parse().expect("valid context menu URL")),
     )
     .initialization_script(CONTEXT_MENU_INITIALIZATION_SCRIPT)
+    .devtools(false)
     .title("Lili")
     .inner_size(
         f64::from(CONTEXT_MENU_WIDTH),
@@ -397,6 +407,8 @@ fn create_context_menu_window(
     })
     .build()
     .map_err(|error| format!("failed to create pet context menu window: {error}"))?;
+    suppress_webview_context_menu(&window)
+        .map_err(|error| format!("failed to suppress browser context menu: {error}"))?;
     platform_pinning::install_and_navigate(
         &window,
         navigation.url.clone(),
@@ -426,6 +438,16 @@ fn configure_desktop_companion_window(
     macos_panel::configure(window, context_menu_target, move || {
         open_pet_context_menu_from_native(&app);
     })
+}
+
+#[cfg(target_os = "macos")]
+fn suppress_webview_context_menu(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    macos_panel::suppress_webview_context_menu(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn suppress_webview_context_menu(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1813,6 +1835,13 @@ mod tests {
         );
         assert_eq!(TrayAction::parse("pet:bad\nvalue"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("unknown"), TrayAction::Unknown);
+    }
+
+    #[test]
+    fn context_menu_window_suppresses_the_browser_menu() {
+        assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("contextmenu"));
+        assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("preventDefault"));
+        assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("stopImmediatePropagation"));
     }
 
     #[test]

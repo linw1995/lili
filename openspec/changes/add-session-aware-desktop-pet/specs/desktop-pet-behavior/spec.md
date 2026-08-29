@@ -73,9 +73,13 @@ On macOS, the desktop pet window SHALL be backed by a non-activating `NSPanel` c
 ### Requirement: Present privacy-safe session notifications
 The system SHALL render pet-anchored notification cards in a separate transparent native window with event type, project label, relative time, and a bounded display-safe summary. Cards SHALL fill from the bottom upward, with the newest notification occupying the bottom slot closest to the pet and older notifications ordered upward by recency regardless of lifecycle priority. The notification window SHALL anchor to the visible sprite boundary with a 4 logical pixel visual gap, SHALL follow the pet window, share its visibility and always-on-top policy, remain within the selected display work area, and SHALL NOT depend on content overflowing the pet WebView bounds. Raw prompts, full assistant messages, commands, and approval arguments SHALL be hidden by default.
 
-#### Scenario: User right-clicks the notification window
-- **WHEN** a context-menu gesture occurs anywhere on the notification surface
-- **THEN** the browser default context menu is suppressed and no Pet context action is opened
+#### Scenario: User right-clicks an application surface
+- **WHEN** a context-menu gesture occurs on a notification, transparent background, or the Lili context-menu window itself
+- **THEN** the browser default context menu is suppressed at the native WebView layer and no Reload, inspection, or additional Pet context action is exposed
+
+#### Scenario: User right-clicks the Pet sprite
+- **WHEN** a true secondary-button gesture occurs on the Pet sprite
+- **THEN** the bounded Lili context menu opens without exposing browser reload or inspection actions
 
 #### Scenario: Pet moves while notifications are visible
 - **WHEN** the pet window moves within or between display work areas

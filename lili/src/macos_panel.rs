@@ -1,5 +1,6 @@
 use std::{
     ffi::CStr,
+    ptr::{self, NonNull},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -12,9 +13,8 @@ use objc2::{
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
 use objc2_app_kit::{NSEvent, NSEventMask, NSWindowCollectionBehavior, NSWindowStyleMask};
-use std::ptr::NonNull;
-
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
+const WEBVIEW_CLASS_NAME: &CStr = c"LiliContextMenuFreeWebView";
 const CURRENT_PROCESS: u32 = 2;
 const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
 
@@ -49,6 +49,7 @@ pub fn configure(
     context_menu_target: ContextMenuTarget,
     context_menu_handler: impl Fn() + Send + Sync + 'static,
 ) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)?;
     let raw_window = window.ns_window()?;
     if raw_window.is_null() {
         return Err(tauri::Error::InvalidWindowHandle);
@@ -91,6 +92,32 @@ pub fn configure(
     Ok(())
 }
 
+pub fn suppress_webview_context_menu(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let configured = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&configured);
+    window.with_webview(move |webview| {
+        let raw_webview = webview.inner();
+        if raw_webview.is_null() {
+            return;
+        }
+        let native_webview = unsafe { &*raw_webview.cast::<AnyObject>() };
+        let webview_class = context_menu_free_webview_class(native_webview.class());
+        assert!(
+            native_webview.class().instance_size() >= webview_class.instance_size(),
+            "native WebView conversion requires enough storage for the context-menu-free class"
+        );
+        unsafe {
+            objc2::ffi::object_setClass(native_webview as *const _ as *mut _, webview_class);
+        }
+        observed.store(true, Ordering::Release);
+    })?;
+    if configured.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err(tauri::Error::InvalidWindowHandle)
+    }
+}
+
 pub fn hide_dock_icon() {
     let process_serial_number = ProcessSerialNumber {
         high_long_of_psn: 0,
@@ -127,8 +154,9 @@ pub fn satisfies_desktop_companion_contract(window: &tauri::WebviewWindow) -> bo
         | (u16::from(behavior.contains(NSWindowCollectionBehavior::Stationary)) << 5)
         | (u16::from(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle)) << 6)
         | (u16::from(application_is_accessory()) << 7)
-        | (u16::from(webview_accepts_first_mouse(window)) << 8);
-    actual == 0x01ff
+        | (u16::from(webview_accepts_first_mouse(window)) << 8)
+        | (u16::from(webview_suppresses_context_menu(window)) << 9);
+    actual == 0x03ff
 }
 
 fn webview_accepts_first_mouse(window: &tauri::WebviewWindow) -> bool {
@@ -144,6 +172,23 @@ fn webview_accepts_first_mouse(window: &tauri::WebviewWindow) -> bool {
         }
     });
     result.is_ok() && accepted.load(Ordering::Acquire)
+}
+
+fn webview_suppresses_context_menu(window: &tauri::WebviewWindow) -> bool {
+    let suppressed = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&suppressed);
+    let result = window.with_webview(move |webview| {
+        let raw_webview = webview.inner();
+        if !raw_webview.is_null() {
+            let native_webview = unsafe { &*raw_webview.cast::<AnyObject>() };
+            let expected = context_menu_free_webview_class(native_webview.class());
+            observed.store(
+                std::ptr::eq(native_webview.class(), expected),
+                Ordering::Release,
+            );
+        }
+    });
+    result.is_ok() && suppressed.load(Ordering::Acquire)
 }
 
 fn application_is_accessory() -> bool {
@@ -175,6 +220,32 @@ fn panel_class() -> &'static AnyClass {
         }
         builder.register()
     })
+}
+
+fn context_menu_free_webview_class(superclass: &'static AnyClass) -> &'static AnyClass {
+    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
+    CLASS.get_or_init(|| {
+        if let Some(existing) = AnyClass::get(WEBVIEW_CLASS_NAME) {
+            return existing;
+        }
+        let mut builder = ClassBuilder::new(WEBVIEW_CLASS_NAME, superclass)
+            .expect("context-menu-free WebView class must be unique");
+        unsafe {
+            builder.add_method(
+                objc2::sel!(menuForEvent:),
+                no_context_menu as extern "C" fn(_, _, _) -> _,
+            );
+        }
+        builder.register()
+    })
+}
+
+extern "C" fn no_context_menu(
+    _webview: &AnyObject,
+    _selector: Sel,
+    _event: *mut AnyObject,
+) -> *mut AnyObject {
+    ptr::null_mut()
 }
 
 extern "C" fn can_become_key_window(_window: &AnyObject, _selector: Sel) -> Bool {

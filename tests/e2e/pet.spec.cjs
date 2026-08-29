@@ -230,6 +230,24 @@ test("pet owns the context menu gesture", async ({ page }) => {
     };
   });
   expect(result).toEqual({ dispatchResult: false, defaultPrevented: true });
+
+  const invokeCount = await page.evaluate(() => window.__LILI_INVOKES__.length);
+  const backgroundResult = await page.locator("#lili-app").evaluate((element) => {
+    const event = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+    });
+    return {
+      dispatchResult: element.dispatchEvent(event),
+      defaultPrevented: event.defaultPrevented,
+    };
+  });
+  expect(backgroundResult).toEqual({
+    dispatchResult: false,
+    defaultPrevented: true,
+  });
+  expect(await page.evaluate(() => window.__LILI_INVOKES__.length)).toBe(invokeCount);
 });
 
 test("left drag continues to use native window movement", async ({ page }) => {
