@@ -4,7 +4,7 @@ mod persistence;
 use std::{
     collections::{HashSet, VecDeque},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use lili_actions::{
@@ -73,6 +73,7 @@ pub struct AppState {
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
+    clock_origin: Instant,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -167,6 +168,7 @@ impl AppState {
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
             dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
+            clock_origin: Instant::now(),
         }
     }
 
@@ -225,7 +227,7 @@ impl AppState {
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
-        let accepted_at_ms = unix_time_ms();
+        let accepted_at_ms = self.monotonic_time_ms();
         let outcome = self
             .session_reducer
             .lock()
@@ -246,7 +248,7 @@ impl AppState {
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
-        let accepted_at_ms = unix_time_ms();
+        let accepted_at_ms = self.monotonic_time_ms();
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
@@ -520,6 +522,14 @@ impl AppState {
         });
     }
 
+    fn monotonic_time_ms(&self) -> u64 {
+        self.clock_origin
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
     async fn interaction_pet_snapshot(&self, presentation: PresentationState) -> PetSnapshotV1 {
         let snapshot = self.snapshot.read().await;
         PetSnapshotV1 {
@@ -549,14 +559,6 @@ fn starts_activity_reminder(event_type: SessionEventKind) -> bool {
             | SessionEventKind::TurnStarted
             | SessionEventKind::AttentionResolved
     )
-}
-
-fn unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            duration.as_millis().try_into().unwrap_or(u64::MAX)
-        })
 }
 
 fn action_failure(
