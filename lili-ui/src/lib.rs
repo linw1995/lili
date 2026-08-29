@@ -24,8 +24,35 @@ const PET_CENTER_X: f64 = 96.0;
 #[cfg(feature = "hydrate")]
 const PET_CENTER_Y: f64 = 104.0;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AppSurface {
+    #[default]
+    Pet,
+    Notifications,
+}
+
+impl AppSurface {
+    pub fn from_path(path: &str) -> Self {
+        if path == "/notifications" {
+            Self::Notifications
+        } else {
+            Self::Pet
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pet => "pet",
+            Self::Notifications => "notifications",
+        }
+    }
+}
+
 #[component]
-pub fn App(presentation: PetPresentationState) -> impl IntoView {
+pub fn App(
+    presentation: PetPresentationState,
+    #[prop(optional)] surface: AppSurface,
+) -> impl IntoView {
     let presentation = RwSignal::new(presentation);
     let now_ms = animation_clock_ms();
     let controller = RwSignal::new(AnimationController::new(
@@ -163,7 +190,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
             </section>
         };
         view! {
-            <PetShell presentation animation wall_clock reduced_motion pet_view/>
+            <PetShell presentation animation wall_clock reduced_motion pet_view surface/>
         }
     }
     #[cfg(not(feature = "hydrate"))]
@@ -184,7 +211,7 @@ pub fn App(presentation: PetPresentationState) -> impl IntoView {
     };
     #[cfg(not(feature = "hydrate"))]
     view! {
-        <PetShell presentation animation wall_clock reduced_motion pet_view/>
+        <PetShell presentation animation wall_clock reduced_motion pet_view surface/>
     }
 }
 
@@ -195,11 +222,12 @@ fn PetShell(
     wall_clock: RwSignal<u64>,
     reduced_motion: RwSignal<bool>,
     pet_view: impl IntoView + 'static,
+    surface: AppSurface,
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     let notification_cards = view! {
         <For
-            each=move || presentation.get().notifications
+            each=move || notifications_by_recency(presentation.get().notifications)
             key=|notification| notification.activation_id.clone()
             children=move |notification| view! {
                 <NotificationCard notification wall_clock/>
@@ -207,9 +235,7 @@ fn PetShell(
         />
     };
     #[cfg(not(feature = "hydrate"))]
-    let notification_cards = presentation
-        .get_untracked()
-        .notifications
+    let notification_cards = notifications_by_recency(presentation.get_untracked().notifications)
         .into_iter()
         .map(|notification| view! { <NotificationCard notification wall_clock/> })
         .collect_view();
@@ -225,36 +251,68 @@ fn PetShell(
         .get_untracked()
         .action_feedback
         .map(|feedback| view! { <ActionFeedback feedback/> });
-    view! {
-        <main
-            id="lili-app"
-            data-ssr-marker="lili-ready"
-            data-presentation=move || serde_json::to_string(&presentation.get()).unwrap_or_default()
-            data-revision=move || presentation.get().revision
-            data-lifecycle=move || presentation.get().lifecycle.as_str()
-            data-unread-count=move || presentation.get().unread_notification_count
-            data-animation=move || animation_name(animation.get())
-            data-reduced-motion=move || reduced_motion.get().to_string()
-        >
-            <aside
-                class="notification-stack"
-                aria-label="Session notifications"
-                aria-live="polite"
-                aria-relevant="additions removals"
+    if surface == AppSurface::Notifications {
+        view! {
+            <main
+                id="lili-app"
+                class="notification-surface"
+                data-ssr-marker="lili-ready"
+                data-surface=surface.as_str()
+                data-presentation=move || serde_json::to_string(&presentation.get()).unwrap_or_default()
+                data-revision=move || presentation.get().revision
+                data-unread-count=move || presentation.get().unread_notification_count
+                data-reduced-motion=move || reduced_motion.get().to_string()
             >
-                {notification_cards}
-            </aside>
-            <aside
-                class="action-feedback-region"
-                aria-label="Action result"
-                aria-live="polite"
-                aria-atomic="true"
+                <aside
+                    class="notification-stack"
+                    aria-label="Session notifications"
+                    aria-live="polite"
+                    aria-relevant="additions removals"
+                >
+                    {notification_cards}
+                </aside>
+            </main>
+        }
+        .into_any()
+    } else {
+        view! {
+            <main
+                id="lili-app"
+                class="pet-surface"
+                data-ssr-marker="lili-ready"
+                data-surface=surface.as_str()
+                data-presentation=move || serde_json::to_string(&presentation.get()).unwrap_or_default()
+                data-revision=move || presentation.get().revision
+                data-lifecycle=move || presentation.get().lifecycle.as_str()
+                data-unread-count=move || presentation.get().unread_notification_count
+                data-animation=move || animation_name(animation.get())
+                data-reduced-motion=move || reduced_motion.get().to_string()
             >
-                {action_feedback}
-            </aside>
-            {pet_view}
-        </main>
+                <aside
+                    class="action-feedback-region"
+                    aria-label="Action result"
+                    aria-live="polite"
+                    aria-atomic="true"
+                >
+                    {action_feedback}
+                </aside>
+                {pet_view}
+            </main>
+        }
+        .into_any()
     }
+}
+
+fn notifications_by_recency(
+    mut notifications: Vec<PetNotificationPresentation>,
+) -> Vec<PetNotificationPresentation> {
+    notifications.sort_by(|left, right| {
+        right
+            .occurred_at_ms
+            .cmp(&left.occurred_at_ms)
+            .then_with(|| left.activation_id.cmp(&right.activation_id))
+    });
+    notifications
 }
 
 #[component]
@@ -1132,6 +1190,11 @@ struct ContextMenuHandlers {
 }
 
 #[cfg(feature = "hydrate")]
+struct NotificationContextMenuHandler {
+    _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
+}
+
+#[cfg(feature = "hydrate")]
 thread_local! {
     static PRESENTATION_STREAM: std::cell::RefCell<Option<PresentationStream>> =
         const { std::cell::RefCell::new(None) };
@@ -1143,6 +1206,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static CONTEXT_MENU_HANDLERS: std::cell::RefCell<Option<ContextMenuHandlers>> =
         const { std::cell::RefCell::new(None) };
+    static NOTIFICATION_CONTEXT_MENU_HANDLER: std::cell::RefCell<Option<NotificationContextMenuHandler>> =
+        const { std::cell::RefCell::new(None) };
     static REDUCED_MOTION_QUERY: Option<web_sys::MediaQueryList> = web_sys::window()
         .and_then(|window| window.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
 }
@@ -1150,6 +1215,9 @@ thread_local! {
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn hydrate() {
+    let surface = web_sys::window()
+        .and_then(|window| window.location().pathname().ok())
+        .map_or(AppSurface::Pet, |path| AppSurface::from_path(&path));
     let presentation = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id("lili-app"))
@@ -1157,15 +1225,44 @@ pub fn hydrate() {
         .and_then(|serialized| serde_json::from_str::<PetPresentationState>(&serialized).ok())
         .unwrap_or_default();
     leptos::mount::hydrate_body(move || {
-        view! { <App presentation=presentation.clone()/> }
+        view! { <App presentation=presentation.clone() surface/> }
     });
-    install_context_menu_handlers();
+    match surface {
+        AppSurface::Pet => install_context_menu_handlers(),
+        AppSurface::Notifications => install_notification_context_menu_blocker(),
+    }
     if let Some(app) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id("lili-app"))
     {
         let _ = app.set_attribute("data-hydrated", "true");
     }
+}
+
+#[cfg(feature = "hydrate")]
+fn install_notification_context_menu_blocker() {
+    use wasm_bindgen::{JsCast, closure::Closure};
+    use web_sys::MouseEvent;
+
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let contextmenu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        event.prevent_default();
+        event.stop_immediate_propagation();
+    });
+    let _ = document.add_event_listener_with_callback_and_bool(
+        "contextmenu",
+        contextmenu.as_ref().unchecked_ref(),
+        true,
+    );
+    NOTIFICATION_CONTEXT_MENU_HANDLER.with(|handler| {
+        handler
+            .borrow_mut()
+            .replace(NotificationContextMenuHandler {
+                _contextmenu: contextmenu,
+            });
+    });
 }
 
 #[cfg(feature = "hydrate")]
@@ -1256,7 +1353,7 @@ mod tests {
     #[test]
     fn ssr_shell_renders_only_the_native_presentation_model() {
         let html = view! {
-            <App presentation=PetPresentationState {
+            <App surface=AppSurface::Notifications presentation=PetPresentationState {
                 revision: 7,
                 lifecycle: PetLifecycleState::Waiting,
                 pet_asset_id: Some("opaque-id".to_owned()),
@@ -1282,26 +1379,51 @@ mod tests {
             }/>
         }
         .to_html();
-        assert!(html.contains("class=\"pet-sprite\""));
-        assert!(html.contains("class=\"pet-atlas\""));
-        assert!(html.contains("data-hit-region=\"pet\""));
+        assert!(html.contains("class=\"notification-surface\""));
+        assert!(html.contains("data-surface=\"notifications\""));
         assert!(html.contains("data-revision=\"7\""));
-        assert!(html.contains("data-lifecycle=\"waiting\""));
         assert!(html.contains("data-unread-count=\"1\""));
         assert!(html.contains("data-reduced-motion=\"false\""));
-        assert!(html.contains("role=\"button\""));
-        assert!(html.contains("tabindex=\"0\""));
-        assert!(html.contains("aria-keyshortcuts=\"Enter Space\""));
         assert!(html.contains("aria-live=\"polite\""));
-        assert!(html.contains("/pet-assets/opaque-id"));
         assert!(html.contains("data-notification-id=\"notification-safe\""));
         assert!(html.contains("Finished safely"));
         assert!(html.contains("Truncated"));
-        assert!(html.contains("data-action-id=\"open-session\""));
-        assert!(html.contains("data-action-result=\"failure\""));
-        assert!(html.contains("Action could not start"));
+        assert!(!html.contains("class=\"pet-sprite\""));
+        assert!(!html.contains("data-action-id=\"open-session\""));
         assert!(!html.contains("sessionId"));
         assert!(!html.contains("eventId"));
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn pet_surface_does_not_render_notification_cards() {
+        let html = view! {
+            <App presentation=PetPresentationState {
+                notifications: vec![PetNotificationPresentation {
+                    activation_id: "notification-safe".to_owned(),
+                    kind: PetNotificationKind::Completion,
+                    project_label: Some("Workspace".to_owned()),
+                    summary: "Finished safely".to_owned(),
+                    summary_truncated: false,
+                    summary_redacted: false,
+                    occurred_at_ms: 10,
+                    unread: true,
+                }],
+                action_feedback: Some(PetActionFeedbackPresentation {
+                    action_id: "open-session".to_owned(),
+                    kind: PetActionFeedbackKind::Failure,
+                    message: "Action could not start".to_owned(),
+                    occurred_at_ms: 11,
+                }),
+                ..PetPresentationState::default()
+            }/>
+        }
+        .to_html();
+        assert!(html.contains("class=\"pet-surface\""));
+        assert!(html.contains("data-surface=\"pet\""));
+        assert!(html.contains("class=\"pet-sprite\""));
+        assert!(html.contains("data-action-id=\"open-session\""));
+        assert!(!html.contains("data-notification-id=\"notification-safe\""));
     }
 
     #[test]

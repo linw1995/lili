@@ -12,7 +12,6 @@ use tauri::{AppHandle, WebviewWindow};
 pub const SCRIPT: &str = r#"
 window.addEventListener('DOMContentLoaded', () => {
   const startedAt = Date.now();
-  let activated = false;
   const finish = (report) => {
     window.__TAURI_INTERNALS__.invoke('complete_desktop_acceptance', { report });
   };
@@ -26,11 +25,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const transparent = getComputedStyle(document.body).backgroundColor
       .replaceAll(' ', '') === 'rgba(0,0,0,0)';
     const hydrated = document.querySelector('#lili-app[data-hydrated="true"]') !== null;
-    const notification = document.querySelector('.notification-activate');
-    if (!activated && hydrated && notification instanceof HTMLButtonElement) {
-      activated = true;
-      notification.click();
-    }
+    const activated = localStorage.getItem('lili-acceptance-notification-activated') === 'true';
     const feedback = document.querySelector('.action-feedback[data-action-result="failure"]');
     const actionTimedOut = feedback?.textContent?.includes('Action timed out') === true;
     const feedbackActionId = feedback?.getAttribute('data-action-id') ?? null;
@@ -56,6 +51,25 @@ window.addEventListener('DOMContentLoaded', () => {
         actionTimedOut,
         feedbackActionId,
       });
+    }
+  }, 50);
+}, { once: true });
+"#;
+
+pub const NOTIFICATION_SCRIPT: &str = r#"
+window.addEventListener('DOMContentLoaded', () => {
+  const startedAt = Date.now();
+  const poll = window.setInterval(() => {
+    const hydrated = document.querySelector('#lili-app[data-hydrated="true"]') !== null;
+    const notification = document.querySelector('.notification-activate');
+    if (hydrated && notification instanceof HTMLButtonElement) {
+      window.clearInterval(poll);
+      notification.click();
+      localStorage.setItem('lili-acceptance-notification-activated', 'true');
+      return;
+    }
+    if (Date.now() - startedAt > 20_000) {
+      window.clearInterval(poll);
     }
   }, 50);
 }, { once: true });

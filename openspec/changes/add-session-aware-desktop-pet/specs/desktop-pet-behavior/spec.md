@@ -71,7 +71,19 @@ On macOS, the desktop pet window SHALL be backed by a non-activating `NSPanel` c
 - **THEN** the final window position is clamped so the configured visible portion remains reachable
 
 ### Requirement: Present privacy-safe session notifications
-The system SHALL render pet-anchored notification cards with event type, project label, relative time, and a bounded display-safe summary. Raw prompts, full assistant messages, commands, and approval arguments SHALL be hidden by default.
+The system SHALL render pet-anchored notification cards in a separate transparent native window with event type, project label, relative time, and a bounded display-safe summary. Cards SHALL fill from the bottom upward, with the newest notification occupying the bottom slot closest to the pet and older notifications ordered upward by recency regardless of lifecycle priority. The notification window SHALL anchor to the visible sprite boundary with a 4 logical pixel visual gap, SHALL follow the pet window, share its visibility and always-on-top policy, remain within the selected display work area, and SHALL NOT depend on content overflowing the pet WebView bounds. Raw prompts, full assistant messages, commands, and approval arguments SHALL be hidden by default.
+
+#### Scenario: User right-clicks the notification window
+- **WHEN** a context-menu gesture occurs anywhere on the notification surface
+- **THEN** the browser default context menu is suppressed and no Pet context action is opened
+
+#### Scenario: Pet moves while notifications are visible
+- **WHEN** the pet window moves within or between display work areas
+- **THEN** the notification window remains anchored above the pet, falls below it when the upper edge has insufficient space, and stays fully inside the selected work area
+
+#### Scenario: Pet visibility changes
+- **WHEN** the user hides or restores the pet while unread notifications exist
+- **THEN** the separate notification window is hidden or restored with the pet without affecting native session ingestion
 
 #### Scenario: Completion contains a long assistant message
 - **WHEN** a completion event includes provider text beyond the display-safe bound
@@ -79,7 +91,7 @@ The system SHALL render pet-anchored notification cards with event type, project
 
 #### Scenario: Multiple notifications are queued
 - **WHEN** more than one unread event exists
-- **THEN** cards are ordered by attention priority and recency and each can be dismissed independently
+- **THEN** cards fill upward from the bottom in reverse-recency order and each can be dismissed independently
 
 ### Requirement: Respect reduced motion and keyboard access
 The system SHALL honor the operating-system reduced-motion preference, expose keyboard-reachable notification and tray actions, and provide accessible labels independent of sprite imagery.

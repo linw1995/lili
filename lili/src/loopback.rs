@@ -47,6 +47,7 @@ pub struct LoopbackServer {
     bootstrap_url: tauri::Url,
     certificate_sha256: [u8; 32],
     listener: TcpListener,
+    notification_bootstrap_url: tauri::Url,
     origin: tauri::Url,
     router: Router,
     signer: RequestSigner,
@@ -74,6 +75,10 @@ impl LoopbackServer {
         let bootstrap_url = format!("{origin}{}", security.bootstrap_path)
             .parse()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let notification_bootstrap_url =
+            format!("{origin}{}", security.notification_bootstrap_path)
+                .parse()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let origin = origin
             .parse()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -82,6 +87,7 @@ impl LoopbackServer {
             bootstrap_url,
             certificate_sha256,
             listener,
+            notification_bootstrap_url,
             origin,
             router: protect(router, security),
             signer,
@@ -95,6 +101,10 @@ impl LoopbackServer {
 
     pub fn certificate_sha256(&self) -> [u8; 32] {
         self.certificate_sha256
+    }
+
+    pub fn notification_bootstrap_url(&self) -> tauri::Url {
+        self.notification_bootstrap_url.clone()
     }
 
     pub fn origin(&self) -> tauri::Url {
@@ -280,6 +290,8 @@ struct LoopbackSecurity {
     cookie_name: Arc<str>,
     csp: HeaderValue,
     origin: Arc<str>,
+    notification_bootstrap_available: Arc<AtomicBool>,
+    notification_bootstrap_path: Arc<str>,
     secret: Arc<str>,
     signer: RequestSigner,
 }
@@ -298,6 +310,8 @@ impl LoopbackSecurity {
             cookie_name: cookie_name.into(),
             csp,
             origin: origin.into(),
+            notification_bootstrap_available: Arc::new(AtomicBool::new(true)),
+            notification_bootstrap_path: format!("/_lili/bootstrap/{secret}/notifications").into(),
             secret: secret.into(),
             signer,
         }
@@ -330,18 +344,24 @@ async fn authorize(
     if !header_matches(request.headers(), HOST, &security.authority) {
         return security.harden(StatusCode::MISDIRECTED_REQUEST.into_response());
     }
-    if request.uri().path() == security.bootstrap_path.as_ref() {
+    let bootstrap = if request.uri().path() == security.bootstrap_path.as_ref() {
+        Some((&security.bootstrap_available, "/"))
+    } else if request.uri().path() == security.notification_bootstrap_path.as_ref() {
+        Some((&security.notification_bootstrap_available, "/notifications"))
+    } else {
+        None
+    };
+    if let Some((available, destination)) = bootstrap {
         if request.method() != Method::GET {
             return security.harden(StatusCode::METHOD_NOT_ALLOWED.into_response());
         }
-        if security
-            .bootstrap_available
+        if available
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return security.harden(StatusCode::GONE.into_response());
         }
-        let mut response = Redirect::to("/").into_response();
+        let mut response = Redirect::to(destination).into_response();
         let cookie = format!(
             "{}={}; HttpOnly; Secure; SameSite=Strict; Path=/",
             security.cookie_name, security.secret
@@ -525,6 +545,10 @@ mod tests {
         assert!(server.origin().port().is_some());
         assert_eq!(server.certificate_sha256().len(), 32);
         assert_eq!(server.bootstrap_url().origin(), server.origin().origin());
+        assert_eq!(
+            server.notification_bootstrap_url().origin(),
+            server.origin().origin()
+        );
     }
 
     const AUTHORITY: &str = "127.0.0.1:43123";
@@ -571,6 +595,38 @@ mod tests {
         assert_eq!(
             app.oneshot(request()).await.unwrap().status(),
             StatusCode::GONE
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_bootstrap_is_independent_and_redirects_to_its_surface() {
+        let (app, security) = app();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(security.notification_bootstrap_path.as_ref())
+                    .header(HOST, AUTHORITY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()[axum::http::header::LOCATION],
+            "/notifications"
+        );
+        assert_eq!(
+            app.oneshot(
+                Request::get(security.bootstrap_path.as_ref())
+                    .header(HOST, AUTHORITY)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::SEE_OTHER
         );
     }
 

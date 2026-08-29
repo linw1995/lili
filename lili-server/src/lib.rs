@@ -3,7 +3,7 @@ use std::{collections::HashSet, convert::Infallible, path::PathBuf, sync::Arc, t
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, OriginalUri, Path, State},
     http::{HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response, Sse, sse::Event, sse::KeepAlive},
@@ -16,7 +16,7 @@ use lili_app_state::{
 };
 use lili_core::{DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
 use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
-use lili_ui::App;
+use lili_ui::{App, AppSurface};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -639,9 +639,13 @@ fn presentation_event(
         .data(serde_json::to_string(presentation).expect("pet presentations must serialize"))
 }
 
-async fn ssr_shell(State(state): State<ServerState>) -> Html<String> {
+async fn ssr_shell(
+    State(state): State<ServerState>,
+    OriginalUri(uri): OriginalUri,
+) -> Html<String> {
     let presentation = state.presentation().await;
-    let app = view! { <App presentation/> }.to_html();
+    let surface = AppSurface::from_path(uri.path());
+    let app = view! { <App presentation surface/> }.to_html();
     Html(format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"/assets/lili.css\"><script type=\"module\" src=\"/assets/lili-bootstrap.js\"></script><title>Lili</title></head><body>{app}</body></html>"
     ))
@@ -895,13 +899,28 @@ mod tests {
 
     #[tokio::test]
     async fn shell_contains_ssr_marker() {
-        let response = build_router(AppState::default(), None)
+        let router = build_router(AppState::default(), None);
+        let response = router
+            .clone()
             .oneshot(Request::get("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("data-ssr-marker=\"lili-ready\""));
+        assert!(body.contains("data-surface=\"pet\""));
+        assert!(body.contains("class=\"pet-sprite\""));
+        assert!(!body.contains("class=\"notification-stack\""));
+
+        let response = router
+            .oneshot(Request::get("/notifications").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("data-surface=\"notifications\""));
+        assert!(body.contains("class=\"notification-stack\""));
+        assert!(!body.contains("class=\"pet-sprite\""));
     }
 
     #[tokio::test]

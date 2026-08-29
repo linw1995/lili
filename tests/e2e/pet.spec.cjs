@@ -25,6 +25,16 @@ async function openPet(page) {
   );
 }
 
+async function openNotifications(page) {
+  await page.goto("/notifications");
+  await page.waitForFunction(() => window.__LILI_HYDRATED__ === true);
+  await page.waitForTimeout(100);
+  await expect(page.locator("#lili-app")).toHaveAttribute(
+    "data-surface",
+    "notifications",
+  );
+}
+
 async function replacePresentation(page, overrides = {}) {
   const app = page.locator("#lili-app");
   const current = JSON.parse(await app.getAttribute("data-presentation"));
@@ -274,9 +284,18 @@ test("pet window content cannot be selected", async ({ page }) => {
     ],
   });
 
+  for (const selector of ["#lili-app", ".pet-sprite"]) {
+    await expect
+      .poll(() =>
+        page.locator(selector).evaluate((element) => getComputedStyle(element).userSelect),
+      )
+      .toBe("none");
+  }
+  await expect(page.locator(".notification-card")).toHaveCount(0);
+
+  await openNotifications(page);
   for (const selector of [
     "#lili-app",
-    ".pet-sprite",
     ".notification-card",
     ".notification-summary",
     ".notification-activate",
@@ -287,6 +306,7 @@ test("pet window content cannot be selected", async ({ page }) => {
       )
       .toBe("none");
   }
+  await expect(page.locator(".pet-sprite")).toHaveCount(0);
 });
 
 test("look direction follows all four quadrants", async ({ page }) => {
@@ -307,14 +327,14 @@ test("look direction follows all four quadrants", async ({ page }) => {
   }
 });
 
-test("concurrent session notifications retain deterministic ordering", async ({
+test("concurrent session notifications fill upward from the bottom", async ({
   page,
 }) => {
-  await openPet(page);
+  await openNotifications(page);
   const notifications = [
-    notification("failure-3", "failure", "Gamma", "Failed", now + 300),
-    notification("attention-2", "attention", "Beta", "Needs input", now + 200),
-    notification("completion-1", "completion", "Alpha", "Completed", now + 100),
+    notification("attention-old", "attention", "Alpha", "Needs input", now + 100),
+    notification("failure-middle", "failure", "Beta", "Failed", now + 200),
+    notification("completion-new", "completion", "Gamma", "Completed", now + 300),
   ];
   await replacePresentation(page, {
     lifecycle: "failed",
@@ -326,8 +346,85 @@ test("concurrent session notifications retain deterministic ordering", async ({
   const notificationIds = await page
     .locator(".notification-card")
     .evaluateAll((cards) => cards.map((card) => card.dataset.notificationId));
-  expect(notificationIds).toEqual(["failure-3", "attention-2", "completion-1"]);
+  expect(notificationIds).toEqual([
+    "completion-new",
+    "failure-middle",
+    "attention-old",
+  ]);
+  const visualOrder = await page.locator(".notification-card").evaluateAll((cards) =>
+    cards
+      .map((card) => ({
+        id: card.dataset.notificationId,
+        top: card.getBoundingClientRect().top,
+      }))
+      .sort((left, right) => left.top - right.top)
+      .map((card) => card.id),
+  );
+  expect(visualOrder).toEqual([
+    "attention-old",
+    "failure-middle",
+    "completion-new",
+  ]);
+  const bottom = await page
+    .locator("[data-notification-id='completion-new']")
+    .evaluate((card) => card.getBoundingClientRect().bottom);
+  const viewportHeight = await page.evaluate(() => window.innerHeight);
+  expect(bottom).toBe(viewportHeight - 4);
   await expect(page.locator("#lili-app")).toHaveAttribute("data-unread-count", "3");
+});
+
+test("a newer same-priority notification occupies the bottom slot", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("completion-old", "completion", "Alpha", "Older", now),
+    ],
+  });
+  await replacePresentation(page, {
+    unreadNotificationCount: 2,
+    notifications: [
+      notification("completion-new", "completion", "Beta", "Newer", now + 100),
+      notification("completion-old", "completion", "Alpha", "Older", now),
+    ],
+  });
+
+  const bottomMost = await page.locator(".notification-card").evaluateAll((cards) =>
+    cards
+      .map((card) => ({
+        id: card.dataset.notificationId,
+        bottom: card.getBoundingClientRect().bottom,
+      }))
+      .sort((left, right) => right.bottom - left.bottom)[0].id,
+  );
+  expect(bottomMost).toBe("completion-new");
+});
+
+test("notification surface suppresses the browser context menu", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("context-menu", "completion", "Workspace", "Done", now),
+    ],
+  });
+
+  const result = await page.locator(".notification-card").evaluate((card) => {
+    const event = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+    });
+    return {
+      dispatchResult: card.dispatchEvent(event),
+      defaultPrevented: event.defaultPrevented,
+    };
+  });
+  expect(result).toEqual({ dispatchResult: false, defaultPrevented: true });
 });
 
 test("action outcomes use bounded user-facing feedback", async ({ page }) => {
@@ -352,7 +449,7 @@ test("action outcomes use bounded user-facing feedback", async ({ page }) => {
 });
 
 test("reload recovers the latest snapshot", async ({ page }) => {
-  await openPet(page);
+  await openNotifications(page);
   const notifications = [
     notification("reload-attention", "attention", "Workspace", "Needs input", now),
   ];
@@ -369,8 +466,8 @@ test("reload recovers the latest snapshot", async ({ page }) => {
     String(applied.revision),
   );
   await expect(page.locator("#lili-app")).toHaveAttribute(
-    "data-lifecycle",
-    "waiting",
+    "data-unread-count",
+    "1",
   );
   await expect(page.locator("[data-notification-id='reload-attention']")).toBeVisible();
 });
