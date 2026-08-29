@@ -36,11 +36,15 @@ unsafe extern "C" {
 }
 
 type ContextMenuHandler = Arc<dyn Fn() + Send + Sync>;
-type ContextMenuTarget = Arc<AtomicBool>;
+
+const PET_SPRITE_HEIGHT: f64 = 208.0;
+const PET_SPRITE_WIDTH: f64 = 192.0;
+const PET_WINDOW_HEIGHT: f64 = 360.0;
+const PET_WINDOW_WIDTH: f64 = 320.0;
 
 #[derive(Default)]
 struct ContextMenuState {
-    pet: Option<(isize, ContextMenuTarget, ContextMenuHandler)>,
+    pet: Option<(isize, ContextMenuHandler)>,
     suppressed_windows: HashSet<isize>,
 }
 
@@ -52,7 +56,6 @@ thread_local! {
 
 pub fn configure(
     window: &tauri::WebviewWindow,
-    context_menu_target: ContextMenuTarget,
     context_menu_handler: impl Fn() + Send + Sync + 'static,
 ) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
@@ -62,11 +65,7 @@ pub fn configure(
         .lock()
         .map_err(|_| tauri::Error::AssetNotFound("context menu state".to_owned()))?;
     state.suppressed_windows.insert(window_number);
-    state.pet = Some((
-        window_number,
-        context_menu_target,
-        Arc::clone(&context_menu_handler),
-    ));
+    state.pet = Some((window_number, Arc::clone(&context_menu_handler)));
     drop(state);
     install_context_menu_monitor();
     Ok(())
@@ -249,16 +248,12 @@ fn install_context_menu_monitor() {
         let Some((suppressed, handler)) = CONTEXT_MENU_STATE.get().and_then(|state| {
             state.lock().ok().map(|state| {
                 let suppressed = state.suppressed_windows.contains(&window_number);
-                let handler =
-                    state
-                        .pet
-                        .as_ref()
-                        .and_then(|(pet_window_number, target, handler)| {
-                            (event_type == NSEventType::RightMouseDown
-                                && window_number == *pet_window_number
-                                && target.load(Ordering::Acquire))
-                            .then(|| Arc::clone(handler))
-                        });
+                let handler = state.pet.as_ref().and_then(|(pet_window_number, handler)| {
+                    (event_type == NSEventType::RightMouseDown
+                        && window_number == *pet_window_number
+                        && event_hits_pet_sprite(event))
+                    .then(|| Arc::clone(handler))
+                });
                 (suppressed, handler)
             })
         }) else {
@@ -276,5 +271,31 @@ fn install_context_menu_monitor() {
     let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
     if let Some(monitor) = monitor {
         CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
+}
+
+fn event_hits_pet_sprite(event: &NSEvent) -> bool {
+    let location = event.locationInWindow();
+    pet_sprite_contains(location.x, location.y)
+}
+
+fn pet_sprite_contains(x: f64, y: f64) -> bool {
+    let min_x = (PET_WINDOW_WIDTH - PET_SPRITE_WIDTH) / 2.0;
+    let min_y = (PET_WINDOW_HEIGHT - PET_SPRITE_HEIGHT) / 2.0;
+    (min_x..=min_x + PET_SPRITE_WIDTH).contains(&x)
+        && (min_y..=min_y + PET_SPRITE_HEIGHT).contains(&y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pet_sprite_contains;
+
+    #[test]
+    fn pet_hit_region_is_centered_and_includes_its_edges() {
+        assert!(pet_sprite_contains(64.0, 76.0));
+        assert!(pet_sprite_contains(256.0, 284.0));
+        assert!(pet_sprite_contains(160.0, 180.0));
+        assert!(!pet_sprite_contains(63.9, 180.0));
+        assert!(!pet_sprite_contains(160.0, 284.1));
     }
 }

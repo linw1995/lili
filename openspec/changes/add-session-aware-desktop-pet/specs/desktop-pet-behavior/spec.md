@@ -75,19 +75,31 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 
 #### Scenario: User right-clicks an application surface
 - **WHEN** a context-menu gesture occurs on a notification, transparent background, or the Lili context-menu window itself
-- **THEN** the browser default context menu is suppressed at the native AppKit event layer and no Reload, inspection, or additional Pet context action is exposed
+- **THEN** the preloaded surface's root context-menu handler and native AppKit event handling suppress the browser menu, and no Reload, inspection, or additional Pet context action is exposed
 
 #### Scenario: User right-clicks the Pet sprite
 - **WHEN** a true secondary-button gesture occurs on the Pet sprite
 - **THEN** the bounded Lili context menu opens without exposing browser reload or inspection actions
 
+#### Scenario: First interaction is a Pet right-click
+- **WHEN** the non-activating Pet panel has received no prior left click or DOM pointer movement and the user right-clicks the visible sprite
+- **THEN** native event coordinates match the sprite hit region and open the Lili context menu on that first gesture
+
 #### Scenario: Pet moves while notifications are visible
 - **WHEN** the pet window moves within or between display work areas
-- **THEN** the notification window remains anchored above the pet, falls below it when the upper edge has insufficient space, and stays fully inside the selected work area
+- **THEN** the notification window remains anchored above the pet, falls below it with cards top-aligned when the upper edge has insufficient space, preserves the 4 pixel visual gap, and stays fully inside the selected work area
 
 #### Scenario: Pet visibility changes
 - **WHEN** the user hides or restores the pet while unread notifications exist
 - **THEN** the separate notification window is hidden or restored with the pet without affecting native session ingestion
+
+#### Scenario: Notification window receives a close shortcut
+- **WHEN** unread notifications exist and the operating system requests that the notification window close
+- **THEN** the close is prevented and the notification window remains reconciled with the visible Pet and unread state
+
+#### Scenario: Pet receives focus over the notification window
+- **WHEN** Pet and notification windows overlap through the Pet transparent margin and the Pet becomes focused
+- **THEN** the notification window is raised again so its Open and Dismiss controls remain interactive
 
 #### Scenario: macOS Space changes with unread notifications
 - **WHEN** the user switches Spaces while Pet and notification windows are visible

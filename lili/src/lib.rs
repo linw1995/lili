@@ -56,6 +56,28 @@ const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
 const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NotificationWindowPlacement {
+    Above,
+    Below,
+}
+
+impl NotificationWindowPlacement {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Above => "above",
+            Self::Below => "below",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NotificationWindowLayout {
+    position: tauri::PhysicalPosition<i32>,
+    placement: NotificationWindowPlacement,
+}
+
 const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 (() => {
   document.addEventListener('contextmenu', (event) => {
@@ -82,13 +104,12 @@ struct PetContextActions {
     always_on_top: CheckMenuItem<tauri::Wry>,
 }
 
-#[derive(Clone, Default)]
-struct PetContextMenuTarget(Arc<AtomicBool>);
-
 #[derive(Clone)]
 struct ContextMenuNavigation {
     url: tauri::Url,
     certificate_sha256: [u8; 32],
+    ready: Arc<AtomicBool>,
+    pending_position: Arc<std::sync::Mutex<Option<tauri::PhysicalPosition<i32>>>>,
 }
 
 pub use lili_storage::{ApplicationPaths, PathError as ApplicationPathError};
@@ -117,7 +138,6 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             move_window_to,
             commit_window_position,
             open_pet_context_menu,
-            set_pet_context_menu_target,
             run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -156,7 +176,6 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     });
     app.manage(WindowDragState::default());
     let pets_root = application_paths.pets_root();
-    app.manage(PetContextMenuTarget::default());
     let tray_menu =
         setup_tray(&app, state.clone(), &pets_root).expect("failed to configure tray lifecycle");
     app.manage(PetContextActions {
@@ -186,14 +205,19 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         .expect("failed to register notification window capability");
     register_context_menu_capability(&app, &origin)
         .expect("failed to configure context menu capability");
-    app.manage(ContextMenuNavigation {
+    let context_menu_navigation = ContextMenuNavigation {
         url: tauri::Url::parse(&format!(
             "{}/context-menu",
             origin.as_str().trim_end_matches('/')
         ))
         .expect("valid context menu URL"),
         certificate_sha256,
-    });
+        ready: Arc::new(AtomicBool::new(false)),
+        pending_position: Arc::new(std::sync::Mutex::new(None)),
+    };
+    app.manage(context_menu_navigation.clone());
+    let _context_menu_window = create_context_menu_window(app.handle(), &context_menu_navigation)
+        .expect("failed to preload pet context menu window");
     let window = create_pet_window(&app, &state, &origin, smoke, acceptance)
         .expect("failed to create pet window");
     let notification_window = create_notification_window(&app, &state, &origin, acceptance)
@@ -261,8 +285,7 @@ fn register_loopback_capability(
         .permission("allow-begin-window-drag")
         .permission("allow-move-window-to")
         .permission("allow-commit-window-position")
-        .permission("allow-open-pet-context-menu")
-        .permission("allow-set-pet-context-menu-target");
+        .permission("allow-open-pet-context-menu");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
     } else if smoke {
@@ -377,9 +400,12 @@ fn create_context_menu_window(
     app: &tauri::AppHandle,
     navigation: &ContextMenuNavigation,
 ) -> Result<tauri::WebviewWindow, String> {
+    navigation.ready.store(false, Ordering::Release);
     let app_handle = app.clone();
     let has_been_focused = Arc::new(AtomicBool::new(false));
     let focus_state = Arc::clone(&has_been_focused);
+    let ready = Arc::clone(&navigation.ready);
+    let pending_position = Arc::clone(&navigation.pending_position);
     let window = WebviewWindowBuilder::new(
         app,
         CONTEXT_MENU_WINDOW_LABEL,
@@ -400,9 +426,17 @@ fn create_context_menu_window(
     .skip_taskbar(true)
     .visible(false)
     .focused(false)
-    .on_page_load(|window, payload| {
+    .on_page_load(move |window, payload| {
         if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
             let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
+            ready.store(true, Ordering::Release);
+            let pending = pending_position
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.take());
+            if let Some(position) = pending {
+                let _ = position_context_menu(&window, position);
+            }
         }
     })
     .build()
@@ -416,6 +450,12 @@ fn create_context_menu_window(
     )
     .map_err(|error| format!("failed to navigate pet context menu window: {error}"))?;
     window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            if let Some(window) = app_handle.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
+                let _ = window.hide();
+            }
+        }
         tauri::WindowEvent::Focused(true) => {
             focus_state.store(true, Ordering::Release);
         }
@@ -434,8 +474,7 @@ fn configure_desktop_companion_window(
     window: &tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> tauri::Result<()> {
-    let context_menu_target = app.state::<PetContextMenuTarget>().0.clone();
-    macos_panel::configure(window, context_menu_target, move || {
+    macos_panel::configure(window, move || {
         open_pet_context_menu_from_native(&app);
     })
 }
@@ -484,9 +523,7 @@ fn register_notification_window_events(window: &tauri::WebviewWindow, app: tauri
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            if let Some(window) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) {
-                let _ = window.hide();
-            }
+            sync_notification_window_from_state(&app);
         }
     });
 }
@@ -510,6 +547,7 @@ fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
             handle_pet_move(app);
         }
+        tauri::WindowEvent::Focused(true) => position_notification_window(app),
         _ => {}
     }
 }
@@ -585,7 +623,7 @@ fn position_notification_window(app: &tauri::AppHandle) {
         return;
     };
     let work_area = monitor.work_area();
-    let position = notification_window_position(
+    let layout = notification_window_layout(
         pet_position,
         pet_size,
         notification_size,
@@ -594,13 +632,17 @@ fn position_notification_window(app: &tauri::AppHandle) {
         work_area.size,
         gap,
     );
-    let _ = notification.set_position(position);
+    let _ = notification.set_position(layout.position);
+    let _ = notification.eval(format!(
+        "document.documentElement.dataset.notificationPlacement = '{}';",
+        layout.placement.as_str()
+    ));
     if notification.is_visible().unwrap_or(false) {
         let _ = notification.show();
     }
 }
 
-fn notification_window_position(
+fn notification_window_layout(
     pet_position: tauri::PhysicalPosition<i32>,
     pet_size: tauri::PhysicalSize<u32>,
     notification_size: tauri::PhysicalSize<u32>,
@@ -608,7 +650,7 @@ fn notification_window_position(
     work_area_position: tauri::PhysicalPosition<i32>,
     work_area_size: tauri::PhysicalSize<u32>,
     gap: i32,
-) -> tauri::PhysicalPosition<i32> {
+) -> NotificationWindowLayout {
     let pet_width = i32::try_from(pet_size.width).unwrap_or(i32::MAX);
     let pet_height = i32::try_from(pet_size.height).unwrap_or(i32::MAX);
     let pet_content_height = i32::try_from(pet_content_height)
@@ -640,14 +682,20 @@ fn notification_window_position(
     let below_y = pet_content_y
         .saturating_add(pet_content_height)
         .saturating_add(gap);
-    let y = if above_y >= min_y {
-        above_y
+    let (y, placement) = if above_y >= min_y {
+        (above_y, NotificationWindowPlacement::Above)
     } else if below_y <= max_y {
-        below_y
+        (below_y, NotificationWindowPlacement::Below)
     } else {
-        above_y.clamp(min_y, max_y)
+        (
+            above_y.clamp(min_y, max_y),
+            NotificationWindowPlacement::Above,
+        )
     };
-    tauri::PhysicalPosition::new(centered_x.clamp(min_x, max_x), y)
+    NotificationWindowLayout {
+        position: tauri::PhysicalPosition::new(centered_x.clamp(min_x, max_x), y),
+        placement,
+    }
 }
 
 fn run_desktop_event_loop(
@@ -1120,15 +1168,6 @@ fn open_pet_context_menu(
     )
 }
 
-#[tauri::command]
-fn set_pet_context_menu_target(
-    target: bool,
-    state: tauri::State<'_, PetContextMenuTarget>,
-) -> Result<(), String> {
-    state.0.store(target, Ordering::Release);
-    Ok(())
-}
-
 #[cfg(target_os = "macos")]
 fn open_pet_context_menu_from_native(app: &tauri::AppHandle) {
     let Some(source) = app.get_webview_window("pet") else {
@@ -1151,7 +1190,21 @@ fn open_pet_context_menu_at(
     let window = context_menu_window(app, navigation)?;
     let pointer = context_menu_pointer(source, fallback)?;
     let position = context_menu_position(source, &window, pointer);
-    position_context_menu(&window, position)
+    if navigation.ready.load(Ordering::Acquire) {
+        position_context_menu(&window, position)
+    } else {
+        let mut pending = navigation
+            .pending_position
+            .lock()
+            .map_err(|_| "pet context menu pending position is unavailable")?;
+        if navigation.ready.load(Ordering::Acquire) {
+            drop(pending);
+            position_context_menu(&window, position)
+        } else {
+            *pending = Some(position);
+            Ok(())
+        }
+    }
 }
 
 fn context_menu_window(
@@ -1857,7 +1910,7 @@ mod tests {
     #[test]
     fn notification_window_is_centered_above_the_pet() {
         assert_eq!(
-            notification_window_position(
+            notification_window_layout(
                 tauri::PhysicalPosition::new(500, 400),
                 tauri::PhysicalSize::new(320, 360),
                 tauri::PhysicalSize::new(320, 158),
@@ -1866,14 +1919,17 @@ mod tests {
                 tauri::PhysicalSize::new(1920, 1080),
                 NOTIFICATION_WINDOW_GAP,
             ),
-            tauri::PhysicalPosition::new(500, 318)
+            NotificationWindowLayout {
+                position: tauri::PhysicalPosition::new(500, 318),
+                placement: NotificationWindowPlacement::Above,
+            }
         );
     }
 
     #[test]
     fn notification_window_falls_below_and_stays_in_the_work_area() {
         assert_eq!(
-            notification_window_position(
+            notification_window_layout(
                 tauri::PhysicalPosition::new(-1200, 10),
                 tauri::PhysicalSize::new(320, 360),
                 tauri::PhysicalSize::new(400, 158),
@@ -1882,7 +1938,10 @@ mod tests {
                 tauri::PhysicalSize::new(1280, 900),
                 NOTIFICATION_WINDOW_GAP,
             ),
-            tauri::PhysicalPosition::new(-1240, 294)
+            NotificationWindowLayout {
+                position: tauri::PhysicalPosition::new(-1240, 294),
+                placement: NotificationWindowPlacement::Below,
+            }
         );
     }
 

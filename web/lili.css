@@ -43,6 +43,12 @@ body {
   z-index: 2;
 }
 
+html[data-notification-placement="below"] .notification-stack {
+  bottom: auto;
+  flex-direction: column;
+  top: 4px;
+}
+
 .action-feedback-region {
   position: absolute;
   right: 12px;

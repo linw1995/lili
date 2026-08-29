@@ -420,6 +420,26 @@ test("a newer same-priority notification occupies the bottom slot", async ({
   expect(bottomMost).toBe("completion-new");
 });
 
+test("below-pet placement keeps the newest card at the top edge", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("below-pet", "completion", "Workspace", "Done", now),
+    ],
+  });
+  await page.evaluate(() => {
+    document.documentElement.dataset.notificationPlacement = "below";
+  });
+
+  const cardTop = await page
+    .locator("[data-notification-id='below-pet']")
+    .evaluate((card) => card.getBoundingClientRect().top);
+  expect(cardTop).toBe(4);
+});
+
 test("notification surface suppresses the browser context menu", async ({
   page,
 }) => {
