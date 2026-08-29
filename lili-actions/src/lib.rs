@@ -49,7 +49,7 @@ pub enum NotificationFilterKind {
 #[serde(rename_all = "snake_case")]
 pub enum PetLifecycleSnapshotV1 {
     Idle,
-    #[serde(alias = "running")]
+    #[serde(rename = "running", alias = "activity_reminder")]
     ActivityReminder,
     Review,
     Failed,
@@ -373,6 +373,25 @@ command = "echo unsafe"
             file.actions[2].trigger,
             InteractionTrigger::NotificationActivate
         );
+    }
+
+    #[test]
+    fn interaction_context_v1_keeps_the_legacy_activity_wire_token() {
+        let snapshot = PetSnapshotV1 {
+            pet_id: "lili".to_owned(),
+            label: "Lili".to_owned(),
+            lifecycle: PetLifecycleSnapshotV1::ActivityReminder,
+        };
+        let encoded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(encoded["lifecycle"], "running");
+
+        let decoded: PetSnapshotV1 = serde_json::from_value(serde_json::json!({
+            "petId": "lili",
+            "label": "Lili",
+            "lifecycle": "activity_reminder"
+        }))
+        .unwrap();
+        assert_eq!(decoded.lifecycle, PetLifecycleSnapshotV1::ActivityReminder);
     }
 
     #[test]

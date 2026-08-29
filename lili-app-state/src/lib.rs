@@ -4,7 +4,7 @@ mod persistence;
 use std::{
     collections::{HashSet, VecDeque},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use lili_actions::{
@@ -225,12 +225,16 @@ impl AppState {
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
-        let occurred_at_ms = event.occurred_at_ms;
-        let outcome = self.session_reducer.lock().await.reduce(event);
+        let accepted_at_ms = unix_time_ms();
+        let outcome = self
+            .session_reducer
+            .lock()
+            .await
+            .reduce_at(event, accepted_at_ms);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
             if starts_activity_reminder {
-                self.schedule_activity_reminder_expiry(occurred_at_ms);
+                self.schedule_activity_reminder_expiry(accepted_at_ms);
             }
         }
         outcome
@@ -242,12 +246,12 @@ impl AppState {
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
-        let occurred_at_ms = event.occurred_at_ms;
+        let accepted_at_ms = unix_time_ms();
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
-        let outcome = reducer.reduce(event.clone());
+        let outcome = reducer.reduce_at(event.clone(), accepted_at_ms);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             let persistent =
                 PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
@@ -260,7 +264,7 @@ impl AppState {
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
             if starts_activity_reminder {
-                self.schedule_activity_reminder_expiry(occurred_at_ms);
+                self.schedule_activity_reminder_expiry(accepted_at_ms);
             }
         }
         Ok(outcome)
@@ -545,6 +549,14 @@ fn starts_activity_reminder(event_type: SessionEventKind) -> bool {
             | SessionEventKind::TurnStarted
             | SessionEventKind::AttentionResolved
     )
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
 }
 
 fn action_failure(

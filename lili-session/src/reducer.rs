@@ -157,6 +157,15 @@ impl SessionReducer {
     }
 
     pub fn reduce(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        let accepted_at_ms = event.occurred_at_ms;
+        self.reduce_at(event, accepted_at_ms)
+    }
+
+    pub fn reduce_at(
+        &mut self,
+        event: NormalizedSessionEvent,
+        accepted_at_ms: u64,
+    ) -> ReductionOutcome {
         let event_key = (event.provider.clone(), event.event_id.clone());
         if self.is_duplicate_in_current_lifecycle(&event, &event_key) {
             return ReductionOutcome::Duplicate;
@@ -179,11 +188,9 @@ impl SessionReducer {
                 | SessionEventKind::TurnStarted
                 | SessionEventKind::AttentionResolved
         ) {
-            self.activity_reminder_until_ms = self.activity_reminder_until_ms.max(
-                event
-                    .occurred_at_ms
-                    .saturating_add(DEFAULT_ACTIVITY_REMINDER_DURATION_MS),
-            );
+            self.activity_reminder_until_ms = self
+                .activity_reminder_until_ms
+                .max(accepted_at_ms.saturating_add(DEFAULT_ACTIVITY_REMINDER_DURATION_MS));
         }
 
         if transition.resolve_attention {
@@ -202,7 +209,7 @@ impl SessionReducer {
             }
             self.insert_notification(&event, kind);
         }
-        self.refresh_presentation(event.occurred_at_ms);
+        self.refresh_presentation(accepted_at_ms);
         self.revision = self.revision.saturating_add(1);
         ReductionOutcome::Applied {
             revision: self.revision,
@@ -991,6 +998,41 @@ mod tests {
         );
         assert_eq!(reducer.snapshot().presentation, PresentationState::Idle);
         assert_eq!(reducer.snapshot().sessions[0].phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn activity_reminder_uses_acceptance_time_for_delayed_events() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce_at(
+            event(
+                "first-activity",
+                "turn_started",
+                "session-1",
+                Some("turn-1"),
+                100,
+            ),
+            1_000,
+        );
+        reducer.reduce_at(
+            event(
+                "delayed-activity",
+                "turn_started",
+                "session-2",
+                Some("turn-2"),
+                50,
+            ),
+            5_000,
+        );
+
+        assert_eq!(
+            reducer.advance_presentation(6_000),
+            ReductionOutcome::IgnoredStale
+        );
+        assert_eq!(
+            reducer.advance_presentation(10_000),
+            ReductionOutcome::Applied { revision: 3 }
+        );
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Idle);
     }
 
     #[test]
