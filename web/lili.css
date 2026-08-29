@@ -18,6 +18,12 @@ body {
   position: relative;
 }
 
+#lili-app,
+#lili-app * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .notification-stack {
   display: grid;
   gap: 6px;
@@ -149,7 +155,6 @@ body {
   overflow: hidden;
   pointer-events: auto;
   touch-action: none;
-  user-select: none;
 }
 
 .pet-atlas {

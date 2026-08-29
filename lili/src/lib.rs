@@ -1325,19 +1325,19 @@ fn handle_window_tray_action(
 }
 
 fn show_pet_window(app: &tauri::AppHandle, visibility: &CheckMenuItem<tauri::Wry>) {
-    if let Some(window) = app.get_webview_window("pet") {
-        if window.show().is_ok() {
-            let _ = visibility.set_checked(true);
-            let _ = window.set_focus();
-        }
+    if let Some(window) = app.get_webview_window("pet")
+        && window.show().is_ok()
+    {
+        let _ = visibility.set_checked(true);
+        let _ = window.set_focus();
     }
 }
 
 fn hide_pet_window(app: &tauri::AppHandle, visibility: &CheckMenuItem<tauri::Wry>) {
-    if let Some(window) = app.get_webview_window("pet") {
-        if window.hide().is_ok() {
-            let _ = visibility.set_checked(false);
-        }
+    if let Some(window) = app.get_webview_window("pet")
+        && window.hide().is_ok()
+    {
+        let _ = visibility.set_checked(false);
     }
 }
 
@@ -1394,10 +1394,10 @@ fn handle_pet_selection(
     for (candidate, item) in pet_items {
         let _ = item.set_checked(candidate == pet_id);
     }
-    if let Some(window) = app.get_webview_window("pet") {
-        if window.show().is_ok() {
-            let _ = visibility.set_checked(true);
-        }
+    if let Some(window) = app.get_webview_window("pet")
+        && window.show().is_ok()
+    {
+        let _ = visibility.set_checked(true);
     }
 }
 

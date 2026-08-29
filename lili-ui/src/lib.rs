@@ -1367,6 +1367,9 @@ mod tests {
         assert!(css.contains(".pet-sprite:focus-visible"));
         assert!(css.contains("filter: drop-shadow"));
         assert!(css.contains("outline: none"));
+        assert!(css.contains("#lili-app *"));
+        assert!(css.contains("-webkit-user-select: none"));
+        assert!(css.contains("user-select: none"));
         assert!(css.contains("prefers-reduced-motion: reduce"));
     }
 
