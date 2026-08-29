@@ -50,12 +50,7 @@ pub fn configure(
     context_menu_handler: impl Fn() + Send + Sync + 'static,
 ) -> tauri::Result<()> {
     suppress_webview_context_menu(window)?;
-    let raw_window = window.ns_window()?;
-    if raw_window.is_null() {
-        return Err(tauri::Error::InvalidWindowHandle);
-    }
-    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
-    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
+    let window_number = configure_panel(window)?;
     let context_menu_handler: ContextMenuHandler = Arc::new(context_menu_handler);
     let handler = CONTEXT_MENU_HANDLER.get_or_init(|| Mutex::new(None));
     *handler
@@ -65,6 +60,23 @@ pub fn configure(
         context_menu_target,
         Arc::clone(&context_menu_handler),
     ));
+    install_context_menu_monitor();
+    Ok(())
+}
+
+pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)?;
+    configure_panel(window)?;
+    Ok(())
+}
+
+fn configure_panel(window: &tauri::WebviewWindow) -> tauri::Result<isize> {
+    let raw_window = window.ns_window()?;
+    if raw_window.is_null() {
+        return Err(tauri::Error::InvalidWindowHandle);
+    }
+    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
     let panel_class = panel_class();
     let old_class = native_window.class();
     assert!(
@@ -88,8 +100,7 @@ pub fn configure(
             | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![native_window, setCollectionBehavior: behavior];
     }
-    install_context_menu_monitor();
-    Ok(())
+    Ok(window_number)
 }
 
 pub fn suppress_webview_context_menu(window: &tauri::WebviewWindow) -> tauri::Result<()> {

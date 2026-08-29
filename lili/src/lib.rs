@@ -369,7 +369,7 @@ fn create_notification_window(
     } else {
         builder.build()
     }?;
-    suppress_webview_context_menu(&window)?;
+    configure_notification_window(&window)?;
     Ok(window)
 }
 
@@ -448,6 +448,16 @@ fn suppress_webview_context_menu(window: &tauri::WebviewWindow) -> tauri::Result
 #[cfg(not(target_os = "macos"))]
 fn suppress_webview_context_menu(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    macos_panel::configure_auxiliary(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)
 }
 
 #[cfg(not(target_os = "macos"))]
