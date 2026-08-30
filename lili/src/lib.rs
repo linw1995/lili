@@ -690,6 +690,7 @@ fn position_notification_window(app: &tauri::AppHandle) {
         work_area.position,
         work_area.size,
         gap,
+        scale,
     );
     let _ = notification.set_position(layout.position);
     app.state::<NotificationWindowState>().set(layout.placement);
@@ -717,6 +718,7 @@ fn notification_window_layout(
     work_area_position: tauri::PhysicalPosition<i32>,
     work_area_size: tauri::PhysicalSize<u32>,
     gap: i32,
+    scale: f64,
 ) -> NotificationWindowLayout {
     let pet_width = i32::try_from(pet_size.width).unwrap_or(i32::MAX);
     let pet_height = i32::try_from(pet_size.height).unwrap_or(i32::MAX);
@@ -743,14 +745,15 @@ fn notification_window_layout(
     let pet_content_y = pet_position
         .y
         .saturating_add(pet_height.saturating_sub(pet_content_height) / 2);
+    let shadow_inset = notification_shadow_inset(scale);
     let above_y = pet_content_y
         .saturating_sub(notification_height)
         .saturating_sub(gap)
-        .saturating_add(NOTIFICATION_SHADOW_INSET);
+        .saturating_add(shadow_inset);
     let below_y = pet_content_y
         .saturating_add(pet_content_height)
         .saturating_add(gap)
-        .saturating_sub(NOTIFICATION_SHADOW_INSET);
+        .saturating_sub(shadow_inset);
     let (y, placement) = if above_y >= min_y {
         (above_y, NotificationWindowPlacement::Above)
     } else if below_y <= max_y {
@@ -765,6 +768,17 @@ fn notification_window_layout(
         position: tauri::PhysicalPosition::new(centered_x.clamp(min_x, max_x), y),
         placement,
     }
+}
+
+fn notification_shadow_inset(scale: f64) -> i32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (f64::from(NOTIFICATION_SHADOW_INSET) * scale)
+        .round()
+        .clamp(0.0, f64::from(i32::MAX)) as i32
 }
 
 fn run_desktop_event_loop(
@@ -2043,9 +2057,35 @@ mod tests {
                 tauri::PhysicalPosition::new(0, 0),
                 tauri::PhysicalSize::new(1920, 1080),
                 NOTIFICATION_WINDOW_GAP,
+                1.0,
             ),
             NotificationWindowLayout {
                 position: tauri::PhysicalPosition::new(500, 330),
+                placement: NotificationWindowPlacement::Above,
+            }
+        );
+    }
+
+    #[test]
+    fn notification_window_scales_shadow_inset_with_display_scale() {
+        assert_eq!(notification_shadow_inset(1.0), NOTIFICATION_SHADOW_INSET);
+        assert_eq!(
+            notification_shadow_inset(2.0),
+            NOTIFICATION_SHADOW_INSET * 2
+        );
+        assert_eq!(
+            notification_window_layout(
+                tauri::PhysicalPosition::new(0, 69),
+                tauri::PhysicalSize::new(320, 360),
+                tauri::PhysicalSize::new(320, 158),
+                208,
+                tauri::PhysicalPosition::new(0, 0),
+                tauri::PhysicalSize::new(1920, 1080),
+                NOTIFICATION_WINDOW_GAP,
+                2.0,
+            ),
+            NotificationWindowLayout {
+                position: tauri::PhysicalPosition::new(0, 11),
                 placement: NotificationWindowPlacement::Above,
             }
         );
@@ -2062,6 +2102,7 @@ mod tests {
                 tauri::PhysicalPosition::new(-1280, 0),
                 tauri::PhysicalSize::new(1280, 900),
                 NOTIFICATION_WINDOW_GAP,
+                1.0,
             ),
             NotificationWindowLayout {
                 position: tauri::PhysicalPosition::new(-1240, 282),
