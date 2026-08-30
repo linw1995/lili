@@ -290,6 +290,11 @@ html[data-notification-placement="below"] .notification-more-bottom {
   }
 }
 
+#lili-app[data-reduced-motion="true"] .notification-card,
+#lili-app[data-reduced-motion="true"] .notification-more {
+  transition: none;
+}
+
 .notification-card::before {
   background: linear-gradient(90deg, var(--notification-highlight), transparent);
   content: "";

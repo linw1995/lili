@@ -538,6 +538,47 @@ test("multiple notifications keep two cards visible while scrolling", async ({
     .toEqual(["accordion-newest", "accordion-latest"]);
 });
 
+test("line-mode wheel input advances the notification carousel", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("line-oldest", "completion", "Alpha", "Oldest", now),
+    notification("line-middle", "failure", "Beta", "Middle", now + 100),
+    notification("line-newest", "attention", "Gamma", "Newest", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  const visibleCardIds = () =>
+    stack.evaluate((element) =>
+      [...element.querySelectorAll(".notification-card.notification-card-current")]
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
+        .map((card) => card.dataset.notificationId),
+    );
+
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["line-middle", "line-newest"]);
+  const defaultPrevented = await stack.evaluate((element) => {
+    const event = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+      deltaY: -3,
+    });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(defaultPrevented).toBe(true);
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["line-oldest", "line-middle"]);
+});
+
 test("notification reduced-motion changes settle queued transitions", async ({
   page,
 }) => {
@@ -584,6 +625,34 @@ test("notification reduced-motion changes settle queued transitions", async ({
   await expect
     .poll(visibleCardIds)
     .toEqual(["motion-oldest", "motion-middle"]);
+});
+
+test("presentation reduced motion disables notification transitions", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const notifications = [
+    notification("presentation-motion", "completion", "Workspace", "Done", now),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const card = page.locator(".notification-card");
+  await replacePresentation(page, {
+    reducedMotion: true,
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+  await expect(page.locator("#lili-app")).toHaveAttribute(
+    "data-reduced-motion",
+    "true",
+  );
+  await expect
+    .poll(() => card.evaluate((element) => getComputedStyle(element).transitionDuration))
+    .toBe("0s");
 });
 
 test("notification carousel remains switchable after the list shrinks", async ({

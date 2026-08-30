@@ -158,6 +158,10 @@ impl NotificationCarouselState {
     const WHEEL_DEBOUNCE_MS: u64 = 80;
     #[cfg(any(test, feature = "hydrate"))]
     const TRANSITION_DURATION_MS: u64 = 460;
+    #[cfg(any(test, feature = "hydrate"))]
+    const WHEEL_LINE_HEIGHT: f64 = 16.0;
+    #[cfg(any(test, feature = "hydrate"))]
+    const WHEEL_PAGE_HEIGHT: f64 = 148.0;
 
     fn new(ordered_ids: Vec<String>) -> Self {
         let window_start = ordered_ids.len().saturating_sub(2);
@@ -366,6 +370,15 @@ impl NotificationCarouselState {
     }
 }
 
+#[cfg(any(test, feature = "hydrate"))]
+fn normalize_wheel_delta(delta: f64, delta_mode: u32) -> f64 {
+    match delta_mode {
+        1 => delta * NotificationCarouselState::WHEEL_LINE_HEIGHT,
+        2 => delta * NotificationCarouselState::WHEEL_PAGE_HEIGHT,
+        _ => delta,
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct NotificationCarouselController {
     state: RwSignal<NotificationCarouselState>,
@@ -432,7 +445,10 @@ impl NotificationCarouselController {
 
     #[cfg(feature = "hydrate")]
     fn handle_wheel(&self, event: web_sys::WheelEvent) {
-        if event.delta_y().abs() <= event.delta_x().abs() {
+        let delta_mode = event.delta_mode();
+        let delta_x = normalize_wheel_delta(event.delta_x(), delta_mode);
+        let delta_y = normalize_wheel_delta(event.delta_y(), delta_mode);
+        if delta_y.abs() <= delta_x.abs() {
             return;
         }
         event.prevent_default();
@@ -442,7 +458,7 @@ impl NotificationCarouselController {
         } else {
             -1.0
         };
-        let delta_y = event.delta_y().clamp(-120.0, 120.0);
+        let delta_y = delta_y.clamp(-120.0, 120.0);
         self.state.update(|state| {
             state.record_wheel(
                 delta_y * placement_factor * NotificationCarouselState::WHEEL_SCALE,
@@ -810,5 +826,12 @@ mod tests {
         assert!(state.finish_transition(560));
         assert!(state.begin_next_move(560));
         assert_eq!(state.window_start, 1);
+    }
+
+    #[test]
+    fn normalizes_wheel_delta_modes_before_thresholding() {
+        assert_eq!(normalize_wheel_delta(12.0, 0), 12.0);
+        assert_eq!(normalize_wheel_delta(3.0, 1), 48.0);
+        assert_eq!(normalize_wheel_delta(-1.0, 2), -148.0);
     }
 }
