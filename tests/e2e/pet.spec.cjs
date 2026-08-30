@@ -651,6 +651,11 @@ test("each notification can be focused without viewport clipping", async ({
 
   const stack = page.locator(".notification-stack");
   await expect(stack).toHaveAttribute("data-notification-visible-count", "2");
+  const tabStops = await stack
+    .locator(".notification-controls button")
+    .evaluateAll((buttons) => buttons.map((button) => button.tabIndex));
+  expect(tabStops).toHaveLength(12);
+  expect(tabStops.every((tabIndex) => tabIndex === 0)).toBe(true);
 
   for (const current of notifications) {
     const card = page.locator(`[data-notification-id='${current.activationId}']`);
@@ -718,9 +723,9 @@ test("concurrent session notifications fill upward from the bottom", async ({
     .locator(".notification-card")
     .evaluateAll((cards) => cards.map((card) => card.dataset.notificationId));
   expect(notificationIds).toEqual([
-    "attention-old",
-    "failure-middle",
     "completion-new",
+    "failure-middle",
+    "attention-old",
   ]);
   const visualOrder = await page
     .locator(".notification-card.notification-card-current")

@@ -42,7 +42,7 @@ pub(super) fn NotificationCarousel(
     #[cfg(feature = "hydrate")]
     let notification_cards = view! {
         <For
-            each=move || notifications_by_display_order(presentation.get().notifications)
+            each=move || notifications_by_keyboard_order(presentation.get().notifications)
             key=|notification| notification.activation_id.clone()
             children=move |notification| view! {
                 <NotificationCard notification wall_clock carousel=cards_carousel.clone()/>
@@ -50,7 +50,7 @@ pub(super) fn NotificationCarousel(
         />
     };
     #[cfg(not(feature = "hydrate"))]
-    let notification_cards = notifications_by_display_order(
+    let notification_cards = notifications_by_keyboard_order(
         presentation.get_untracked().notifications,
     )
     .into_iter()
@@ -404,11 +404,6 @@ impl NotificationCarouselController {
     }
 
     #[cfg(feature = "hydrate")]
-    fn is_interactive(&self, id: &str) -> bool {
-        self.state.get().visual_for(id).current
-    }
-
-    #[cfg(feature = "hydrate")]
     fn reconcile(&self, ordered_ids: Vec<String>) {
         let mut changed = false;
         self.state
@@ -501,6 +496,14 @@ fn notifications_by_display_order(
     notifications
 }
 
+fn notifications_by_keyboard_order(
+    notifications: Vec<PetNotificationPresentation>,
+) -> Vec<PetNotificationPresentation> {
+    let mut notifications = notifications_by_display_order(notifications);
+    notifications.reverse();
+    notifications
+}
+
 #[component]
 fn NotificationCard(
     notification: PetNotificationPresentation,
@@ -538,18 +541,14 @@ fn NotificationCard(
         let dismiss_id = activation_id.clone();
         let activate_focus_id = activation_id.clone();
         let dismiss_focus_id = activation_id.clone();
-        let activate_tab_id = activation_id.clone();
-        let dismiss_tab_id = activation_id.clone();
         let activate_carousel = carousel.clone();
         let dismiss_carousel = carousel.clone();
-        let activate_tab_carousel = carousel.clone();
-        let dismiss_tab_carousel = carousel.clone();
         view! {
             <button
                 class="notification-activate"
                 type="button"
                 aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
-                tabindex=move || if activate_tab_carousel.is_interactive(&activate_tab_id) { "0" } else { "-1" }
+                tabindex="0"
                 on:focus=move |_| activate_carousel.focus_notification(&activate_focus_id)
                 on:click=move |_| activate_native_notification(&activate_id)
             >
@@ -559,7 +558,7 @@ fn NotificationCard(
                 class="notification-dismiss"
                 type="button"
                 aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
-                tabindex=move || if dismiss_tab_carousel.is_interactive(&dismiss_tab_id) { "0" } else { "-1" }
+                tabindex="0"
                 on:focus=move |_| dismiss_carousel.focus_notification(&dismiss_focus_id)
                 on:click=move |_| dismiss_native_notification(&dismiss_id)
             >
@@ -594,8 +593,6 @@ fn NotificationCard(
     let bottom_behind_id = activation_id.clone();
     let current_carousel = carousel.clone();
     let current_id = activation_id.clone();
-    let aria_carousel = carousel.clone();
-    let aria_id = activation_id.clone();
     let foreground_carousel = carousel.clone();
     let foreground_id = activation_id.clone();
     view! {
@@ -625,7 +622,6 @@ fn NotificationCard(
                 .foreground
             data-notification-id=activation_id
             data-notification-kind=kind.as_str()
-            aria-hidden=move || (!aria_carousel.visual_for(&aria_id).current).to_string()
         >
             <div class="notification-card-body">
                 {status}
