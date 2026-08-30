@@ -700,6 +700,39 @@ test("notification carousel remains switchable after the list shrinks", async ({
     .toEqual(["shrink-oldest", "shrink-middle"]);
 });
 
+test("focusing a visible notification does not advance the carousel", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("focus-oldest", "completion", "Alpha", "Oldest", now),
+    notification("focus-middle", "failure", "Beta", "Middle", now + 100),
+    notification("focus-newest", "attention", "Gamma", "Newest", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  const visibleCardIds = () =>
+    stack.evaluate((element) =>
+      [...element.querySelectorAll(".notification-card.notification-card-current")]
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
+        .map((card) => card.dataset.notificationId),
+    );
+
+  const currentIds = ["focus-middle", "focus-newest"];
+  await expect.poll(visibleCardIds).toEqual(currentIds);
+  for (const id of currentIds) {
+    const card = page.locator(`[data-notification-id='${id}']`);
+    await card.locator(".notification-activate").focus();
+    await expect.poll(visibleCardIds).toEqual(currentIds);
+    await card.locator(".notification-dismiss").focus();
+    await expect.poll(visibleCardIds).toEqual(currentIds);
+  }
+});
+
 test("each notification can be focused without viewport clipping", async ({
   page,
 }) => {

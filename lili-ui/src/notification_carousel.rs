@@ -334,6 +334,10 @@ impl NotificationCarouselState {
         else {
             return false;
         };
+        let start = self.window_start;
+        if (start..=start.saturating_add(1)).contains(&index) {
+            return false;
+        }
         let target = self.clamp_window_start(index.saturating_sub(1));
         self.pending_focus = Some(target);
         true
