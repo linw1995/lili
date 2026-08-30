@@ -55,6 +55,7 @@ const NOTIFICATION_WINDOW_LABEL: &str = "pet-notifications";
 const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
 const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
 const NOTIFICATION_WINDOW_MIN_HEIGHT: u32 = 16;
+const NOTIFICATION_SHADOW_INSET: i32 = 12;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 const DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
@@ -744,10 +745,12 @@ fn notification_window_layout(
         .saturating_add(pet_height.saturating_sub(pet_content_height) / 2);
     let above_y = pet_content_y
         .saturating_sub(notification_height)
-        .saturating_sub(gap);
+        .saturating_sub(gap)
+        .saturating_add(NOTIFICATION_SHADOW_INSET);
     let below_y = pet_content_y
         .saturating_add(pet_content_height)
-        .saturating_add(gap);
+        .saturating_add(gap)
+        .saturating_sub(NOTIFICATION_SHADOW_INSET);
     let (y, placement) = if above_y >= min_y {
         (above_y, NotificationWindowPlacement::Above)
     } else if below_y <= max_y {
@@ -2042,7 +2045,7 @@ mod tests {
                 NOTIFICATION_WINDOW_GAP,
             ),
             NotificationWindowLayout {
-                position: tauri::PhysicalPosition::new(500, 318),
+                position: tauri::PhysicalPosition::new(500, 330),
                 placement: NotificationWindowPlacement::Above,
             }
         );
@@ -2061,7 +2064,7 @@ mod tests {
                 NOTIFICATION_WINDOW_GAP,
             ),
             NotificationWindowLayout {
-                position: tauri::PhysicalPosition::new(-1240, 294),
+                position: tauri::PhysicalPosition::new(-1240, 282),
                 placement: NotificationWindowPlacement::Below,
             }
         );

@@ -1,11 +1,14 @@
 use leptos::prelude::*;
 use lili_core::{
     PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
-    PetNotificationPresentation, PetPresentationState,
+    PetPresentationState,
 };
 #[cfg(any(test, feature = "hydrate"))]
 use lili_pet::LookDirectionSelector;
 use lili_pet::{AnimationScheduler, AnimationState, FrameDescriptor, LookFrame};
+
+mod notification_carousel;
+use notification_carousel::NotificationCarousel;
 
 #[cfg(any(test, feature = "hydrate"))]
 const WAVE_DURATION_MS: u64 = 700;
@@ -235,21 +238,6 @@ fn PetShell(
     surface: AppSurface,
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
-    let notification_cards = view! {
-        <For
-            each=move || notifications_by_recency(presentation.get().notifications)
-            key=|notification| notification.activation_id.clone()
-            children=move |notification| view! {
-                <NotificationCard notification wall_clock/>
-            }
-        />
-    };
-    #[cfg(not(feature = "hydrate"))]
-    let notification_cards = notifications_by_recency(presentation.get_untracked().notifications)
-        .into_iter()
-        .map(|notification| view! { <NotificationCard notification wall_clock/> })
-        .collect_view();
-    #[cfg(feature = "hydrate")]
     let action_feedback = move || {
         presentation
             .get()
@@ -273,14 +261,7 @@ fn PetShell(
                 data-unread-count=move || presentation.get().unread_notification_count
                 data-reduced-motion=move || reduced_motion.get().to_string()
             >
-                <aside
-                    class="notification-stack"
-                    aria-label="Session notifications"
-                    aria-live="polite"
-                    aria-relevant="additions removals"
-                >
-                    {notification_cards}
-                </aside>
+                <NotificationCarousel presentation wall_clock reduced_motion/>
             </main>
         }
         .into_any()
@@ -313,18 +294,6 @@ fn PetShell(
     }
 }
 
-fn notifications_by_recency(
-    mut notifications: Vec<PetNotificationPresentation>,
-) -> Vec<PetNotificationPresentation> {
-    notifications.sort_by(|left, right| {
-        right
-            .occurred_at_ms
-            .cmp(&left.occurred_at_ms)
-            .then_with(|| left.activation_id.cmp(&right.activation_id))
-    });
-    notifications
-}
-
 #[component]
 fn ActionFeedback(feedback: PetActionFeedbackPresentation) -> impl IntoView {
     let role = if feedback.kind == PetActionFeedbackKind::Failure {
@@ -347,87 +316,6 @@ fn ActionFeedback(feedback: PetActionFeedbackPresentation) -> impl IntoView {
             <strong>{action_id}</strong>
             <span>{feedback.message}</span>
         </div>
-    }
-}
-
-#[component]
-fn NotificationCard(
-    notification: PetNotificationPresentation,
-    wall_clock: RwSignal<u64>,
-) -> impl IntoView {
-    let activation_id = notification.activation_id;
-    let kind = notification.kind;
-    let project_label = notification
-        .project_label
-        .unwrap_or_else(|| "Session".to_owned());
-    let summary = notification.summary;
-    let occurred_at_ms = notification.occurred_at_ms;
-    let unread = notification.unread;
-    let disclosure = match (
-        notification.summary_redacted,
-        notification.summary_truncated,
-    ) {
-        (true, true) => Some("Redacted and truncated"),
-        (true, false) => Some("Redacted"),
-        (false, true) => Some("Truncated"),
-        (false, false) => None,
-    };
-    #[cfg(feature = "hydrate")]
-    let controls = {
-        let activate_id = activation_id.clone();
-        let dismiss_id = activation_id.clone();
-        view! {
-            <button
-                class="notification-activate"
-                type="button"
-                aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
-                on:click=move |_| activate_native_notification(&activate_id)
-            >
-                "Open"
-            </button>
-            <button
-                class="notification-dismiss"
-                type="button"
-                aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
-                on:click=move |_| dismiss_native_notification(&dismiss_id)
-            >
-                "Dismiss"
-            </button>
-        }
-    };
-    #[cfg(not(feature = "hydrate"))]
-    let controls = view! {
-        <button
-            class="notification-activate"
-            type="button"
-            aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
-        >
-            "Open"
-        </button>
-        <button
-            class="notification-dismiss"
-            type="button"
-            aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
-        >
-            "Dismiss"
-        </button>
-    };
-    view! {
-        <article
-            class="notification-card"
-            class:notification-unread=unread
-            data-notification-id=activation_id
-            data-notification-kind=kind.as_str()
-        >
-            <div class="notification-heading">
-                <span class="notification-kind">{notification_kind_label(kind)}</span>
-                <time>{move || relative_time_label(occurred_at_ms, wall_clock.get())}</time>
-            </div>
-            <strong class="notification-project">{project_label}</strong>
-            <p class="notification-summary">{summary}</p>
-            {disclosure.map(|label| view! { <span class="notification-disclosure">{label}</span> })}
-            <div class="notification-controls">{controls}</div>
-        </article>
     }
 }
 
@@ -1192,6 +1080,12 @@ export function focusNativeNotifications() {
   void invoke('focus_notification_window').catch(() => {});
 }
 
+export function resizeNotificationWindow(height) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('resize_notification_window', { height }).catch(() => {});
+}
+
 export function focusNativePetWindow() {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;
@@ -1213,6 +1107,9 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativeNotifications)]
     fn focus_native_notifications();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = resizeNotificationWindow)]
+    fn resize_notification_window(height: u32);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativePetWindow)]
     fn focus_native_pet_window();
@@ -1368,7 +1265,7 @@ fn install_context_menu_handlers() {
 
 #[cfg(test)]
 mod tests {
-    use lili_core::PetLifecycleState;
+    use lili_core::{PetLifecycleState, PetNotificationPresentation};
 
     use super::*;
 
@@ -1428,7 +1325,12 @@ mod tests {
         assert!(html.contains("aria-live=\"polite\""));
         assert!(html.contains("data-notification-id=\"notification-safe\""));
         assert!(html.contains("Finished safely"));
-        assert!(html.contains("Truncated"));
+        assert!(!html.contains("class=\"notification-status\""));
+        assert!(html.contains("notification-action-icon"));
+        assert!(!html.contains("class=\"notification-kind\""));
+        assert!(!html.contains("class=\"notification-disclosure\""));
+        assert!(!html.contains(">Open</button>"));
+        assert!(!html.contains(">Dismiss</button>"));
         assert!(!html.contains("class=\"pet-sprite\""));
         assert!(!html.contains("data-action-id=\"open-session\""));
         assert!(!html.contains("sessionId"));

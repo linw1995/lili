@@ -30,5 +30,7 @@ web-sys = { workspace = true, features = [
   "KeyboardEvent",
   "PointerEvent",
   "Performance",
+  "TransitionEvent",
+  "WheelEvent",
   "Window",
 ], optional = true }
