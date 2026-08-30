@@ -101,6 +101,17 @@ struct NotificationWindowLayout {
     placement: NotificationWindowPlacement,
 }
 
+struct NotificationWindowLayoutInput {
+    pet_position: tauri::PhysicalPosition<i32>,
+    pet_size: tauri::PhysicalSize<u32>,
+    notification_size: tauri::PhysicalSize<u32>,
+    pet_content_height: u32,
+    work_area_position: tauri::PhysicalPosition<i32>,
+    work_area_size: tauri::PhysicalSize<u32>,
+    gap: i32,
+    scale: f64,
+}
+
 #[derive(Clone, Default)]
 struct NotificationWindowState(Arc<AtomicU8>);
 
@@ -682,16 +693,16 @@ fn position_notification_window(app: &tauri::AppHandle) {
         return;
     };
     let work_area = monitor.work_area();
-    let layout = notification_window_layout(
+    let layout = notification_window_layout(NotificationWindowLayoutInput {
         pet_position,
         pet_size,
         notification_size,
         pet_content_height,
-        work_area.position,
-        work_area.size,
+        work_area_position: work_area.position,
+        work_area_size: work_area.size,
         gap,
         scale,
-    );
+    });
     let _ = notification.set_position(layout.position);
     app.state::<NotificationWindowState>().set(layout.placement);
     apply_notification_window_placement(&notification, layout.placement);
@@ -710,27 +721,18 @@ fn apply_notification_window_placement(
     ));
 }
 
-fn notification_window_layout(
-    pet_position: tauri::PhysicalPosition<i32>,
-    pet_size: tauri::PhysicalSize<u32>,
-    notification_size: tauri::PhysicalSize<u32>,
-    pet_content_height: u32,
-    work_area_position: tauri::PhysicalPosition<i32>,
-    work_area_size: tauri::PhysicalSize<u32>,
-    gap: i32,
-    scale: f64,
-) -> NotificationWindowLayout {
-    let pet_width = i32::try_from(pet_size.width).unwrap_or(i32::MAX);
-    let pet_height = i32::try_from(pet_size.height).unwrap_or(i32::MAX);
-    let pet_content_height = i32::try_from(pet_content_height)
+fn notification_window_layout(input: NotificationWindowLayoutInput) -> NotificationWindowLayout {
+    let pet_width = i32::try_from(input.pet_size.width).unwrap_or(i32::MAX);
+    let pet_height = i32::try_from(input.pet_size.height).unwrap_or(i32::MAX);
+    let pet_content_height = i32::try_from(input.pet_content_height)
         .unwrap_or(i32::MAX)
         .min(pet_height);
-    let notification_width = i32::try_from(notification_size.width).unwrap_or(i32::MAX);
-    let notification_height = i32::try_from(notification_size.height).unwrap_or(i32::MAX);
-    let work_width = i32::try_from(work_area_size.width).unwrap_or(i32::MAX);
-    let work_height = i32::try_from(work_area_size.height).unwrap_or(i32::MAX);
-    let min_x = work_area_position.x;
-    let min_y = work_area_position.y;
+    let notification_width = i32::try_from(input.notification_size.width).unwrap_or(i32::MAX);
+    let notification_height = i32::try_from(input.notification_size.height).unwrap_or(i32::MAX);
+    let work_width = i32::try_from(input.work_area_size.width).unwrap_or(i32::MAX);
+    let work_height = i32::try_from(input.work_area_size.height).unwrap_or(i32::MAX);
+    let min_x = input.work_area_position.x;
+    let min_y = input.work_area_position.y;
     let max_x = min_x
         .saturating_add(work_width)
         .saturating_sub(notification_width)
@@ -739,20 +741,22 @@ fn notification_window_layout(
         .saturating_add(work_height)
         .saturating_sub(notification_height)
         .max(min_y);
-    let centered_x = pet_position
+    let centered_x = input
+        .pet_position
         .x
         .saturating_add(pet_width.saturating_sub(notification_width) / 2);
-    let pet_content_y = pet_position
+    let pet_content_y = input
+        .pet_position
         .y
         .saturating_add(pet_height.saturating_sub(pet_content_height) / 2);
-    let shadow_inset = notification_shadow_inset(scale);
+    let shadow_inset = notification_shadow_inset(input.scale);
     let above_y = pet_content_y
         .saturating_sub(notification_height)
-        .saturating_sub(gap)
+        .saturating_sub(input.gap)
         .saturating_add(shadow_inset);
     let below_y = pet_content_y
         .saturating_add(pet_content_height)
-        .saturating_add(gap)
+        .saturating_add(input.gap)
         .saturating_sub(shadow_inset);
     let (y, placement) = if above_y >= min_y {
         (above_y, NotificationWindowPlacement::Above)
@@ -2049,16 +2053,16 @@ mod tests {
     #[test]
     fn notification_window_is_centered_above_the_pet() {
         assert_eq!(
-            notification_window_layout(
-                tauri::PhysicalPosition::new(500, 400),
-                tauri::PhysicalSize::new(320, 360),
-                tauri::PhysicalSize::new(320, 158),
-                208,
-                tauri::PhysicalPosition::new(0, 0),
-                tauri::PhysicalSize::new(1920, 1080),
-                NOTIFICATION_WINDOW_GAP,
-                1.0,
-            ),
+            notification_window_layout(NotificationWindowLayoutInput {
+                pet_position: tauri::PhysicalPosition::new(500, 400),
+                pet_size: tauri::PhysicalSize::new(320, 360),
+                notification_size: tauri::PhysicalSize::new(320, 158),
+                pet_content_height: 208,
+                work_area_position: tauri::PhysicalPosition::new(0, 0),
+                work_area_size: tauri::PhysicalSize::new(1920, 1080),
+                gap: NOTIFICATION_WINDOW_GAP,
+                scale: 1.0,
+            }),
             NotificationWindowLayout {
                 position: tauri::PhysicalPosition::new(500, 330),
                 placement: NotificationWindowPlacement::Above,
@@ -2074,16 +2078,16 @@ mod tests {
             NOTIFICATION_SHADOW_INSET * 2
         );
         assert_eq!(
-            notification_window_layout(
-                tauri::PhysicalPosition::new(0, 69),
-                tauri::PhysicalSize::new(320, 360),
-                tauri::PhysicalSize::new(320, 158),
-                208,
-                tauri::PhysicalPosition::new(0, 0),
-                tauri::PhysicalSize::new(1920, 1080),
-                NOTIFICATION_WINDOW_GAP,
-                2.0,
-            ),
+            notification_window_layout(NotificationWindowLayoutInput {
+                pet_position: tauri::PhysicalPosition::new(0, 69),
+                pet_size: tauri::PhysicalSize::new(320, 360),
+                notification_size: tauri::PhysicalSize::new(320, 158),
+                pet_content_height: 208,
+                work_area_position: tauri::PhysicalPosition::new(0, 0),
+                work_area_size: tauri::PhysicalSize::new(1920, 1080),
+                gap: NOTIFICATION_WINDOW_GAP,
+                scale: 2.0,
+            }),
             NotificationWindowLayout {
                 position: tauri::PhysicalPosition::new(0, 11),
                 placement: NotificationWindowPlacement::Above,
@@ -2094,16 +2098,16 @@ mod tests {
     #[test]
     fn notification_window_falls_below_and_stays_in_the_work_area() {
         assert_eq!(
-            notification_window_layout(
-                tauri::PhysicalPosition::new(-1200, 10),
-                tauri::PhysicalSize::new(320, 360),
-                tauri::PhysicalSize::new(400, 158),
-                208,
-                tauri::PhysicalPosition::new(-1280, 0),
-                tauri::PhysicalSize::new(1280, 900),
-                NOTIFICATION_WINDOW_GAP,
-                1.0,
-            ),
+            notification_window_layout(NotificationWindowLayoutInput {
+                pet_position: tauri::PhysicalPosition::new(-1200, 10),
+                pet_size: tauri::PhysicalSize::new(320, 360),
+                notification_size: tauri::PhysicalSize::new(400, 158),
+                pet_content_height: 208,
+                work_area_position: tauri::PhysicalPosition::new(-1280, 0),
+                work_area_size: tauri::PhysicalSize::new(1280, 900),
+                gap: NOTIFICATION_WINDOW_GAP,
+                scale: 1.0,
+            }),
             NotificationWindowLayout {
                 position: tauri::PhysicalPosition::new(-1240, 282),
                 placement: NotificationWindowPlacement::Below,
