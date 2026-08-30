@@ -46,7 +46,8 @@ impl PetId {
 pub enum PetLifecycleState {
     #[default]
     Idle,
-    Running,
+    #[serde(alias = "running")]
+    ActivityReminder,
     Review,
     Failed,
     Waiting,
@@ -56,7 +57,7 @@ impl PetLifecycleState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
-            Self::Running => "running",
+            Self::ActivityReminder => "activity-reminder",
             Self::Review => "review",
             Self::Failed => "failed",
             Self::Waiting => "waiting",

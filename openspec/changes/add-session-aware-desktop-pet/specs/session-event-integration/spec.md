@@ -60,7 +60,7 @@ The system SHALL deduplicate repeated deliveries and SHALL prevent a stale nonte
 - **THEN** the terminal state is retained
 
 ### Requirement: Aggregate concurrent sessions deterministically
-The system SHALL track each session independently and SHALL select the ambient pet state by priority: attention required, newest unacknowledged failure, newest unread completion, any active turn, then idle. Notification cards SHALL remain associated with their original session and turn even when the ambient state changes.
+The system SHALL track each session independently and SHALL select the ambient pet state by priority: attention required, newest unacknowledged failure, newest unread completion, a recent ActivityReminder pulse, then idle. A persisted Active phase SHALL NOT by itself establish an ActivityReminder display after startup or recovery. Notification cards SHALL remain associated with their original session and turn even when the ambient state changes.
 
 #### Scenario: One session runs while another needs input
 - **WHEN** at least one session is active and another has an unresolved attention event
@@ -68,7 +68,15 @@ The system SHALL track each session independently and SHALL select the ambient p
 
 #### Scenario: Attention is resolved while another session is active
 - **WHEN** the attention event is resolved or its turn ends and another turn remains active
-- **THEN** the pet transitions to running behavior without losing queued terminal notifications
+- **THEN** the pet transitions to ActivityReminder behavior without losing queued terminal notifications
+
+#### Scenario: Restored active projection waits for a fresh activity event
+- **WHEN** the application restores a Session whose persisted current turn is Active but has not received a new activity event in the current process
+- **THEN** the Session projection remains available for terminal or replay handling, but the pet remains idle until a fresh SessionStarted, TurnStarted, or AttentionResolved event starts a bounded ActivityReminder pulse
+
+#### Scenario: Activity reminder expires without a terminal event
+- **WHEN** an applied active-turn event is not followed by another key event before the bounded display window expires
+- **THEN** the pet returns to idle without inferring or persisting a SessionEnded event
 
 ### Requirement: Install integration without silently replacing user configuration
 The integration workflow SHALL show the exact configuration changes before applying them, preserve unrelated settings and hooks, create a recoverable backup, and require explicit conflict resolution before replacing or chaining an existing `notify` command.

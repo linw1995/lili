@@ -696,7 +696,7 @@ impl AnimationController {
 fn lifecycle_animation(lifecycle: PetLifecycleState) -> AnimationState {
     match lifecycle {
         PetLifecycleState::Idle => AnimationState::Idle,
-        PetLifecycleState::Running => AnimationState::Running,
+        PetLifecycleState::ActivityReminder => AnimationState::Running,
         PetLifecycleState::Review => AnimationState::Review,
         PetLifecycleState::Failed => AnimationState::Failed,
         PetLifecycleState::Waiting => AnimationState::Waiting,
@@ -1563,7 +1563,11 @@ mod tests {
     fn lifecycle_rows_and_temporary_overlays_return_deterministically() {
         let cases = [
             (PetLifecycleState::Idle, AnimationState::Idle, 0),
-            (PetLifecycleState::Running, AnimationState::Running, 7),
+            (
+                PetLifecycleState::ActivityReminder,
+                AnimationState::Running,
+                7,
+            ),
             (PetLifecycleState::Review, AnimationState::Review, 8),
             (PetLifecycleState::Failed, AnimationState::Failed, 5),
             (PetLifecycleState::Waiting, AnimationState::Waiting, 6),
@@ -1575,7 +1579,7 @@ mod tests {
             assert_eq!(render.frame.row, row);
         }
 
-        let mut controller = AnimationController::new(PetLifecycleState::Running, 100);
+        let mut controller = AnimationController::new(PetLifecycleState::ActivityReminder, 100);
         controller.trigger_wave(200);
         assert_eq!(controller.render(200).animation, AnimationState::Waving);
         controller.set_lifecycle(PetLifecycleState::Review, 300);

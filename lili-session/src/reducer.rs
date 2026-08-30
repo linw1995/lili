@@ -16,6 +16,7 @@ const MAX_RECENT_EVENT_IDS: usize = 4096;
 const MAX_PERSISTED_SESSIONS: usize = 128;
 const MAX_PERSISTED_RETIRED_TURNS: usize = 16;
 pub const DEFAULT_MINIMUM_DWELL_MS: u64 = 750;
+pub const DEFAULT_ACTIVITY_REMINDER_DURATION_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReductionOutcome {
@@ -33,6 +34,8 @@ pub struct SessionReducer {
     recent_event_set: BTreeSet<(ProviderId, EventId)>,
     presentation: PresentationTracker,
     minimum_dwell_ms: u64,
+    // ActivityReminder is a bounded event-driven display pulse, not persisted liveness.
+    activity_reminder_until_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -154,6 +157,15 @@ impl SessionReducer {
     }
 
     pub fn reduce(&mut self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        let accepted_at_ms = event.occurred_at_ms;
+        self.reduce_at(event, accepted_at_ms)
+    }
+
+    pub fn reduce_at(
+        &mut self,
+        event: NormalizedSessionEvent,
+        accepted_at_ms: u64,
+    ) -> ReductionOutcome {
         let event_key = (event.provider.clone(), event.event_id.clone());
         if self.is_duplicate_in_current_lifecycle(&event, &event_key) {
             return ReductionOutcome::Duplicate;
@@ -168,6 +180,17 @@ impl SessionReducer {
         };
         if !transition.changed {
             return ReductionOutcome::IgnoredStale;
+        }
+
+        if matches!(
+            event.event_type,
+            SessionEventKind::SessionStarted
+                | SessionEventKind::TurnStarted
+                | SessionEventKind::AttentionResolved
+        ) {
+            self.activity_reminder_until_ms = self
+                .activity_reminder_until_ms
+                .max(accepted_at_ms.saturating_add(DEFAULT_ACTIVITY_REMINDER_DURATION_MS));
         }
 
         if transition.resolve_attention {
@@ -186,11 +209,17 @@ impl SessionReducer {
             }
             self.insert_notification(&event, kind);
         }
-        self.refresh_presentation(event.occurred_at_ms);
+        self.refresh_presentation(accepted_at_ms);
         self.revision = self.revision.saturating_add(1);
         ReductionOutcome::Applied {
             revision: self.revision,
         }
+    }
+
+    pub fn restart_activity_reminder(&mut self, started_at_ms: u64) {
+        self.activity_reminder_until_ms =
+            started_at_ms.saturating_add(DEFAULT_ACTIVITY_REMINDER_DURATION_MS);
+        self.refresh_presentation(started_at_ms);
     }
 
     pub fn acknowledge_notification(
@@ -205,7 +234,13 @@ impl SessionReducer {
             return ReductionOutcome::IgnoredStale;
         }
         notification.state = NotificationState::Acknowledged;
-        self.refresh_presentation(now_ms);
+        let desired = self.desired_presentation(now_ms);
+        if desired != self.presentation.state {
+            self.presentation = PresentationTracker {
+                state: desired,
+                since_ms: now_ms,
+            };
+        }
         self.revision = self.revision.saturating_add(1);
         ReductionOutcome::Applied {
             revision: self.revision,
@@ -345,8 +380,9 @@ impl SessionReducer {
             recent_event_set: BTreeSet::new(),
             presentation: PresentationTracker::default(),
             minimum_dwell_ms: DEFAULT_MINIMUM_DWELL_MS,
+            activity_reminder_until_ms: 0,
         };
-        reducer.presentation.state = reducer.desired_presentation();
+        reducer.presentation.state = reducer.desired_presentation(0);
         Ok(reducer)
     }
 
@@ -564,11 +600,17 @@ impl SessionReducer {
     }
 
     fn refresh_presentation(&mut self, now_ms: u64) -> bool {
-        let desired = self.desired_presentation();
+        let desired = self.desired_presentation(now_ms);
         if desired == self.presentation.state {
             return false;
         }
-        let can_interrupt = desired > self.presentation.state;
+        let expired_activity_reminder = self.presentation.state
+            == PresentationState::ActivityReminder
+            && desired == PresentationState::Idle
+            && self.activity_reminder_until_ms <= now_ms;
+        let can_interrupt = desired > self.presentation.state
+            || desired == PresentationState::ActivityReminder
+            || expired_activity_reminder;
         let dwell_elapsed =
             now_ms.saturating_sub(self.presentation.since_ms) >= self.minimum_dwell_ms;
         if !can_interrupt && !dwell_elapsed {
@@ -581,7 +623,7 @@ impl SessionReducer {
         true
     }
 
-    fn desired_presentation(&self) -> PresentationState {
+    fn desired_presentation(&self, now_ms: u64) -> PresentationState {
         if self.notifications.values().any(|notification| {
             notification.kind == NotificationKind::Attention
                 && notification.state != NotificationState::Resolved
@@ -600,12 +642,8 @@ impl SessionReducer {
         }) {
             return PresentationState::Review;
         }
-        if self
-            .sessions
-            .values()
-            .any(|session| session.summary().phase == SessionPhase::Active)
-        {
-            return PresentationState::Running;
+        if self.activity_reminder_until_ms > now_ms {
+            return PresentationState::ActivityReminder;
         }
         PresentationState::Idle
     }
@@ -621,6 +659,7 @@ impl Default for SessionReducer {
             recent_event_set: BTreeSet::new(),
             presentation: PresentationTracker::default(),
             minimum_dwell_ms: DEFAULT_MINIMUM_DWELL_MS,
+            activity_reminder_until_ms: 0,
         }
     }
 }
@@ -915,6 +954,117 @@ mod tests {
     }
 
     #[test]
+    fn default_reducer_starts_without_a_live_session() {
+        let snapshot = SessionReducer::default().snapshot();
+        assert_eq!(snapshot.revision, 0);
+        assert_eq!(snapshot.presentation, PresentationState::Idle);
+        assert!(snapshot.sessions.is_empty());
+    }
+
+    #[test]
+    fn session_start_keeps_turn_idle_and_starts_an_activity_reminder() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "session-start",
+            "session_started",
+            "session-1",
+            None,
+            1,
+        ));
+        let snapshot = reducer.snapshot();
+        assert_eq!(snapshot.presentation, PresentationState::ActivityReminder);
+        assert_eq!(snapshot.sessions[0].phase, SessionPhase::Idle);
+        assert_eq!(
+            reducer.advance_presentation(DEFAULT_ACTIVITY_REMINDER_DURATION_MS + 1),
+            ReductionOutcome::Applied { revision: 2 }
+        );
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Idle);
+    }
+
+    #[test]
+    fn activity_reminder_returns_to_idle_after_duration() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "turn-start",
+            "turn_started",
+            "session-1",
+            Some("turn-1"),
+            1,
+        ));
+        assert_eq!(
+            reducer.snapshot().presentation,
+            PresentationState::ActivityReminder
+        );
+
+        assert_eq!(
+            reducer.advance_presentation(DEFAULT_ACTIVITY_REMINDER_DURATION_MS),
+            ReductionOutcome::IgnoredStale
+        );
+        assert_eq!(
+            reducer.snapshot().presentation,
+            PresentationState::ActivityReminder
+        );
+        assert_eq!(
+            reducer.advance_presentation(DEFAULT_ACTIVITY_REMINDER_DURATION_MS + 1),
+            ReductionOutcome::Applied { revision: 2 }
+        );
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Idle);
+        assert_eq!(reducer.snapshot().sessions[0].phase, SessionPhase::Active);
+    }
+
+    #[test]
+    fn activity_reminder_uses_acceptance_time_for_delayed_events() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce_at(
+            event(
+                "first-activity",
+                "turn_started",
+                "session-1",
+                Some("turn-1"),
+                100,
+            ),
+            1_000,
+        );
+        reducer.reduce_at(
+            event(
+                "delayed-activity",
+                "turn_started",
+                "session-2",
+                Some("turn-2"),
+                50,
+            ),
+            5_000,
+        );
+
+        assert_eq!(
+            reducer.advance_presentation(6_000),
+            ReductionOutcome::IgnoredStale
+        );
+        assert_eq!(
+            reducer.advance_presentation(10_000),
+            ReductionOutcome::Applied { revision: 3 }
+        );
+        assert_eq!(reducer.snapshot().presentation, PresentationState::Idle);
+    }
+
+    #[test]
+    fn session_end_does_not_change_the_activity_reminder() {
+        let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
+        reducer.reduce(event(
+            "turn-start",
+            "turn_started",
+            "session-1",
+            Some("turn-1"),
+            1,
+        ));
+        reducer.reduce(event("session-end", "session_ended", "session-1", None, 2));
+
+        let snapshot = reducer.snapshot();
+        assert_eq!(snapshot.presentation, PresentationState::ActivityReminder);
+        assert_eq!(snapshot.sessions[0].phase, SessionPhase::Ended);
+    }
+
+    #[test]
     fn terminal_turn_cannot_return_to_active_but_new_turn_can() {
         let mut reducer = SessionReducer::default();
         reducer.reduce(event(
@@ -1008,6 +1158,28 @@ mod tests {
     }
 
     #[test]
+    fn acknowledging_a_restored_notification_bypasses_presentation_dwell() {
+        let mut reducer = SessionReducer::default();
+        reducer.reduce(event(
+            "event-1",
+            "turn_failed",
+            "session-1",
+            Some("turn-1"),
+            10,
+        ));
+        let id = reducer.snapshot().notifications[0].id.clone();
+        let mut restored = SessionReducer::from_persistent_state(reducer.persistent_state())
+            .expect("failed notification should restore");
+
+        assert_eq!(restored.snapshot().presentation, PresentationState::Failed);
+        assert_eq!(
+            restored.acknowledge_notification(&id, 1),
+            ReductionOutcome::Applied { revision: 2 }
+        );
+        assert_eq!(restored.snapshot().presentation, PresentationState::Idle);
+    }
+
+    #[test]
     fn session_end_resolves_attention_for_every_turn() {
         let mut reducer = SessionReducer::default();
         for (index, turn_id) in ["turn-1", "turn-2"].into_iter().enumerate() {
@@ -1084,7 +1256,10 @@ mod tests {
             Some("turn-1"),
             10,
         ));
-        assert_eq!(reducer.snapshot().presentation, PresentationState::Running);
+        assert_eq!(
+            reducer.snapshot().presentation,
+            PresentationState::ActivityReminder
+        );
         reducer.reduce(event(
             "completed",
             "turn_completed",
@@ -1414,8 +1589,22 @@ mod tests {
                 .any(|session| session.id.as_str() == "old-active-session")
         );
 
-        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
-        assert_eq!(restored.snapshot().presentation, PresentationState::Running);
+        let mut restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert_eq!(restored.snapshot().presentation, PresentationState::Idle);
+        assert!(matches!(
+            restored.reduce(event(
+                "active-refresh",
+                "turn_started",
+                "old-active-session",
+                Some("turn-1"),
+                10_000,
+            )),
+            ReductionOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            restored.snapshot().presentation,
+            PresentationState::ActivityReminder
+        );
     }
 
     #[test]

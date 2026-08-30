@@ -4,6 +4,7 @@ mod persistence;
 use std::{
     collections::{HashSet, VecDeque},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use lili_actions::{
@@ -19,7 +20,7 @@ use lili_core::{
 use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
 use lili_session::{
     NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
-    PresentationState, ReductionOutcome, SessionReducer, SessionViewSnapshot,
+    PresentationState, ReductionOutcome, SessionEventKind, SessionReducer, SessionViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -72,6 +73,7 @@ pub struct AppState {
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
+    clock_origin: Instant,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +168,7 @@ impl AppState {
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
             dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
+            clock_origin: Instant::now(),
         }
     }
 
@@ -223,9 +226,18 @@ impl AppState {
     }
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
-        let outcome = self.session_reducer.lock().await.reduce(event);
+        let starts_activity_reminder = starts_activity_reminder(event.event_type);
+        let (outcome, accepted_at_ms) = {
+            let mut reducer = self.session_reducer.lock().await;
+            let accepted_at_ms = self.monotonic_time_ms();
+            let outcome = reducer.reduce_at(event, accepted_at_ms);
+            (outcome, accepted_at_ms)
+        };
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
+            if starts_activity_reminder {
+                self.schedule_activity_reminder_expiry(accepted_at_ms);
+            }
         }
         outcome
     }
@@ -235,11 +247,14 @@ impl AppState {
         event: NormalizedSessionEvent,
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
+        let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
-        let outcome = reducer.reduce(event.clone());
+        let accepted_at_ms = self.monotonic_time_ms();
+        let outcome = reducer.reduce_at(event.clone(), accepted_at_ms);
+        let mut activity_reminder_started_at_ms = None;
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             let persistent =
                 PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
@@ -247,24 +262,39 @@ impl AppState {
                 *reducer = previous;
                 return Err(error);
             }
+            if starts_activity_reminder {
+                // Start the user-visible window after synchronous persistence completes.
+                let started_at_ms = self.monotonic_time_ms();
+                reducer.restart_activity_reminder(started_at_ms);
+                activity_reminder_started_at_ms = Some(started_at_ms);
+            }
         }
         drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
+            if let Some(started_at_ms) = activity_reminder_started_at_ms {
+                self.schedule_activity_reminder_expiry(started_at_ms);
+            }
         }
         Ok(outcome)
     }
 
-    pub async fn acknowledge_notification(
-        &self,
-        id: &NotificationId,
-        now_ms: u64,
-    ) -> ReductionOutcome {
+    pub async fn advance_presentation(&self, now_ms: u64) -> ReductionOutcome {
         let outcome = self
             .session_reducer
             .lock()
             .await
-            .acknowledge_notification(id, now_ms);
+            .advance_presentation(now_ms);
+        if matches!(outcome, ReductionOutcome::Applied { .. }) {
+            self.publish_presentation().await;
+        }
+        outcome
+    }
+
+    pub async fn acknowledge_notification(&self, id: &NotificationId) -> ReductionOutcome {
+        let mut reducer = self.session_reducer.lock().await;
+        let outcome = reducer.acknowledge_notification(id, self.monotonic_time_ms());
+        drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
         }
@@ -274,14 +304,13 @@ impl AppState {
     pub async fn acknowledge_notification_persisted(
         &self,
         id: &NotificationId,
-        now_ms: u64,
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
-        let outcome = reducer.acknowledge_notification(id, now_ms);
+        let outcome = reducer.acknowledge_notification(id, self.monotonic_time_ms());
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             let persistent =
                 PersistentApplicationState::new(selected_pet_id, None, reducer.persistent_state());
@@ -480,6 +509,27 @@ impl AppState {
         self.presentation_sender.send_replace(presentation);
     }
 
+    fn schedule_activity_reminder_expiry(&self, occurred_at_ms: u64) {
+        let state = self.clone();
+        let deadline_ms =
+            occurred_at_ms.saturating_add(lili_session::DEFAULT_ACTIVITY_REMINDER_DURATION_MS);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(
+                lili_session::DEFAULT_ACTIVITY_REMINDER_DURATION_MS,
+            ))
+            .await;
+            let _ = state.advance_presentation(deadline_ms).await;
+        });
+    }
+
+    fn monotonic_time_ms(&self) -> u64 {
+        self.clock_origin
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
     async fn interaction_pet_snapshot(&self, presentation: PresentationState) -> PetSnapshotV1 {
         let snapshot = self.snapshot.read().await;
         PetSnapshotV1 {
@@ -493,13 +543,22 @@ impl AppState {
                 .map_or_else(|| "Desktop pet".to_owned(), |pet| pet.display_name.clone()),
             lifecycle: match presentation {
                 PresentationState::Idle => PetLifecycleSnapshotV1::Idle,
-                PresentationState::Running => PetLifecycleSnapshotV1::Running,
+                PresentationState::ActivityReminder => PetLifecycleSnapshotV1::ActivityReminder,
                 PresentationState::Review => PetLifecycleSnapshotV1::Review,
                 PresentationState::Failed => PetLifecycleSnapshotV1::Failed,
                 PresentationState::Waiting => PetLifecycleSnapshotV1::Waiting,
             },
         }
     }
+}
+
+fn starts_activity_reminder(event_type: SessionEventKind) -> bool {
+    matches!(
+        event_type,
+        SessionEventKind::SessionStarted
+            | SessionEventKind::TurnStarted
+            | SessionEventKind::AttentionResolved
+    )
 }
 
 fn action_failure(
@@ -585,7 +644,7 @@ fn presentation_from_view(
         revision: snapshot.revision,
         lifecycle: match snapshot.session_state.presentation {
             PresentationState::Idle => PetLifecycleState::Idle,
-            PresentationState::Running => PetLifecycleState::Running,
+            PresentationState::ActivityReminder => PetLifecycleState::ActivityReminder,
             PresentationState::Review => PetLifecycleState::Review,
             PresentationState::Failed => PetLifecycleState::Failed,
             PresentationState::Waiting => PetLifecycleState::Waiting,
@@ -802,7 +861,7 @@ mod tests {
             .clone();
         assert!(matches!(
             state
-                .acknowledge_notification_persisted(&notification_id, 11, &store)
+                .acknowledge_notification_persisted(&notification_id, &store)
                 .await
                 .unwrap(),
             ReductionOutcome::Applied { revision: 2 }
@@ -1207,6 +1266,93 @@ debounce_ms = 1000
             ReductionOutcome::Duplicate
         );
         assert!(!presentations.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn activity_reminder_expires_after_an_active_event() {
+        let state = AppState::default();
+        let mut presentations = state.subscribe_pet_presentation();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_started".to_owned()),
+            event_id: Some("event-activity-reminder".to_owned()),
+            session_id: Some("session-activity-reminder".to_owned()),
+            turn_id: Some("turn-activity-reminder".to_owned()),
+            occurred_at_ms: Some(0),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+
+        state.apply_session_event(event).await;
+        presentations.changed().await.unwrap();
+        assert_eq!(
+            presentations.borrow_and_update().lifecycle,
+            PetLifecycleState::ActivityReminder
+        );
+        tokio::time::timeout(Duration::from_secs(6), presentations.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            presentations.borrow_and_update().lifecycle,
+            PetLifecycleState::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_acknowledgement_reveals_the_activity_reminder() {
+        let state = AppState::default();
+        let completed = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-activity-notification".to_owned()),
+            session_id: Some("session-activity-notification".to_owned()),
+            turn_id: Some("turn-completed".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(completed).await;
+        let notification_id = state.snapshot().await.session_state.notifications[0]
+            .id
+            .clone();
+
+        let started = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_started".to_owned()),
+            event_id: Some("event-activity-started".to_owned()),
+            session_id: Some("session-activity-notification".to_owned()),
+            turn_id: Some("turn-active".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(started).await;
+        assert_eq!(
+            state.pet_presentation().await.lifecycle,
+            PetLifecycleState::Review
+        );
+
+        assert!(matches!(
+            state.acknowledge_notification(&notification_id).await,
+            ReductionOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            state.pet_presentation().await.lifecycle,
+            PetLifecycleState::ActivityReminder
+        );
     }
 
     #[tokio::test]

@@ -23,11 +23,11 @@ The system SHALL persist the pet position in logical display coordinates and SHA
 - **THEN** the pet is placed within the primary display work area with a visible margin
 
 ### Requirement: Map lifecycle state to pet animation
-The system SHALL map idle to row 0, attention required to waiting row 6, an active turn to running row 7, an unread successful completion to review row 8, and an unacknowledged failure to failed row 5. Temporary direct interactions SHALL use waving row 3 or jumping row 4 and then return to the highest-priority lifecycle state.
+The system SHALL map idle to row 0, attention required to waiting row 6, a recent activity reminder to the standard running row 7, an unread successful completion to review row 8, and an unacknowledged failure to failed row 5. Temporary direct interactions SHALL use waving row 3 or jumping row 4 and then return to the highest-priority lifecycle state.
 
 #### Scenario: Turn begins and completes
-- **WHEN** a session transitions from active to successfully completed
-- **THEN** the pet changes from running to review and displays one unread completion notification
+- **WHEN** a session emits an activity event and then successfully completes
+- **THEN** the pet changes from the activity reminder to review and displays one unread completion notification
 
 #### Scenario: Interaction occurs during waiting
 - **WHEN** the user triggers a temporary wave while a session still requires attention
