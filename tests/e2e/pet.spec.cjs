@@ -538,6 +538,54 @@ test("multiple notifications keep two cards visible while scrolling", async ({
     .toEqual(["accordion-newest", "accordion-latest"]);
 });
 
+test("notification reduced-motion changes settle queued transitions", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const notifications = [
+    notification("motion-oldest", "completion", "Alpha", "Oldest", now),
+    notification("motion-middle", "failure", "Beta", "Middle", now + 100),
+    notification("motion-newest", "attention", "Gamma", "Newest", now + 200),
+    notification("motion-latest", "completion", "Delta", "Latest", now + 300),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  const visibleCardIds = () =>
+    stack.evaluate((element) =>
+      [...element.querySelectorAll(".notification-card.notification-card-current")]
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
+        .map((card) => card.dataset.notificationId),
+    );
+
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["motion-newest", "motion-latest"]);
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["motion-middle", "motion-newest"]);
+  await page.waitForTimeout(120);
+  await page.mouse.wheel(0, -120);
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["motion-middle", "motion-newest"]);
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(page.locator("#lili-app")).toHaveAttribute(
+    "data-reduced-motion",
+    "true",
+  );
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["motion-oldest", "motion-middle"]);
+});
+
 test("notification carousel remains switchable after the list shrinks", async ({
   page,
 }) => {

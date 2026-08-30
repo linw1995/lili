@@ -21,13 +21,21 @@ pub(super) fn NotificationCarousel(
     let carousel = NotificationCarouselController::new(initial_ids, reduced_motion);
     #[cfg(feature = "hydrate")]
     {
-        let carousel = carousel.clone();
+        let reconcile_carousel = carousel.clone();
         Effect::new(move |_| {
             let ids = notifications_by_display_order(presentation.get().notifications)
                 .into_iter()
                 .map(|notification| notification.activation_id)
                 .collect();
-            carousel.reconcile(ids);
+            reconcile_carousel.reconcile(ids);
+        });
+        let motion_carousel = carousel.clone();
+        Effect::new(move |_| {
+            if reduced_motion.get() {
+                motion_carousel
+                    .state
+                    .update(NotificationCarouselState::jump_to_pending);
+            }
         });
     }
     let cards_carousel = carousel.clone();

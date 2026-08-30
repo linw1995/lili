@@ -74,7 +74,7 @@ pub fn App(
         let pointer = RwSignal::new(PointerTracker::default());
         let clicks = RwSignal::new(ClickDisambiguator::default());
         let gaze = RwSignal::new(None::<LookFrame>);
-        connect_presentation_stream(presentation, controller);
+        connect_presentation_stream(presentation, controller, reduced_motion);
         if surface == AppSurface::Pet {
             start_animation_clock(
                 controller,
@@ -89,7 +89,7 @@ pub fn App(
                 },
             );
         } else {
-            start_notification_clock(wall_clock);
+            start_notification_clock(wall_clock, presentation, reduced_motion);
         }
         let pet_view = view! {
             <section
@@ -829,6 +829,7 @@ impl PresentationCursor {
 fn connect_presentation_stream(
     presentation: RwSignal<PetPresentationState>,
     controller: RwSignal<AnimationController>,
+    reduced_motion: RwSignal<bool>,
 ) {
     use wasm_bindgen::{JsCast, closure::Closure};
     use web_sys::{EventSource, MessageEvent};
@@ -849,6 +850,7 @@ fn connect_presentation_stream(
                 controller.set_lifecycle(cursor.current.lifecycle, animation_clock_ms());
             });
             presentation.set(cursor.current);
+            refresh_reduced_motion(presentation, reduced_motion);
         }
     });
     for event_name in ["snapshot", "presentation"] {
@@ -918,15 +920,21 @@ fn start_animation_clock(
 }
 
 #[cfg(feature = "hydrate")]
-fn start_notification_clock(wall_clock: RwSignal<u64>) {
+fn start_notification_clock(
+    wall_clock: RwSignal<u64>,
+    presentation: RwSignal<PetPresentationState>,
+    reduced_motion: RwSignal<bool>,
+) {
     use wasm_bindgen::{JsCast, closure::Closure};
 
     let Some(window) = web_sys::window() else {
         return;
     };
     wall_clock.set(js_sys::Date::now().max(0.0) as u64);
+    refresh_reduced_motion(presentation, reduced_motion);
     let callback = Closure::<dyn FnMut()>::new(move || {
         wall_clock.set(js_sys::Date::now().max(0.0) as u64);
+        refresh_reduced_motion(presentation, reduced_motion);
     });
     let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
         callback.as_ref().unchecked_ref(),
@@ -934,7 +942,45 @@ fn start_notification_clock(wall_clock: RwSignal<u64>) {
     ) else {
         return;
     };
+    install_reduced_motion_listener(presentation, reduced_motion);
     install_ui_clock(window, interval_id, callback);
+}
+
+#[cfg(feature = "hydrate")]
+fn refresh_reduced_motion(
+    presentation: RwSignal<PetPresentationState>,
+    reduced_motion: RwSignal<bool>,
+) {
+    let next = presentation.get_untracked().reduced_motion || system_prefers_reduced_motion();
+    if reduced_motion.get_untracked() != next {
+        reduced_motion.set(next);
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn install_reduced_motion_listener(
+    presentation: RwSignal<PetPresentationState>,
+    reduced_motion: RwSignal<bool>,
+) {
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let Some(query) = REDUCED_MOTION_QUERY.with(Clone::clone) else {
+        return;
+    };
+    let previous = REDUCED_MOTION_LISTENER.with(|listener| listener.borrow_mut().take());
+    if let Some(previous) = previous {
+        previous.query.set_onchange(None);
+    }
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        refresh_reduced_motion(presentation, reduced_motion);
+    });
+    query.set_onchange(Some(callback.as_ref().unchecked_ref()));
+    REDUCED_MOTION_LISTENER.with(|listener| {
+        listener.borrow_mut().replace(ReducedMotionListener {
+            query,
+            _callback: callback,
+        });
+    });
 }
 
 #[cfg(feature = "hydrate")]
@@ -1129,6 +1175,12 @@ struct UiClock {
 }
 
 #[cfg(feature = "hydrate")]
+struct ReducedMotionListener {
+    query: web_sys::MediaQueryList,
+    _callback: wasm_bindgen::closure::Closure<dyn FnMut()>,
+}
+
+#[cfg(feature = "hydrate")]
 struct ContextMenuHandlers {
     _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
 }
@@ -1152,6 +1204,8 @@ thread_local! {
     static CONTEXT_MENU_HANDLERS: std::cell::RefCell<Option<ContextMenuHandlers>> =
         const { std::cell::RefCell::new(None) };
     static NOTIFICATION_CONTEXT_MENU_HANDLER: std::cell::RefCell<Option<NotificationContextMenuHandler>> =
+        const { std::cell::RefCell::new(None) };
+    static REDUCED_MOTION_LISTENER: std::cell::RefCell<Option<ReducedMotionListener>> =
         const { std::cell::RefCell::new(None) };
     static REDUCED_MOTION_QUERY: Option<web_sys::MediaQueryList> = web_sys::window()
         .and_then(|window| window.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
