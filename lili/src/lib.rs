@@ -49,8 +49,10 @@ use tokio::sync::oneshot;
 
 const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 const CONTEXT_MENU_WINDOW_LABEL: &str = "pet-context-menu";
-const CONTEXT_MENU_WIDTH: u32 = 196;
-const CONTEXT_MENU_HEIGHT: u32 = 112;
+const CONTEXT_MENU_WIDTH: u32 = 244;
+const CONTEXT_MENU_HEIGHT: u32 = 160;
+// Reserve transparent space around the WebView content so its CSS shadow remains visible.
+const CONTEXT_MENU_SHADOW_MARGIN: i32 = 24;
 const NOTIFICATION_WINDOW_LABEL: &str = "pet-notifications";
 const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
 const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
@@ -1406,7 +1408,9 @@ fn context_menu_position(
     let max_x = (work_area.position.x + work_area.size.width as i32 - size.width as i32).max(min_x);
     let max_y =
         (work_area.position.y + work_area.size.height as i32 - size.height as i32).max(min_y);
-    tauri::PhysicalPosition::new(pointer.x.clamp(min_x, max_x), pointer.y.clamp(min_y, max_y))
+    let window_x = pointer.x.saturating_sub(CONTEXT_MENU_SHADOW_MARGIN);
+    let window_y = pointer.y.saturating_sub(CONTEXT_MENU_SHADOW_MARGIN);
+    tauri::PhysicalPosition::new(window_x.clamp(min_x, max_x), window_y.clamp(min_y, max_y))
 }
 
 #[tauri::command]

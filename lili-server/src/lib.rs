@@ -40,16 +40,16 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
       border: 0;
       border-radius: 10px;
       box-sizing: border-box;
-      box-shadow: 0 10px 28px rgb(0 0 0 / 32%);
+      box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
       color: #fff;
       display: grid;
       gap: 3px;
-      height: 100%;
+      height: calc(100% - 48px);
       list-style: none;
-      margin: 0;
+      margin: 24px;
       min-width: 0;
       padding: 5px;
-      width: 100%;
+      width: calc(100% - 48px);
     }
     button {
       background: transparent;
@@ -789,7 +789,11 @@ mod tests {
         }
         assert_eq!(body.matches("data-action=").count(), 3);
         assert!(body.contains("height: 100%;"));
+        assert!(body.contains("height: calc(100% - 48px);"));
         assert!(body.contains("overflow: hidden;"));
+        assert!(body.contains("margin: 24px;"));
+        assert!(body.contains("width: calc(100% - 48px);"));
+        assert!(body.contains("box-shadow: 0 6px 18px"));
         assert_eq!(body.matches("role=\"menuitemcheckbox\"").count(), 2);
         assert_eq!(body.matches("aria-checked=\"false\"").count(), 2);
         assert!(body.contains("class=\"menu-mark\""));
