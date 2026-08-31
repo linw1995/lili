@@ -43,7 +43,7 @@ use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
     ipc::CapabilityBuilder,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::oneshot;
 
@@ -1734,12 +1734,21 @@ fn handle_tray_icon_event(
     visibility: &CheckMenuItem<tauri::Wry>,
 ) {
     if let TrayIconEvent::Click {
-        button: MouseButton::Left,
+        button,
+        button_state,
         ..
     } = event
+        && should_toggle_pet_from_tray_event(button, button_state)
     {
         toggle_pet_window(tray.app_handle(), visibility);
     }
+}
+
+fn should_toggle_pet_from_tray_event(button: MouseButton, button_state: MouseButtonState) -> bool {
+    matches!(
+        (button, button_state),
+        (MouseButton::Left, MouseButtonState::Up)
+    )
 }
 
 fn handle_tray_menu_event(
@@ -2052,6 +2061,22 @@ mod tests {
         );
         assert_eq!(TrayAction::parse("pet:bad\nvalue"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("unknown"), TrayAction::Unknown);
+    }
+
+    #[test]
+    fn tray_visibility_toggle_uses_only_left_button_release() {
+        assert!(should_toggle_pet_from_tray_event(
+            MouseButton::Left,
+            MouseButtonState::Up
+        ));
+        assert!(!should_toggle_pet_from_tray_event(
+            MouseButton::Left,
+            MouseButtonState::Down
+        ));
+        assert!(!should_toggle_pet_from_tray_event(
+            MouseButton::Right,
+            MouseButtonState::Up
+        ));
     }
 
     #[test]
