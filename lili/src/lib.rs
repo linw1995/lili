@@ -11,7 +11,9 @@ mod loopback;
 mod macos_panel;
 mod platform_pinning;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -53,6 +55,7 @@ const CONTEXT_MENU_WIDTH: u32 = 244;
 const CONTEXT_MENU_HEIGHT: u32 = 160;
 // Reserve transparent space around the WebView content so its CSS shadow remains visible.
 const CONTEXT_MENU_SHADOW_MARGIN: i32 = 24;
+#[cfg(any(test, target_os = "macos"))]
 const NATIVE_CONTEXT_MENU_DEDUP_WINDOW: Duration = Duration::from_millis(250);
 const NOTIFICATION_WINDOW_LABEL: &str = "pet-notifications";
 const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
@@ -175,12 +178,14 @@ struct ContextMenuNavigation {
     ready: Arc<AtomicBool>,
     pending_position: Arc<std::sync::Mutex<Option<ContextMenuRequest>>>,
     latest_native_event_time_us: Arc<AtomicU64>,
+    #[cfg(target_os = "macos")]
     last_native_event_at: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum ContextMenuPointer {
     WebView(tauri::PhysicalPosition<i32>),
+    #[cfg(target_os = "macos")]
     Native {
         position: tauri::PhysicalPosition<i32>,
         timestamp_us: u64,
@@ -300,6 +305,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         ready: Arc::new(AtomicBool::new(false)),
         pending_position: Arc::new(std::sync::Mutex::new(None)),
         latest_native_event_time_us: Arc::new(AtomicU64::new(0)),
+        #[cfg(target_os = "macos")]
         last_native_event_at: Arc::new(std::sync::Mutex::new(None)),
     };
     app.manage(context_menu_navigation.clone());
@@ -1379,6 +1385,7 @@ fn open_pet_context_menu_at(
     {
         return Ok(());
     }
+    #[cfg(target_os = "macos")]
     if native_event_time_us.is_some() {
         mark_native_context_menu_event(navigation);
     }
@@ -1394,12 +1401,14 @@ fn open_pet_context_menu_at(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn mark_native_context_menu_event(navigation: &ContextMenuNavigation) {
     if let Ok(mut last_event_at) = navigation.last_native_event_at.lock() {
         *last_event_at = Some(Instant::now());
     }
 }
 
+#[cfg(target_os = "macos")]
 fn native_context_menu_event_is_recent(navigation: &ContextMenuNavigation) -> bool {
     let elapsed = navigation
         .last_native_event_at
@@ -1409,6 +1418,7 @@ fn native_context_menu_event_is_recent(navigation: &ContextMenuNavigation) -> bo
     is_recent_native_context_menu_event(elapsed)
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn is_recent_native_context_menu_event(elapsed: Option<Duration>) -> bool {
     elapsed.is_some_and(|elapsed| elapsed <= NATIVE_CONTEXT_MENU_DEDUP_WINDOW)
 }
@@ -1449,6 +1459,7 @@ fn context_menu_pointer(
     pointer_source: ContextMenuPointer,
 ) -> Result<(tauri::PhysicalPosition<i32>, Option<u64>), String> {
     match pointer_source {
+        #[cfg(target_os = "macos")]
         ContextMenuPointer::Native {
             position,
             timestamp_us,

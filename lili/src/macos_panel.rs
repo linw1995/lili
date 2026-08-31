@@ -112,7 +112,7 @@ pub fn set_position_sync(
         return Err(tauri::Error::InvalidWindowHandle);
     }
     let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
-    let scale_factor = native_window.backingScaleFactor() as f64;
+    let scale_factor = native_window.backingScaleFactor();
     let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
     } else {
