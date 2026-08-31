@@ -11,12 +11,12 @@ mod loopback;
 mod macos_panel;
 mod platform_pinning;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
 
@@ -53,6 +53,7 @@ const CONTEXT_MENU_WIDTH: u32 = 244;
 const CONTEXT_MENU_HEIGHT: u32 = 160;
 // Reserve transparent space around the WebView content so its CSS shadow remains visible.
 const CONTEXT_MENU_SHADOW_MARGIN: i32 = 24;
+const NATIVE_CONTEXT_MENU_DEDUP_WINDOW: Duration = Duration::from_millis(250);
 const NOTIFICATION_WINDOW_LABEL: &str = "pet-notifications";
 const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
 const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
@@ -172,7 +173,24 @@ struct ContextMenuNavigation {
     url: tauri::Url,
     certificate_sha256: [u8; 32],
     ready: Arc<AtomicBool>,
-    pending_position: Arc<std::sync::Mutex<Option<tauri::PhysicalPosition<i32>>>>,
+    pending_position: Arc<std::sync::Mutex<Option<ContextMenuRequest>>>,
+    latest_native_event_time_us: Arc<AtomicU64>,
+    last_native_event_at: Arc<std::sync::Mutex<Option<Instant>>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ContextMenuPointer {
+    WebView(tauri::PhysicalPosition<i32>),
+    Native {
+        position: tauri::PhysicalPosition<i32>,
+        timestamp_us: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContextMenuRequest {
+    position: tauri::PhysicalPosition<i32>,
+    native_event_time_us: Option<u64>,
 }
 
 pub use lili_storage::{ApplicationPaths, PathError as ApplicationPathError};
@@ -281,6 +299,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         certificate_sha256,
         ready: Arc::new(AtomicBool::new(false)),
         pending_position: Arc::new(std::sync::Mutex::new(None)),
+        latest_native_event_time_us: Arc::new(AtomicU64::new(0)),
+        last_native_event_at: Arc::new(std::sync::Mutex::new(None)),
     };
     app.manage(context_menu_navigation.clone());
     let _context_menu_window = create_context_menu_window(app.handle(), &context_menu_navigation)
@@ -487,6 +507,7 @@ fn create_context_menu_window(
     let focus_state = Arc::clone(&has_been_focused);
     let ready = Arc::clone(&navigation.ready);
     let pending_position = Arc::clone(&navigation.pending_position);
+    let latest_native_event_time_us = Arc::clone(&navigation.latest_native_event_time_us);
     let menu_url = navigation.url.clone();
     let window = WebviewWindowBuilder::new(
         app,
@@ -520,8 +541,14 @@ fn create_context_menu_window(
             .lock()
             .ok()
             .and_then(|mut pending| pending.take());
-        if let Some(position) = pending {
-            let _ = position_context_menu(&state_app, &window, position);
+        if let Some(request) = pending {
+            let is_current = request.native_event_time_us.is_none_or(|timestamp_us| {
+                timestamp_us == 0
+                    || timestamp_us >= latest_native_event_time_us.load(Ordering::Acquire)
+            });
+            if is_current {
+                let _ = position_context_menu(&state_app, &window, request.position);
+            }
         }
     })
     .build()
@@ -559,8 +586,8 @@ fn configure_desktop_companion_window(
     window: &tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> tauri::Result<()> {
-    macos_panel::configure(window, move || {
-        open_pet_context_menu_from_native(&app);
+    macos_panel::configure(window, move |event| {
+        open_pet_context_menu_from_native(&app, event);
     })
 }
 
@@ -1275,23 +1302,66 @@ fn open_pet_context_menu(
     screen_x: i32,
     screen_y: i32,
 ) -> Result<(), String> {
+    // AppKit handles the same gesture on macOS; ignore the delayed WebView duplicate.
+    #[cfg(target_os = "macos")]
+    if native_context_menu_event_is_recent(navigation.inner()) {
+        return Ok(());
+    }
+
     open_pet_context_menu_at(
         &app,
         &source,
         &navigation,
-        Some(tauri::PhysicalPosition::new(screen_x, screen_y)),
+        ContextMenuPointer::WebView(tauri::PhysicalPosition::new(screen_x, screen_y)),
     )
 }
 
 #[cfg(target_os = "macos")]
-fn open_pet_context_menu_from_native(app: &tauri::AppHandle) {
+fn open_pet_context_menu_from_native(app: &tauri::AppHandle, event: macos_panel::ContextMenuEvent) {
     let Some(source) = app.get_webview_window("pet") else {
         diagnostics::warn("context_menu", "open", "pet_window_unavailable");
         return;
     };
     let navigation = app.state::<ContextMenuNavigation>();
-    if open_pet_context_menu_at(app, &source, &navigation, None).is_err() {
+    let scale_factor = source
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
+    let position = macos_panel::screen_point_to_tauri(event.screen_x, event.screen_y, scale_factor);
+    if open_pet_context_menu_at(
+        app,
+        &source,
+        &navigation,
+        ContextMenuPointer::Native {
+            position,
+            timestamp_us: event.timestamp_us,
+        },
+    )
+    .is_err()
+    {
         diagnostics::warn("context_menu", "open", "failed");
+    }
+}
+
+fn accept_native_context_menu_event(latest_event_time_us: &AtomicU64, timestamp_us: u64) -> bool {
+    if timestamp_us == 0 {
+        return true;
+    }
+    let mut latest = latest_event_time_us.load(Ordering::Acquire);
+    loop {
+        if timestamp_us <= latest {
+            return false;
+        }
+        match latest_event_time_us.compare_exchange_weak(
+            latest,
+            timestamp_us,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => latest = actual,
+        }
     }
 }
 
@@ -1299,22 +1369,53 @@ fn open_pet_context_menu_at(
     app: &tauri::AppHandle,
     source: &tauri::WebviewWindow,
     navigation: &ContextMenuNavigation,
-    fallback: Option<tauri::PhysicalPosition<i32>>,
+    pointer_source: ContextMenuPointer,
 ) -> Result<(), String> {
     let _ = source.eval("document.activeElement?.blur()");
     let window = context_menu_window(app, navigation)?;
-    let pointer = context_menu_pointer(source, fallback)?;
+    let (pointer, native_event_time_us) = context_menu_pointer(source, pointer_source)?;
+    if let Some(timestamp_us) = native_event_time_us
+        && !accept_native_context_menu_event(&navigation.latest_native_event_time_us, timestamp_us)
+    {
+        return Ok(());
+    }
+    if native_event_time_us.is_some() {
+        mark_native_context_menu_event(navigation);
+    }
     let position = context_menu_position(source, &window, pointer);
-    if queue_context_menu_until_ready(navigation, position)? {
+    let request = ContextMenuRequest {
+        position,
+        native_event_time_us,
+    };
+    if queue_context_menu_until_ready(navigation, request)? {
         Ok(())
     } else {
         position_context_menu(app, &window, position)
     }
 }
 
+fn mark_native_context_menu_event(navigation: &ContextMenuNavigation) {
+    if let Ok(mut last_event_at) = navigation.last_native_event_at.lock() {
+        *last_event_at = Some(Instant::now());
+    }
+}
+
+fn native_context_menu_event_is_recent(navigation: &ContextMenuNavigation) -> bool {
+    let elapsed = navigation
+        .last_native_event_at
+        .lock()
+        .ok()
+        .and_then(|last_event_at| last_event_at.as_ref().map(Instant::elapsed));
+    is_recent_native_context_menu_event(elapsed)
+}
+
+fn is_recent_native_context_menu_event(elapsed: Option<Duration>) -> bool {
+    elapsed.is_some_and(|elapsed| elapsed <= NATIVE_CONTEXT_MENU_DEDUP_WINDOW)
+}
+
 fn queue_context_menu_until_ready(
     navigation: &ContextMenuNavigation,
-    position: tauri::PhysicalPosition<i32>,
+    request: ContextMenuRequest,
 ) -> Result<bool, String> {
     if navigation.ready.load(Ordering::Acquire) {
         return Ok(false);
@@ -1325,7 +1426,12 @@ fn queue_context_menu_until_ready(
         .map_err(|_| "pet context menu pending position is unavailable")?;
     let should_queue = !navigation.ready.load(Ordering::Acquire);
     if should_queue {
-        *pending = Some(position);
+        let should_replace = pending
+            .as_ref()
+            .is_none_or(|current| current.native_event_time_us <= request.native_event_time_us);
+        if should_replace {
+            *pending = Some(request);
+        }
     }
     Ok(should_queue)
 }
@@ -1340,15 +1446,26 @@ fn context_menu_window(
 
 fn context_menu_pointer(
     source: &tauri::WebviewWindow,
-    fallback: Option<tauri::PhysicalPosition<i32>>,
-) -> Result<tauri::PhysicalPosition<i32>, String> {
-    source
-        .cursor_position()
-        .ok()
-        .filter(|point| point.x.is_finite() && point.y.is_finite())
-        .map(|point| tauri::PhysicalPosition::new(point.x.round() as i32, point.y.round() as i32))
-        .or(fallback)
-        .ok_or_else(|| "current cursor position is unavailable".to_owned())
+    pointer_source: ContextMenuPointer,
+) -> Result<(tauri::PhysicalPosition<i32>, Option<u64>), String> {
+    match pointer_source {
+        ContextMenuPointer::Native {
+            position,
+            timestamp_us,
+        } => Ok((position, Some(timestamp_us))),
+        ContextMenuPointer::WebView(fallback) => source
+            .cursor_position()
+            .ok()
+            .filter(|point| point.x.is_finite() && point.y.is_finite())
+            .map(|point| {
+                (
+                    tauri::PhysicalPosition::new(point.x.round() as i32, point.y.round() as i32),
+                    None,
+                )
+            })
+            .or(Some((fallback, None)))
+            .ok_or_else(|| "current cursor position is unavailable".to_owned()),
+    }
 }
 
 fn position_context_menu(
@@ -1356,16 +1473,33 @@ fn position_context_menu(
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
 ) -> Result<(), String> {
-    sync_context_menu_state(app, window);
+    let app = app.clone();
+    let target = window.clone();
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     window
-        .set_position(position)
-        .map_err(|error| format!("failed to position pet context menu: {error}"))?;
-    window
-        .show()
-        .map_err(|error| format!("failed to show pet context menu: {error}"))?;
-    let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
-    let _ = window.set_focus();
-    Ok(())
+        .run_on_main_thread(move || {
+            let result = (|| {
+                sync_context_menu_state(&app, &target);
+                #[cfg(target_os = "macos")]
+                macos_panel::set_position_sync(&target, position)
+                    .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+                #[cfg(not(target_os = "macos"))]
+                target
+                    .set_position(position)
+                    .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+                target
+                    .show()
+                    .map_err(|error| format!("failed to show pet context menu: {error}"))?;
+                let _ = target.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
+                let _ = target.set_focus();
+                Ok(())
+            })();
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| format!("failed to schedule pet context menu: {error}"))?;
+    result_rx
+        .recv()
+        .map_err(|_| "pet context menu main-thread task did not complete".to_owned())?
 }
 
 fn sync_context_menu_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
@@ -2113,6 +2247,35 @@ mod tests {
         assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("stopImmediatePropagation"));
         assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("__LILI_CONTEXT_MENU_SET_STATE__"));
         assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("aria-checked"));
+    }
+
+    #[test]
+    fn stale_native_context_menu_events_are_ignored() {
+        let latest_event_time_us = AtomicU64::new(0);
+        assert!(accept_native_context_menu_event(
+            &latest_event_time_us,
+            1_000
+        ));
+        assert!(!accept_native_context_menu_event(
+            &latest_event_time_us,
+            999
+        ));
+        assert!(accept_native_context_menu_event(
+            &latest_event_time_us,
+            1_001
+        ));
+        assert_eq!(latest_event_time_us.load(Ordering::Acquire), 1_001);
+    }
+
+    #[test]
+    fn recent_native_context_menu_events_deduplicate_webview_delivery() {
+        assert!(!is_recent_native_context_menu_event(None));
+        assert!(is_recent_native_context_menu_event(Some(
+            Duration::from_millis(250)
+        )));
+        assert!(!is_recent_native_context_menu_event(Some(
+            Duration::from_millis(251)
+        )));
     }
 
     #[test]

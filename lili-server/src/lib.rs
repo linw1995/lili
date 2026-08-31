@@ -33,7 +33,19 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
     :root { color-scheme: light dark; font-family: ui-rounded, system-ui, sans-serif; }
-    html, body { width: 100%; height: 100%; margin: 0; background: transparent; overflow: hidden; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: transparent;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    menu, menu * {
+      -webkit-user-select: none;
+      user-select: none;
+    }
     menu {
       backdrop-filter: blur(14px);
       background: rgb(24 28 36 / 96%);
@@ -791,6 +803,8 @@ mod tests {
         assert!(body.contains("height: 100%;"));
         assert!(body.contains("height: calc(100% - 48px);"));
         assert!(body.contains("overflow: hidden;"));
+        assert!(body.contains("-webkit-user-select: none;"));
+        assert!(body.contains("user-select: none;"));
         assert!(body.contains("margin: 24px;"));
         assert!(body.contains("width: calc(100% - 48px);"));
         assert!(body.contains("box-shadow: 0 6px 18px"));
