@@ -1380,14 +1380,8 @@ fn open_pet_context_menu_at(
     let _ = source.eval("document.activeElement?.blur()");
     let window = context_menu_window(app, navigation)?;
     let (pointer, native_event_time_us) = context_menu_pointer(source, pointer_source)?;
-    if let Some(timestamp_us) = native_event_time_us
-        && !accept_native_context_menu_event(&navigation.latest_native_event_time_us, timestamp_us)
-    {
+    if !accept_context_menu_request(navigation, native_event_time_us) {
         return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    if native_event_time_us.is_some() {
-        mark_native_context_menu_event(navigation);
     }
     let position = context_menu_position(source, &window, pointer);
     let request = ContextMenuRequest {
@@ -1399,6 +1393,21 @@ fn open_pet_context_menu_at(
     } else {
         position_context_menu(app, &window, position)
     }
+}
+
+fn accept_context_menu_request(
+    navigation: &ContextMenuNavigation,
+    native_event_time_us: Option<u64>,
+) -> bool {
+    let Some(timestamp_us) = native_event_time_us else {
+        return true;
+    };
+    if !accept_native_context_menu_event(&navigation.latest_native_event_time_us, timestamp_us) {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    mark_native_context_menu_event(navigation);
+    true
 }
 
 #[cfg(target_os = "macos")]
