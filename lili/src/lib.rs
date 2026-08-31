@@ -644,7 +644,7 @@ fn sync_notification_window(app: &tauri::AppHandle, unread: usize) {
         return;
     };
     if unread > 0 && pet.is_visible().unwrap_or(false) {
-        let _ = notification.show();
+        let _ = show_notification_window_without_focus(&notification);
     } else {
         let _ = notification.hide();
     }
@@ -707,7 +707,18 @@ fn position_notification_window(app: &tauri::AppHandle) {
     app.state::<NotificationWindowState>().set(layout.placement);
     apply_notification_window_placement(&notification, layout.placement);
     if notification.is_visible().unwrap_or(false) {
-        let _ = notification.show();
+        let _ = show_notification_window_without_focus(&notification);
+    }
+}
+
+fn show_notification_window_without_focus(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_panel::show_without_activation(window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.show()
     }
 }
 
