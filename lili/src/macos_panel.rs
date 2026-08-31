@@ -76,6 +76,24 @@ pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     register_context_menu_suppression(window_number)
 }
 
+pub fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let main_thread_window = window.clone();
+    window.run_on_main_thread(move || {
+        let Ok(raw_window) = main_thread_window.ns_window() else {
+            return;
+        };
+        if raw_window.is_null() {
+            return;
+        }
+        let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+        let sender = std::ptr::null::<AnyObject>();
+        unsafe {
+            // Tauri's macOS show path calls makeKeyAndOrderFront, which steals keyboard input.
+            let _: () = msg_send![native_window, orderFront: sender];
+        }
+    })
+}
+
 fn configure_panel(window: &tauri::WebviewWindow) -> tauri::Result<isize> {
     let raw_window = window.ns_window()?;
     if raw_window.is_null() {
