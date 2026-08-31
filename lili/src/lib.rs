@@ -1388,11 +1388,7 @@ fn open_pet_context_menu_at(
         position,
         native_event_time_us,
     };
-    if queue_context_menu_until_ready(navigation, request)? {
-        Ok(())
-    } else {
-        position_context_menu(app, &window, position)
-    }
+    show_context_menu_request(app, &window, navigation, request)
 }
 
 fn accept_context_menu_request(
@@ -1453,6 +1449,19 @@ fn queue_context_menu_until_ready(
         }
     }
     Ok(should_queue)
+}
+
+fn show_context_menu_request(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    navigation: &ContextMenuNavigation,
+    request: ContextMenuRequest,
+) -> Result<(), String> {
+    if queue_context_menu_until_ready(navigation, request)? {
+        Ok(())
+    } else {
+        position_context_menu(app, window, request.position)
+    }
 }
 
 fn context_menu_window(
