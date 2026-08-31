@@ -57,19 +57,30 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
       border-radius: 6px;
       color: inherit;
       cursor: pointer;
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      align-items: center;
+      column-gap: 4px;
       font: 500 12px/1.35 system-ui, sans-serif;
       padding: 7px 9px;
       text-align: start;
       width: 100%;
     }
+    .menu-mark { width: 16px; text-align: center; }
     button:hover, button:focus-visible { background: rgb(120 215 255 / 20%); outline: none; }
   </style>
 </head>
 <body>
   <menu aria-label="Pet menu" role="menu">
-    <button type="button" role="menuitem" data-action="toggle-visibility">Show / Hide</button>
-    <button type="button" role="menuitem" data-action="always-on-top">Always on Top</button>
-    <button type="button" role="menuitem" data-action="quit">Quit</button>
+    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="show">
+      <span class="menu-mark" aria-hidden="true"></span><span>Show</span>
+    </button>
+    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="always-on-top">
+      <span class="menu-mark" aria-hidden="true"></span><span>Always on Top</span>
+    </button>
+    <button type="button" role="menuitem" data-action="quit">
+      <span class="menu-mark" aria-hidden="true"></span><span>Quit</span>
+    </button>
   </menu>
 </body>
 </html>"#;
@@ -770,15 +781,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        for action in ["toggle-visibility", "always-on-top", "quit"] {
+        for action in ["show", "always-on-top", "quit"] {
             assert!(body.contains(&format!("data-action=\"{action}\"")));
         }
-        for action in ["show", "hide", "settings", "diagnostics"] {
+        for action in ["toggle-visibility", "hide", "settings", "diagnostics"] {
             assert!(!body.contains(&format!("data-action=\"{action}\"")));
         }
         assert_eq!(body.matches("data-action=").count(), 3);
         assert!(body.contains("height: 100%;"));
         assert!(body.contains("overflow: hidden;"));
+        assert_eq!(body.matches("role=\"menuitemcheckbox\"").count(), 2);
+        assert_eq!(body.matches("aria-checked=\"false\"").count(), 2);
+        assert!(body.contains("class=\"menu-mark\""));
         assert!(!body.contains("border: 1px solid"));
         assert!(!body.contains("invoke("));
     }

@@ -132,6 +132,20 @@ const CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
     event.stopImmediatePropagation();
   }, true);
 
+  const setState = (state) => {
+    const checkedByAction = {
+      'show': Boolean(state?.visible),
+      'always-on-top': Boolean(state?.alwaysOnTop),
+    };
+    for (const button of document.querySelectorAll('[aria-checked]')) {
+      const checked = checkedByAction[button.dataset.action] === true;
+      button.setAttribute('aria-checked', String(checked));
+      const mark = button.querySelector('.menu-mark');
+      if (mark) mark.textContent = checked ? '\u2713' : '';
+    }
+  };
+  window.__LILI_CONTEXT_MENU_SET_STATE__ = setState;
+
   const invoke = (action) => {
     const nativeInvoke = window.__TAURI_INTERNALS__?.invoke;
     if (!nativeInvoke) return;
@@ -466,6 +480,7 @@ fn create_context_menu_window(
 ) -> Result<tauri::WebviewWindow, String> {
     navigation.ready.store(false, Ordering::Release);
     let app_handle = app.clone();
+    let state_app = app.clone();
     let has_been_focused = Arc::new(AtomicBool::new(false));
     let focus_state = Arc::clone(&has_been_focused);
     let ready = Arc::clone(&navigation.ready);
@@ -504,7 +519,7 @@ fn create_context_menu_window(
             .ok()
             .and_then(|mut pending| pending.take());
         if let Some(position) = pending {
-            let _ = position_context_menu(&window, position);
+            let _ = position_context_menu(&state_app, &window, position);
         }
     })
     .build()
@@ -1291,7 +1306,7 @@ fn open_pet_context_menu_at(
     if queue_context_menu_until_ready(navigation, position)? {
         Ok(())
     } else {
-        position_context_menu(&window, position)
+        position_context_menu(app, &window, position)
     }
 }
 
@@ -1335,9 +1350,11 @@ fn context_menu_pointer(
 }
 
 fn position_context_menu(
+    app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
 ) -> Result<(), String> {
+    sync_context_menu_state(app, window);
     window
         .set_position(position)
         .map_err(|error| format!("failed to position pet context menu: {error}"))?;
@@ -1347,6 +1364,22 @@ fn position_context_menu(
     let _ = window.eval(CONTEXT_MENU_INITIALIZATION_SCRIPT);
     let _ = window.set_focus();
     Ok(())
+}
+
+fn sync_context_menu_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let visible = app
+        .get_webview_window("pet")
+        .and_then(|pet| pet.is_visible().ok())
+        .unwrap_or(false);
+    let always_on_top = app
+        .state::<PetContextActions>()
+        .always_on_top
+        .is_checked()
+        .unwrap_or(true);
+    let script = format!(
+        "window.__LILI_CONTEXT_MENU_SET_STATE__?.({{visible: {visible}, alwaysOnTop: {always_on_top}}});"
+    );
+    let _ = window.eval(&script);
 }
 
 fn context_menu_position(
@@ -1432,7 +1465,7 @@ fn run_pet_context_action(
 ) -> Result<(), String> {
     hide_pet_context_menu(&app);
     match TrayAction::parse(&action) {
-        TrayAction::ToggleVisibility => toggle_pet_window(&app, &actions.visibility),
+        TrayAction::Show => show_pet_window(&app, &actions.visibility),
         TrayAction::AlwaysOnTop => {
             let enabled = !actions.always_on_top.is_checked().unwrap_or(true);
             set_always_on_top(&app, &actions.state, &actions.always_on_top, enabled);
@@ -1667,14 +1700,7 @@ struct TrayWindowItems {
 }
 
 fn build_tray_window_items(app: &tauri::App, state: &AppState) -> tauri::Result<TrayWindowItems> {
-    let visibility = CheckMenuItem::with_id(
-        app,
-        "toggle-visibility",
-        "Show / Hide",
-        true,
-        true,
-        None::<&str>,
-    )?;
+    let visibility = CheckMenuItem::with_id(app, "show", "Show", true, true, None::<&str>)?;
     let always_on_top = CheckMenuItem::with_id(
         app,
         "always-on-top",
@@ -1761,7 +1787,7 @@ fn handle_tray_menu_event(
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
     match action {
-        TrayAction::ToggleVisibility | TrayAction::AlwaysOnTop => {
+        TrayAction::Show | TrayAction::AlwaysOnTop => {
             handle_window_tray_action(app, action, state, visibility, always_on_top);
         }
         TrayAction::SelectPet(pet_id) => {
@@ -1781,7 +1807,7 @@ fn handle_window_tray_action(
     always_on_top: &CheckMenuItem<tauri::Wry>,
 ) {
     match action {
-        TrayAction::ToggleVisibility => toggle_pet_window(app, visibility),
+        TrayAction::Show => show_pet_window(app, visibility),
         TrayAction::AlwaysOnTop => update_always_on_top(app, state, always_on_top),
         _ => {}
     }
@@ -1880,7 +1906,7 @@ fn handle_application_tray_action(app: &tauri::AppHandle, action: TrayAction) {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TrayAction {
-    ToggleVisibility,
+    Show,
     AlwaysOnTop,
     SelectPet(PetId),
     Quit,
@@ -1890,7 +1916,7 @@ enum TrayAction {
 impl TrayAction {
     fn parse(id: &str) -> Self {
         match id {
-            "toggle-visibility" => Self::ToggleVisibility,
+            "show" => Self::Show,
             "always-on-top" => Self::AlwaysOnTop,
             "quit" => Self::Quit,
             _ => id
@@ -2046,12 +2072,9 @@ mod tests {
 
     #[test]
     fn tray_actions_reject_untrusted_pet_identifiers() {
-        assert_eq!(
-            TrayAction::parse("toggle-visibility"),
-            TrayAction::ToggleVisibility
-        );
+        assert_eq!(TrayAction::parse("show"), TrayAction::Show);
         assert_eq!(TrayAction::parse("always-on-top"), TrayAction::AlwaysOnTop);
-        assert_eq!(TrayAction::parse("show"), TrayAction::Unknown);
+        assert_eq!(TrayAction::parse("toggle-visibility"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("hide"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("settings"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("diagnostics"), TrayAction::Unknown);
@@ -2084,6 +2107,8 @@ mod tests {
         assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("contextmenu"));
         assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("preventDefault"));
         assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("stopImmediatePropagation"));
+        assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("__LILI_CONTEXT_MENU_SET_STATE__"));
+        assert!(CONTEXT_MENU_INITIALIZATION_SCRIPT.contains("aria-checked"));
     }
 
     #[test]
