@@ -708,21 +708,25 @@ fn sync_notification_window_from_state(app: &tauri::AppHandle) {
 }
 
 fn position_notification_window(app: &tauri::AppHandle) {
-    position_notification_window_with_height(app, None);
+    let _ = position_notification_window_with_height(app, None, false);
 }
 
-fn position_notification_window_with_height(app: &tauri::AppHandle, requested_height: Option<u32>) {
+fn position_notification_window_with_height(
+    app: &tauri::AppHandle,
+    requested_height: Option<u32>,
+    animate: bool,
+) -> bool {
     let Some(pet) = app.get_webview_window("pet") else {
-        return;
+        return false;
     };
     let Some(notification) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) else {
-        return;
+        return false;
     };
     let Ok(pet_position) = pet.outer_position() else {
-        return;
+        return false;
     };
     let Ok(pet_size) = pet.outer_size() else {
-        return;
+        return false;
     };
     let scale = pet
         .scale_factor()
@@ -754,7 +758,7 @@ fn position_notification_window_with_height(app: &tauri::AppHandle, requested_he
             .flatten()
     });
     let Some(monitor) = monitor else {
-        return;
+        return false;
     };
     let work_area = monitor.work_area();
     let layout = notification_window_layout(NotificationWindowLayoutInput {
@@ -767,12 +771,21 @@ fn position_notification_window_with_height(app: &tauri::AppHandle, requested_he
         gap,
         scale,
     });
-    let _ = notification.set_position(layout.position);
+    #[cfg(target_os = "macos")]
+    let positioned_natively =
+        macos_panel::set_frame_sync(&notification, layout.position, notification_size, animate)
+            .is_ok();
+    #[cfg(not(target_os = "macos"))]
+    let positioned_natively = false;
+    if !positioned_natively {
+        let _ = notification.set_position(layout.position);
+    }
     app.state::<NotificationWindowState>().set(layout.placement);
     apply_notification_window_placement(&notification, layout.placement);
     if notification.is_visible().unwrap_or(false) {
         let _ = show_notification_window_without_focus(&notification);
     }
+    positioned_natively
 }
 
 fn logical_dimension_to_physical(value: u32, scale: f64) -> u32 {
@@ -1633,19 +1646,26 @@ fn resize_notification_window(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     height: u32,
+    animate: bool,
 ) -> Result<bool, String> {
     if window.label() != NOTIFICATION_WINDOW_LABEL
         || !(NOTIFICATION_WINDOW_MIN_HEIGHT..=NOTIFICATION_WINDOW_HEIGHT).contains(&height)
     {
         return Ok(false);
     }
-    window
-        .set_size(tauri::LogicalSize::new(
-            f64::from(NOTIFICATION_WINDOW_WIDTH),
-            f64::from(height),
-        ))
-        .map_err(|error| error.to_string())?;
-    position_notification_window_with_height(&app, Some(height));
+    #[cfg(target_os = "macos")]
+    let positioned_natively = position_notification_window_with_height(&app, Some(height), animate);
+    #[cfg(not(target_os = "macos"))]
+    let positioned_natively = false;
+    if !positioned_natively {
+        window
+            .set_size(tauri::LogicalSize::new(
+                f64::from(NOTIFICATION_WINDOW_WIDTH),
+                f64::from(height),
+            ))
+            .map_err(|error| error.to_string())?;
+        let _ = position_notification_window_with_height(&app, Some(height), false);
+    }
     Ok(true)
 }
 

@@ -1107,6 +1107,12 @@ test("three notifications request a compact native window after two dismissals",
       ),
     )
     .toBe(90);
+  const resizeCall = await page.evaluate(() =>
+    window.__LILI_INVOKES__
+      .filter((call) => call.name === "resize_notification_window")
+      .at(-1).args,
+  );
+  expect(resizeCall).toEqual({ height: 90, animate: true });
   const geometry = await stack.locator(".notification-card-current").evaluate((card) => {
     const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
     const cardBounds = card.getBoundingClientRect();

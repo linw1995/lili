@@ -443,7 +443,10 @@ impl NotificationCarouselController {
     fn new(ordered_ids: Vec<String>, reduced_motion: RwSignal<bool>) -> Self {
         let state = RwSignal::new(NotificationCarouselState::new(ordered_ids));
         #[cfg(feature = "hydrate")]
-        resize_notification_window(state.get_untracked().stack_height().saturating_add(8));
+        resize_notification_window(
+            state.get_untracked().stack_height().saturating_add(8),
+            false,
+        );
         #[cfg(not(feature = "hydrate"))]
         let _ = reduced_motion;
         Self {
@@ -475,7 +478,10 @@ impl NotificationCarouselController {
         self.state
             .update(|state| changed = state.reconcile(ordered_ids));
         if changed {
-            resize_notification_window(self.state.get_untracked().stack_height().saturating_add(8));
+            resize_notification_window(
+                self.state.get_untracked().stack_height().saturating_add(8),
+                !self.reduced_motion.get_untracked(),
+            );
         }
     }
 

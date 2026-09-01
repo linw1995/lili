@@ -17,10 +17,12 @@ use objc2::{
 use objc2_app_kit::{
     NSEvent, NSEventMask, NSEventType, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::NSPoint;
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 const CURRENT_PROCESS: u32 = 2;
 const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
+// Keep native frame motion in sync with the notification card transition.
+const PANEL_FRAME_ANIMATION_DURATION: f64 = 0.46;
 
 #[repr(C)]
 struct ProcessSerialNumber {
@@ -126,6 +128,61 @@ pub fn set_position_sync(
     );
     // Tao dispatches this frame update asynchronously; apply it synchronously before showing.
     native_window.setFrameTopLeftPoint(top_left);
+    Ok(())
+}
+
+pub fn set_frame_sync(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+    animate: bool,
+) -> tauri::Result<()> {
+    if MainThreadMarker::new().is_some() {
+        return set_frame_on_main_thread(window, position, size, animate);
+    }
+
+    let target = window.clone();
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    window.run_on_main_thread(move || {
+        let result = set_frame_on_main_thread(&target, position, size, animate);
+        let _ = result_tx.send(result);
+    })?;
+    result_rx
+        .recv()
+        .map_err(|_| tauri::Error::AssetNotFound("notification frame task".to_owned()))?
+}
+
+fn set_frame_on_main_thread(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+    animate: bool,
+) -> tauri::Result<()> {
+    let raw_window = window.ns_window()?;
+    if raw_window.is_null() {
+        return Err(tauri::Error::InvalidWindowHandle);
+    }
+    let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
+    let scale_factor = native_window.backingScaleFactor();
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let logical_size = NSSize::new(
+        f64::from(size.width) / scale_factor,
+        f64::from(size.height) / scale_factor,
+    );
+    let top_left = NSPoint::new(
+        f64::from(position.x) / scale_factor,
+        CGDisplay::main().pixels_high() as f64 / scale_factor
+            - f64::from(position.y) / scale_factor,
+    );
+    let frame = NSRect::new(
+        NSPoint::new(top_left.x, top_left.y - logical_size.height),
+        logical_size,
+    );
+    native_window.setFrame_display_animate(frame, true, animate);
     Ok(())
 }
 
@@ -280,6 +337,10 @@ fn panel_class() -> &'static AnyClass {
                 objc2::sel!(canBecomeKeyWindow),
                 can_become_key_window as extern "C" fn(_, _) -> _,
             );
+            builder.add_method(
+                objc2::sel!(animationResizeTime:),
+                panel_animation_resize_time as extern "C" fn(_, _, _) -> _,
+            );
         }
         builder.register()
     })
@@ -287,6 +348,14 @@ fn panel_class() -> &'static AnyClass {
 
 extern "C" fn can_become_key_window(_window: &AnyObject, _selector: Sel) -> Bool {
     Bool::YES
+}
+
+extern "C" fn panel_animation_resize_time(
+    _window: &AnyObject,
+    _selector: Sel,
+    _new_frame: NSRect,
+) -> f64 {
+    PANEL_FRAME_ANIMATION_DURATION
 }
 
 fn install_context_menu_monitor() {
