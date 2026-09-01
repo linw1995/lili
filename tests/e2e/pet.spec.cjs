@@ -817,6 +817,49 @@ test("dismissing the first card repeatedly moves the last card into its slot", a
   await expect(stack).toHaveClass(/notification-stack-single-bottom/);
 });
 
+test("dismissing the second card repeatedly preserves the opposite slot", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("reverse-oldest", "completion", "Alpha", "Oldest", now),
+    notification("reverse-middle", "failure", "Beta", "Middle", now + 100),
+    notification("reverse-newest", "attention", "Gamma", "Newest", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  await expect(
+    page.locator("[data-notification-id='reverse-middle']"),
+  ).toHaveClass(/notification-card-top/);
+
+  await page
+    .locator("[data-notification-id='reverse-middle'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(2);
+  await expect(
+    page.locator("[data-notification-id='reverse-oldest']"),
+  ).toHaveClass(/notification-card-top/);
+
+  await page
+    .locator("[data-notification-id='reverse-oldest'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(1);
+  const remaining = page.locator("[data-notification-id='reverse-newest']");
+  await expect(remaining).toHaveClass(/notification-card-top/);
+  await expect(stack).toHaveClass(/notification-stack-single-top/);
+
+  await page.evaluate(() => {
+    document.documentElement.dataset.notificationPlacement = "below";
+  });
+  await expect
+    .poll(() => remaining.evaluate((element) => getComputedStyle(element).top))
+    .toBe("78px");
+});
+
 test("focusing a visible notification does not advance the carousel", async ({
   page,
 }) => {
