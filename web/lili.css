@@ -96,6 +96,10 @@ body {
   height: 148px;
 }
 
+.notification-stack.notification-stack-single-bottom {
+  height: 148px;
+}
+
 .notification-card.notification-card-top {
   top: 12px;
 }

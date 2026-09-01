@@ -780,6 +780,43 @@ test("dismissing one notification preserves the current carousel window", async 
     .toEqual(["dismiss-middle", "dismiss-latest"]);
 });
 
+test("dismissing the first card repeatedly moves the last card into its slot", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("slot-oldest", "completion", "Alpha", "Oldest", now),
+    notification("slot-middle", "failure", "Beta", "Middle", now + 100),
+    notification("slot-newest", "attention", "Gamma", "Newest", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  await expect(
+    page.locator("[data-notification-id='slot-newest']"),
+  ).toHaveClass(/notification-card-bottom/);
+
+  await page
+    .locator("[data-notification-id='slot-newest'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(2);
+  await expect(
+    page.locator("[data-notification-id='slot-middle']"),
+  ).toHaveClass(/notification-card-bottom/);
+
+  await page
+    .locator("[data-notification-id='slot-middle'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(1);
+  await expect(
+    page.locator("[data-notification-id='slot-oldest']"),
+  ).toHaveClass(/notification-card-bottom/);
+  await expect(stack).toHaveClass(/notification-stack-single-bottom/);
+});
+
 test("focusing a visible notification does not advance the carousel", async ({
   page,
 }) => {

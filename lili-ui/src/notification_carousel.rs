@@ -67,6 +67,8 @@ pub(super) fn NotificationCarousel(
     #[cfg(feature = "hydrate")]
     let more_bottom_carousel = carousel.clone();
     #[cfg(feature = "hydrate")]
+    let single_bottom_carousel = carousel.clone();
+    #[cfg(feature = "hydrate")]
     let transition_carousel = carousel.clone();
     #[cfg(feature = "hydrate")]
     let notification_stack = view! {
@@ -78,6 +80,7 @@ pub(super) fn NotificationCarousel(
             data-notification-visible-count=move || visible_count_carousel.visible_count().to_string()
             class:notification-stack-more-top=move || more_top_carousel.has_more_top()
             class:notification-stack-more-bottom=move || more_bottom_carousel.has_more_bottom()
+            class:notification-stack-single-bottom=move || single_bottom_carousel.has_single_bottom()
             on:wheel=move |event| wheel_carousel.handle_wheel(event)
             on:transitionend=move |event| transition_carousel.handle_transition_end(event)
         >
@@ -96,6 +99,7 @@ pub(super) fn NotificationCarousel(
             data-notification-visible-count=carousel.visible_count().to_string()
             class:notification-stack-more-top=carousel.has_more_top()
             class:notification-stack-more-bottom=carousel.has_more_bottom()
+            class:notification-stack-single-bottom=carousel.has_single_bottom()
         >
             {notification_cards}
             <span class="notification-more notification-more-top" aria-hidden="true"></span>
@@ -134,6 +138,7 @@ struct NotificationCarouselState {
     ordered_ids: Vec<String>,
     window_start: usize,
     foreground_index: Option<usize>,
+    single_card_role: Option<NotificationCardRole>,
     pending_focus: Option<usize>,
     pending_moves: i32,
     wheel_accumulator: f64,
@@ -169,6 +174,7 @@ impl NotificationCarouselState {
             foreground_index: (!ordered_ids.is_empty()).then_some(window_start),
             ordered_ids,
             window_start,
+            single_card_role: None,
             pending_focus: None,
             pending_moves: 0,
             wheel_accumulator: 0.0,
@@ -187,6 +193,9 @@ impl NotificationCarouselState {
     fn stack_height(&self) -> u32 {
         match self.visible_count() {
             0 => 24,
+            1 if self.single_card_role == Some(NotificationCardRole::Bottom) => {
+                Self::STACK_PADDING * 2 + Self::CARD_HEIGHT * 2 + Self::CARD_GAP
+            }
             1 => Self::STACK_PADDING * 2 + Self::CARD_HEIGHT,
             _ => Self::STACK_PADDING * 2 + Self::CARD_HEIGHT * 2 + Self::CARD_GAP,
         }
@@ -202,6 +211,9 @@ impl NotificationCarouselState {
 
     fn role_for_index(&self, index: usize) -> NotificationCardRole {
         let start = self.clamp_window_start(self.window_start);
+        if self.ordered_ids.len() == 1 && index == start {
+            return self.single_card_role.unwrap_or(NotificationCardRole::Top);
+        }
         if index == start {
             NotificationCardRole::Top
         } else if index == start.saturating_add(1) && index < self.ordered_ids.len() {
@@ -254,14 +266,25 @@ impl NotificationCarouselState {
             .foreground_index
             .and_then(|index| self.ordered_ids.get(index))
             .cloned();
-        let preserved_window_start = window_start_after_single_removal(
-            &self.ordered_ids,
-            &ordered_ids,
-            previous_window_start,
-        );
+        let removed_index = single_removal_index(&self.ordered_ids, &ordered_ids);
+        let preserved_window_start = removed_index.map(|removed_index| {
+            previous_window_start
+                .saturating_sub((removed_index < previous_window_start) as usize)
+                .min(ordered_ids.len().saturating_sub(2))
+        });
+        let single_card_role = if self.ordered_ids.len() == 2 && ordered_ids.len() == 1 {
+            removed_index.map(|index| self.role_for_index(index))
+        } else {
+            None
+        };
 
         self.ordered_ids = ordered_ids;
         self.window_start = preserved_window_start.unwrap_or_else(|| self.maximum_window_start());
+        self.single_card_role = if self.ordered_ids.len() == 1 {
+            single_card_role
+        } else {
+            None
+        };
         self.foreground_index = previous_foreground_id
             .and_then(|foreground_id| {
                 self.ordered_ids
@@ -398,11 +421,7 @@ impl NotificationCarouselState {
 }
 
 #[cfg(any(test, feature = "hydrate"))]
-fn window_start_after_single_removal(
-    previous_ids: &[String],
-    next_ids: &[String],
-    previous_window_start: usize,
-) -> Option<usize> {
+fn single_removal_index(previous_ids: &[String], next_ids: &[String]) -> Option<usize> {
     if previous_ids.len() != next_ids.len().saturating_add(1) {
         return None;
     }
@@ -420,12 +439,7 @@ fn window_start_after_single_removal(
         return None;
     }
 
-    let removed_before_window = (removed_index? < previous_window_start) as usize;
-    Some(
-        previous_window_start
-            .saturating_sub(removed_before_window)
-            .min(next_ids.len().saturating_sub(2)),
-    )
+    removed_index
 }
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -468,6 +482,10 @@ impl NotificationCarouselController {
 
     pub(super) fn has_more_bottom(&self) -> bool {
         self.state.get().has_more_bottom()
+    }
+
+    pub(super) fn has_single_bottom(&self) -> bool {
+        self.state.get().single_card_role == Some(NotificationCardRole::Bottom)
     }
 
     pub(super) fn visual_for(&self, id: &str) -> NotificationCardVisual {
@@ -891,6 +909,30 @@ mod tests {
         assert!(state.visual_for("newest").foreground);
         assert!(!state.has_more_top());
         assert!(state.has_more_bottom());
+    }
+
+    #[test]
+    fn keeps_the_last_card_in_the_removed_first_slot() {
+        let mut state = NotificationCarouselState::new(vec![
+            "oldest".to_owned(),
+            "middle".to_owned(),
+            "newest".to_owned(),
+        ]);
+
+        assert!(state.reconcile(vec!["oldest".to_owned(), "middle".to_owned()]));
+        assert_eq!(
+            state.visual_for("middle").role,
+            NotificationCardRole::Bottom
+        );
+
+        assert!(state.reconcile(vec!["oldest".to_owned()]));
+
+        assert_eq!(
+            state.visual_for("oldest").role,
+            NotificationCardRole::Bottom
+        );
+        assert_eq!(state.stack_height(), 148);
+        assert_eq!(state.single_card_role, Some(NotificationCardRole::Bottom));
     }
 
     #[test]
