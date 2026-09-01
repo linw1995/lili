@@ -243,14 +243,37 @@ impl NotificationCarouselState {
         self.window_start.saturating_add(2) < self.ordered_ids.len()
     }
 
-    #[cfg(feature = "hydrate")]
+    #[cfg(any(test, feature = "hydrate"))]
     fn reconcile(&mut self, ordered_ids: Vec<String>) -> bool {
         if self.ordered_ids == ordered_ids {
             return false;
         }
+
+        let previous_window_start = self.window_start.min(self.maximum_window_start());
+        let previous_foreground_id = self
+            .foreground_index
+            .and_then(|index| self.ordered_ids.get(index))
+            .cloned();
+        let preserved_window_start = window_start_after_single_removal(
+            &self.ordered_ids,
+            &ordered_ids,
+            previous_window_start,
+        );
+
         self.ordered_ids = ordered_ids;
-        self.window_start = self.maximum_window_start();
-        self.foreground_index = (!self.ordered_ids.is_empty()).then_some(self.window_start);
+        self.window_start = preserved_window_start.unwrap_or_else(|| self.maximum_window_start());
+        self.foreground_index = previous_foreground_id
+            .and_then(|foreground_id| {
+                self.ordered_ids
+                    .iter()
+                    .position(|candidate| candidate == &foreground_id)
+            })
+            .filter(|index| {
+                *index >= self.window_start
+                    && *index < self.window_start.saturating_add(2)
+                    && *index < self.ordered_ids.len()
+            })
+            .or_else(|| (!self.ordered_ids.is_empty()).then_some(self.window_start));
         self.pending_focus = None;
         self.pending_moves = 0;
         self.wheel_accumulator = 0.0;
@@ -372,6 +395,37 @@ impl NotificationCarouselState {
         self.transition_until_ms = 0;
         true
     }
+}
+
+#[cfg(any(test, feature = "hydrate"))]
+fn window_start_after_single_removal(
+    previous_ids: &[String],
+    next_ids: &[String],
+    previous_window_start: usize,
+) -> Option<usize> {
+    if previous_ids.len() != next_ids.len().saturating_add(1) {
+        return None;
+    }
+
+    let mut next_index = 0;
+    let mut removed_index = None;
+    for (index, id) in previous_ids.iter().enumerate() {
+        if next_ids.get(next_index) == Some(id) {
+            next_index += 1;
+        } else if removed_index.replace(index).is_some() {
+            return None;
+        }
+    }
+    if next_index != next_ids.len() {
+        return None;
+    }
+
+    let removed_before_window = (removed_index? < previous_window_start) as usize;
+    Some(
+        previous_window_start
+            .saturating_sub(removed_before_window)
+            .min(next_ids.len().saturating_sub(2)),
+    )
 }
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -777,6 +831,66 @@ mod tests {
         assert_eq!(state.visual_for("oldest"), NotificationCardVisual::HIDDEN);
         assert!(state.has_more_top());
         assert!(!state.has_more_bottom());
+    }
+
+    #[test]
+    fn preserves_the_current_window_when_removing_one_notification() {
+        let mut state = NotificationCarouselState::new(vec![
+            "oldest".to_owned(),
+            "middle".to_owned(),
+            "newest".to_owned(),
+            "latest".to_owned(),
+            "latest-extra".to_owned(),
+        ]);
+        state.move_window_to(2);
+        state.move_window_to(1);
+
+        assert_eq!(state.window_start, 1);
+        assert!(state.visual_for("newest").foreground);
+
+        assert!(state.reconcile(vec![
+            "oldest".to_owned(),
+            "middle".to_owned(),
+            "latest".to_owned(),
+            "latest-extra".to_owned(),
+        ]));
+
+        assert_eq!(state.window_start, 1);
+        assert_eq!(state.visual_for("middle").role, NotificationCardRole::Top);
+        assert_eq!(
+            state.visual_for("latest").role,
+            NotificationCardRole::Bottom
+        );
+        assert!(state.visual_for("middle").foreground);
+        assert!(state.has_more_top());
+        assert!(state.has_more_bottom());
+    }
+
+    #[test]
+    fn shifts_the_current_window_when_removing_an_older_notification() {
+        let mut state = NotificationCarouselState::new(vec![
+            "oldest".to_owned(),
+            "middle".to_owned(),
+            "newest".to_owned(),
+            "latest".to_owned(),
+        ]);
+        state.move_window_to(1);
+
+        assert!(state.reconcile(vec![
+            "middle".to_owned(),
+            "newest".to_owned(),
+            "latest".to_owned(),
+        ]));
+
+        assert_eq!(state.window_start, 0);
+        assert_eq!(state.visual_for("middle").role, NotificationCardRole::Top);
+        assert_eq!(
+            state.visual_for("newest").role,
+            NotificationCardRole::Bottom
+        );
+        assert!(state.visual_for("newest").foreground);
+        assert!(!state.has_more_top());
+        assert!(state.has_more_bottom());
     }
 
     #[test]
