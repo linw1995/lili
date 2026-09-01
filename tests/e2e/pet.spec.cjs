@@ -780,7 +780,7 @@ test("dismissing one notification preserves the current carousel window", async 
     .toEqual(["dismiss-middle", "dismiss-latest"]);
 });
 
-test("dismissing the first card repeatedly moves the last card into its slot", async ({
+test("dismissing the first card repeatedly keeps the remaining stack sorted from the bottom", async ({
   page,
 }) => {
   await openNotifications(page);
@@ -814,10 +814,10 @@ test("dismissing the first card repeatedly moves the last card into its slot", a
   await expect(
     page.locator("[data-notification-id='slot-oldest']"),
   ).toHaveClass(/notification-card-bottom/);
-  await expect(stack).toHaveClass(/notification-stack-single-bottom/);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
 });
 
-test("dismissing the second card repeatedly preserves the opposite slot", async ({
+test("dismissing the second card repeatedly keeps the stack sorted from the bottom", async ({
   page,
 }) => {
   await openNotifications(page);
@@ -849,15 +849,15 @@ test("dismissing the second card repeatedly preserves the opposite slot", async 
     .click();
   await expect(page.locator(".notification-card")).toHaveCount(1);
   const remaining = page.locator("[data-notification-id='reverse-newest']");
-  await expect(remaining).toHaveClass(/notification-card-top/);
-  await expect(stack).toHaveClass(/notification-stack-single-top/);
+  await expect(remaining).toHaveClass(/notification-card-bottom/);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
 
   await page.evaluate(() => {
     document.documentElement.dataset.notificationPlacement = "below";
   });
   await expect
     .poll(() => remaining.evaluate((element) => getComputedStyle(element).top))
-    .toBe("78px");
+    .toBe("12px");
 });
 
 test("focusing a visible notification does not advance the carousel", async ({
@@ -1059,10 +1059,13 @@ test("below-pet placement keeps the newest card at the top edge", async ({
     document.documentElement.dataset.notificationPlacement = "below";
   });
 
-  const cardTop = await page
-    .locator("[data-notification-id='below-pet']")
-    .evaluate((card) => card.getBoundingClientRect().top);
-  expect(cardTop).toBe(16);
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-notification-id='below-pet']")
+        .evaluate((card) => card.getBoundingClientRect().top),
+    )
+    .toBe(16);
 });
 
 test("notification surface reports a compact native window height", async ({

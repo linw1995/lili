@@ -92,12 +92,8 @@ body {
   height: 24px;
 }
 
+.notification-stack[data-notification-visible-count="1"],
 .notification-stack[data-notification-visible-count="2"] {
-  height: 148px;
-}
-
-.notification-stack.notification-stack-single-top,
-.notification-stack.notification-stack-single-bottom {
   height: 148px;
 }
 
@@ -182,11 +178,7 @@ html[data-notification-placement="below"] .notification-stack[data-notification-
   top: 4px;
 }
 
-html[data-notification-placement="below"] .notification-stack.notification-stack-single-top .notification-card.notification-card-top {
-  top: 78px;
-}
-
-html[data-notification-placement="below"] .notification-stack.notification-stack-single-bottom .notification-card.notification-card-bottom {
+html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="1"] .notification-card.notification-card-bottom {
   top: 12px;
 }
 
