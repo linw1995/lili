@@ -708,6 +708,10 @@ fn sync_notification_window_from_state(app: &tauri::AppHandle) {
 }
 
 fn position_notification_window(app: &tauri::AppHandle) {
+    position_notification_window_with_height(app, None);
+}
+
+fn position_notification_window_with_height(app: &tauri::AppHandle, requested_height: Option<u32>) {
     let Some(pet) = app.get_webview_window("pet") else {
         return;
     };
@@ -720,14 +724,24 @@ fn position_notification_window(app: &tauri::AppHandle) {
     let Ok(pet_size) = pet.outer_size() else {
         return;
     };
-    let notification_size = notification.outer_size().unwrap_or_else(|_| {
-        tauri::PhysicalSize::new(NOTIFICATION_WINDOW_WIDTH, NOTIFICATION_WINDOW_HEIGHT)
-    });
     let scale = pet
         .scale_factor()
         .ok()
         .filter(|scale| scale.is_finite() && *scale > 0.0)
         .unwrap_or(1.0);
+    let notification_size = requested_height.map_or_else(
+        || {
+            notification.outer_size().unwrap_or_else(|_| {
+                tauri::PhysicalSize::new(NOTIFICATION_WINDOW_WIDTH, NOTIFICATION_WINDOW_HEIGHT)
+            })
+        },
+        |height| {
+            tauri::PhysicalSize::new(
+                logical_dimension_to_physical(NOTIFICATION_WINDOW_WIDTH, scale),
+                logical_dimension_to_physical(height, scale),
+            )
+        },
+    );
     let gap = (f64::from(NOTIFICATION_WINDOW_GAP) * scale)
         .round()
         .clamp(0.0, f64::from(i32::MAX)) as i32;
@@ -759,6 +773,17 @@ fn position_notification_window(app: &tauri::AppHandle) {
     if notification.is_visible().unwrap_or(false) {
         let _ = show_notification_window_without_focus(&notification);
     }
+}
+
+fn logical_dimension_to_physical(value: u32, scale: f64) -> u32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (f64::from(value) * scale)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
 fn show_notification_window_without_focus(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -1620,7 +1645,7 @@ fn resize_notification_window(
             f64::from(height),
         ))
         .map_err(|error| error.to_string())?;
-    position_notification_window(&app);
+    position_notification_window_with_height(&app, Some(height));
     Ok(true)
 }
 
@@ -2325,6 +2350,28 @@ mod tests {
                 placement: NotificationWindowPlacement::Above,
             }
         );
+    }
+
+    #[test]
+    fn compact_notification_window_stays_anchored_to_the_pet() {
+        assert_eq!(
+            notification_window_layout(NotificationWindowLayoutInput {
+                pet_position: tauri::PhysicalPosition::new(500, 400),
+                pet_size: tauri::PhysicalSize::new(320, 360),
+                notification_size: tauri::PhysicalSize::new(320, 90),
+                pet_content_height: 208,
+                work_area_position: tauri::PhysicalPosition::new(0, 0),
+                work_area_size: tauri::PhysicalSize::new(1920, 1080),
+                gap: NOTIFICATION_WINDOW_GAP,
+                scale: 1.0,
+            }),
+            NotificationWindowLayout {
+                position: tauri::PhysicalPosition::new(500, 398),
+                placement: NotificationWindowPlacement::Above,
+            }
+        );
+        assert_eq!(logical_dimension_to_physical(90, 1.0), 90);
+        assert_eq!(logical_dimension_to_physical(90, 2.0), 180);
     }
 
     #[test]

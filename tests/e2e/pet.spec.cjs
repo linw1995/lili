@@ -1076,6 +1076,52 @@ for (const scenario of threeNotificationConsecutiveDismissalCases) {
   });
 }
 
+test("three notifications request a compact native window after two dismissals", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await openNotifications(page);
+  const ids = await setupThreeNotificationFixture(page, "three-compact");
+  const stack = page.locator(".notification-stack");
+
+  await expectVisibleNotificationIds(stack, [ids.a, ids.b]);
+  await dismissVisibleNotification(stack, ids.a);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+  await dismissVisibleNotification(stack, ids.b);
+  await expectVisibleNotificationIds(stack, [ids.c]);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__
+          .filter((call) => call.name === "resize_notification_window")
+          .at(-1)?.args?.height,
+      ),
+    )
+    .toBe(90);
+  const geometry = await stack.locator(".notification-card-current").evaluate((card) => {
+    const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
+    const cardBounds = card.getBoundingClientRect();
+    return {
+      stackHeight: stackBounds.height,
+      bottomGap: stackBounds.bottom - cardBounds.bottom,
+    };
+  });
+  expect(geometry.stackHeight).toBe(82);
+  expect(geometry.bottomGap).toBe(12);
+  await expect(
+    stack.locator(".notification-card.notification-card-bottom"),
+  ).toHaveCount(1);
+});
+
 for (const scenario of fourNotificationConsecutiveDismissalCases) {
   test(`four notifications ${scenario.name}`, async ({ page }) => {
     await openNotifications(page);
