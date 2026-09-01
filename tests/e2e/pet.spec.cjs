@@ -1152,19 +1152,19 @@ test("dismissed notification cards fade out before unmounting", async ({ page })
   await expect(exiting).toHaveCount(0);
 
   const nextDismissed = stack.locator(
-    `.notification-card.notification-card-current[data-notification-id='${ids.c}']`,
+    `.notification-card.notification-card-current[data-notification-id='${ids.b}']`,
   );
   await nextDismissed.locator(".notification-dismiss").click();
-  await expectVisibleNotificationIds(stack, [ids.b]);
+  await expectVisibleNotificationIds(stack, [ids.c]);
 
-  const exitingTop = stack.locator(
-    `.notification-card.notification-card-exiting[data-notification-id='${ids.c}']`,
+  const exitingFinal = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.b}']`,
   );
-  await expect(exitingTop).toHaveCount(1);
-  await expect(exitingTop).toHaveClass(/notification-card-top/);
-  await expect(exitingTop).toHaveCSS("top", "12px");
-  await expect(exitingTop).toHaveCSS("animation-name", "notification-card-fadeout");
-  await expect(exitingTop).toHaveCount(0);
+  await expect(exitingFinal).toHaveCount(1);
+  await expect(exitingFinal).toHaveClass(/notification-card-bottom/);
+  await expect(exitingFinal).toHaveCSS("top", "12px");
+  await expect(exitingFinal).toHaveCSS("animation-name", "notification-card-fadeout");
+  await expect(exitingFinal).toHaveCount(0);
 });
 
 for (const scenario of fourNotificationConsecutiveDismissalCases) {

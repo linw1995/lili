@@ -181,22 +181,6 @@ html[data-notification-placement="below"] .notification-stack[data-notification-
   top: 4px;
 }
 
-.notification-stack .notification-card.notification-card-exiting.notification-card-top {
-  top: 12px;
-}
-
-.notification-stack .notification-card.notification-card-exiting.notification-card-bottom {
-  top: 78px;
-}
-
-html[data-notification-placement="below"] .notification-stack .notification-card.notification-card-exiting.notification-card-top {
-  top: 78px;
-}
-
-html[data-notification-placement="below"] .notification-stack .notification-card.notification-card-exiting.notification-card-bottom {
-  top: 12px;
-}
-
 html[data-notification-placement="below"] .notification-more-top {
   bottom: 1px;
   top: auto;
