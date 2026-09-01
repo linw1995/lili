@@ -260,7 +260,7 @@ impl NotificationCarouselState {
         let removed_index = single_removal_index(&self.ordered_ids, &ordered_ids);
         let preserved_window_start = removed_index.map(|removed_index| {
             previous_window_start
-                .saturating_sub((removed_index < previous_window_start) as usize)
+                .saturating_sub((removed_index <= previous_window_start) as usize)
                 .min(ordered_ids.len().saturating_sub(2))
         });
 
@@ -886,6 +886,36 @@ mod tests {
         assert!(state.visual_for("newest").foreground);
         assert!(!state.has_more_top());
         assert!(state.has_more_bottom());
+    }
+
+    #[test]
+    fn fills_the_older_side_when_removing_the_current_window_start() {
+        let mut state = NotificationCarouselState::new(vec![
+            "d".to_owned(),
+            "c".to_owned(),
+            "b".to_owned(),
+            "a".to_owned(),
+        ]);
+        state.move_window_to(1);
+
+        assert_eq!(state.visual_for("b").role, NotificationCardRole::Bottom);
+        assert_eq!(state.visual_for("c").role, NotificationCardRole::Top);
+
+        assert!(state.reconcile(vec!["d".to_owned(), "b".to_owned(), "a".to_owned(),]));
+
+        assert_eq!(state.window_start, 0);
+        assert_eq!(state.visual_for("d").role, NotificationCardRole::Top);
+        assert_eq!(state.visual_for("b").role, NotificationCardRole::Bottom);
+        assert_eq!(
+            state.visual_for("a").role,
+            NotificationCardRole::BottomBehind
+        );
+
+        assert!(state.reconcile(vec!["b".to_owned(), "a".to_owned()]));
+
+        assert_eq!(state.window_start, 0);
+        assert_eq!(state.visual_for("b").role, NotificationCardRole::Top);
+        assert_eq!(state.visual_for("a").role, NotificationCardRole::Bottom);
     }
 
     #[test]
