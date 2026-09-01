@@ -92,7 +92,6 @@ body {
   height: 24px;
 }
 
-.notification-stack[data-notification-visible-count="1"],
 .notification-stack[data-notification-visible-count="2"] {
   height: 148px;
 }
@@ -103,6 +102,10 @@ body {
 
 .notification-card.notification-card-bottom {
   top: 78px;
+}
+
+.notification-stack[data-notification-visible-count="1"] .notification-card.notification-card-bottom {
+  top: 12px;
 }
 
 .notification-card.notification-card-top-behind {
@@ -176,10 +179,6 @@ html[data-notification-placement="below"] .notification-stack[data-notification-
 
 html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-bottom-behind {
   top: 4px;
-}
-
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="1"] .notification-card.notification-card-bottom {
-  top: 12px;
 }
 
 html[data-notification-placement="below"] .notification-more-top {

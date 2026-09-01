@@ -187,6 +187,7 @@ impl NotificationCarouselState {
     fn stack_height(&self) -> u32 {
         match self.visible_count() {
             0 => 24,
+            1 => Self::STACK_PADDING * 2 + Self::CARD_HEIGHT,
             _ => Self::STACK_PADDING * 2 + Self::CARD_HEIGHT * 2 + Self::CARD_GAP,
         }
     }
@@ -907,7 +908,7 @@ mod tests {
             state.visual_for("oldest").role,
             NotificationCardRole::Bottom
         );
-        assert_eq!(state.stack_height(), 148);
+        assert_eq!(state.stack_height(), 82);
     }
 
     #[test]
@@ -927,7 +928,7 @@ mod tests {
             state.visual_for("newest").role,
             NotificationCardRole::Bottom
         );
-        assert_eq!(state.stack_height(), 148);
+        assert_eq!(state.stack_height(), 82);
     }
 
     #[test]
