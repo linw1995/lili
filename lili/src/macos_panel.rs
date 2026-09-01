@@ -114,17 +114,10 @@ pub fn set_position_sync(
         return Err(tauri::Error::InvalidWindowHandle);
     }
     let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
-    let scale_factor = native_window.backingScaleFactor();
-    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    };
-    let logical_x = f64::from(position.x) / scale_factor;
-    let logical_y = f64::from(position.y) / scale_factor;
-    let top_left = NSPoint::new(
-        logical_x,
-        CGDisplay::main().pixels_high() as f64 - logical_y,
+    let top_left = native_top_left_point(
+        position,
+        native_window.backingScaleFactor(),
+        CGDisplay::main().pixels_high() as f64,
     );
     // Tao dispatches this frame update asynchronously; apply it synchronously before showing.
     native_window.setFrameTopLeftPoint(top_left);
@@ -163,20 +156,15 @@ fn set_frame_on_main_thread(
         return Err(tauri::Error::InvalidWindowHandle);
     }
     let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
-    let scale_factor = native_window.backingScaleFactor();
-    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    };
+    let scale_factor = valid_scale_factor(native_window.backingScaleFactor());
     let logical_size = NSSize::new(
         f64::from(size.width) / scale_factor,
         f64::from(size.height) / scale_factor,
     );
-    let top_left = NSPoint::new(
-        f64::from(position.x) / scale_factor,
-        CGDisplay::main().pixels_high() as f64 / scale_factor
-            - f64::from(position.y) / scale_factor,
+    let top_left = native_top_left_point(
+        position,
+        scale_factor,
+        CGDisplay::main().pixels_high() as f64,
     );
     let frame = NSRect::new(
         NSPoint::new(top_left.x, top_left.y - logical_size.height),
@@ -184,6 +172,26 @@ fn set_frame_on_main_thread(
     );
     native_window.setFrame_display_animate(frame, true, animate);
     Ok(())
+}
+
+fn valid_scale_factor(scale_factor: f64) -> f64 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    }
+}
+
+fn native_top_left_point(
+    position: tauri::PhysicalPosition<i32>,
+    scale_factor: f64,
+    display_height: f64,
+) -> NSPoint {
+    let scale_factor = valid_scale_factor(scale_factor);
+    NSPoint::new(
+        f64::from(position.x) / scale_factor,
+        display_height - f64::from(position.y) / scale_factor,
+    )
 }
 
 fn configure_panel(window: &tauri::WebviewWindow) -> tauri::Result<isize> {
@@ -470,7 +478,7 @@ mod tests {
     use objc2_app_kit::NSEventType;
 
     use super::{
-        pet_sprite_contains, screen_point_to_tauri_with_display_height,
+        native_top_left_point, pet_sprite_contains, screen_point_to_tauri_with_display_height,
         should_open_pet_context_menu,
     };
 
@@ -511,5 +519,12 @@ mod tests {
             screen_point_to_tauri_with_display_height(100.0, 450.0, 2.0, 900.0),
             tauri::PhysicalPosition::new(200, 900)
         );
+    }
+
+    #[test]
+    fn native_frame_position_matches_tao_screen_coordinates() {
+        let top_left = native_top_left_point(tauri::PhysicalPosition::new(100, 200), 2.0, 1800.0);
+        assert_eq!(top_left.x, 50.0);
+        assert_eq!(top_left.y, 1700.0);
     }
 }

@@ -181,6 +181,22 @@ html[data-notification-placement="below"] .notification-stack[data-notification-
   top: 4px;
 }
 
+.notification-stack .notification-card.notification-card-exiting.notification-card-top {
+  top: 12px;
+}
+
+.notification-stack .notification-card.notification-card-exiting.notification-card-bottom {
+  top: 78px;
+}
+
+html[data-notification-placement="below"] .notification-stack .notification-card.notification-card-exiting.notification-card-top {
+  top: 78px;
+}
+
+html[data-notification-placement="below"] .notification-stack .notification-card.notification-card-exiting.notification-card-bottom {
+  top: 12px;
+}
+
 html[data-notification-placement="below"] .notification-more-top {
   bottom: 1px;
   top: auto;
@@ -276,6 +292,24 @@ html[data-notification-placement="below"] .notification-more-bottom {
   z-index: 3;
 }
 
+.notification-card-exiting {
+  animation: notification-card-fadeout 460ms cubic-bezier(0.4, 0, 0.6, 1) forwards;
+  pointer-events: none;
+  z-index: 4;
+}
+
+@keyframes notification-card-fadeout {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
 .notification-card-top-behind,
 .notification-card-bottom-behind {
   opacity: 0.24;
@@ -292,11 +326,23 @@ html[data-notification-placement="below"] .notification-more-bottom {
   .notification-more {
     transition: none;
   }
+
+  .notification-card-exiting {
+    animation: none;
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 #lili-app[data-reduced-motion="true"] .notification-card,
 #lili-app[data-reduced-motion="true"] .notification-more {
   transition: none;
+}
+
+#lili-app[data-reduced-motion="true"] .notification-card-exiting {
+  animation: none;
+  opacity: 0;
+  transform: scale(0.96);
 }
 
 .notification-card::before {

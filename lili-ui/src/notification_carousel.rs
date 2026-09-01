@@ -14,27 +14,28 @@ pub(super) fn NotificationCarousel(
     wall_clock: RwSignal<u64>,
     reduced_motion: RwSignal<bool>,
 ) -> impl IntoView {
-    let initial_ids = notifications_by_display_order(presentation.get_untracked().notifications)
-        .into_iter()
-        .map(|notification| notification.activation_id)
+    let initial_notifications =
+        notifications_by_display_order(presentation.get_untracked().notifications);
+    let initial_ids = initial_notifications
+        .iter()
+        .map(|notification| notification.activation_id.clone())
         .collect();
-    let carousel = NotificationCarouselController::new(initial_ids, reduced_motion);
+    let carousel =
+        NotificationCarouselController::new(initial_ids, initial_notifications, reduced_motion);
     #[cfg(feature = "hydrate")]
     {
         let reconcile_carousel = carousel.clone();
         Effect::new(move |_| {
-            let ids = notifications_by_display_order(presentation.get().notifications)
-                .into_iter()
-                .map(|notification| notification.activation_id)
-                .collect();
-            reconcile_carousel.reconcile(ids);
+            let notifications = notifications_by_display_order(presentation.get().notifications);
+            reconcile_carousel.reconcile(notifications);
         });
         let motion_carousel = carousel.clone();
         Effect::new(move |_| {
             if reduced_motion.get() {
-                motion_carousel
-                    .state
-                    .update(NotificationCarouselState::jump_to_pending);
+                motion_carousel.state.update(|state| {
+                    state.jump_to_pending();
+                    state.clear_exiting();
+                });
             }
         });
     }
@@ -45,19 +46,71 @@ pub(super) fn NotificationCarousel(
             each=move || notifications_by_keyboard_order(presentation.get().notifications)
             key=|notification| notification.activation_id.clone()
             children=move |notification| view! {
-                <NotificationCard notification wall_clock carousel=cards_carousel.clone()/>
+                <NotificationCard
+                    notification
+                    wall_clock
+                    carousel=cards_carousel.clone()
+                    exiting=false
+                    exit_role=None
+                />
             }
         />
     };
     #[cfg(not(feature = "hydrate"))]
-    let notification_cards = notifications_by_keyboard_order(
-        presentation.get_untracked().notifications,
-    )
-    .into_iter()
-    .map(|notification| {
-        view! { <NotificationCard notification wall_clock carousel=cards_carousel.clone()/> }
-    })
-    .collect_view();
+    let notification_cards =
+        notifications_by_keyboard_order(presentation.get_untracked().notifications)
+            .into_iter()
+            .map(|notification| {
+                view! {
+                    <NotificationCard
+                        notification
+                        wall_clock
+                        carousel=cards_carousel.clone()
+                        exiting=false
+                        exit_role=None
+                    />
+                }
+            })
+            .collect_view();
+    let exiting_each_carousel = carousel.clone();
+    let exiting_child_carousel = carousel.clone();
+    #[cfg(feature = "hydrate")]
+    let exiting_notification_cards = view! {
+        <For
+            each=move || exiting_each_carousel.exiting_notifications()
+            key=|exiting| exiting.notification.activation_id.clone()
+            children=move |exiting| view! {
+                <NotificationCard
+                    notification=exiting.notification
+                    wall_clock
+                    carousel=exiting_child_carousel.clone()
+                    exiting=true
+                    exit_role=Some(exiting.role)
+                />
+            }
+        />
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let exiting_notification_cards = {
+        let owner = Owner::new();
+        owner.with(|| {
+            view! {
+                <For
+                    each=move || exiting_each_carousel.exiting_notifications()
+                    key=|exiting| exiting.notification.activation_id.clone()
+                    children=move |exiting| view! {
+                        <NotificationCard
+                            notification=exiting.notification
+                            wall_clock
+                            carousel=exiting_child_carousel.clone()
+                            exiting=true
+                            exit_role=Some(exiting.role)
+                        />
+                    }
+                />
+            }
+        })
+    };
     #[cfg(feature = "hydrate")]
     let visible_count_carousel = carousel.clone();
     #[cfg(feature = "hydrate")]
@@ -68,6 +121,8 @@ pub(super) fn NotificationCarousel(
     let more_bottom_carousel = carousel.clone();
     #[cfg(feature = "hydrate")]
     let transition_carousel = carousel.clone();
+    #[cfg(feature = "hydrate")]
+    let animation_carousel = carousel.clone();
     #[cfg(feature = "hydrate")]
     let notification_stack = view! {
         <aside
@@ -80,8 +135,10 @@ pub(super) fn NotificationCarousel(
             class:notification-stack-more-bottom=move || more_bottom_carousel.has_more_bottom()
             on:wheel=move |event| wheel_carousel.handle_wheel(event)
             on:transitionend=move |event| transition_carousel.handle_transition_end(event)
+            on:animationend=move |event| animation_carousel.handle_animation_end(event)
         >
             {notification_cards}
+            {exiting_notification_cards}
             <span class="notification-more notification-more-top" aria-hidden="true"></span>
             <span class="notification-more notification-more-bottom" aria-hidden="true"></span>
         </aside>
@@ -98,6 +155,7 @@ pub(super) fn NotificationCarousel(
             class:notification-stack-more-bottom=carousel.has_more_bottom()
         >
             {notification_cards}
+            {exiting_notification_cards}
             <span class="notification-more notification-more-top" aria-hidden="true"></span>
             <span class="notification-more notification-more-bottom" aria-hidden="true"></span>
         </aside>
@@ -129,6 +187,12 @@ pub(super) enum NotificationCardRole {
     BottomBehind,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExitingNotification {
+    notification: PetNotificationPresentation,
+    role: NotificationCardRole,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct NotificationCarouselState {
     ordered_ids: Vec<String>,
@@ -141,6 +205,7 @@ struct NotificationCarouselState {
     wheel_lock_until_ms: u64,
     last_wheel_direction: i32,
     transition_until_ms: u64,
+    exiting: Vec<ExitingNotification>,
 }
 
 impl NotificationCarouselState {
@@ -176,6 +241,7 @@ impl NotificationCarouselState {
             wheel_lock_until_ms: 0,
             last_wheel_direction: 0,
             transition_until_ms: 0,
+            exiting: Vec::new(),
         }
     }
 
@@ -399,6 +465,38 @@ impl NotificationCarouselState {
         self.transition_until_ms = 0;
         true
     }
+
+    #[cfg(feature = "hydrate")]
+    fn queue_exiting(&mut self, exiting: Vec<ExitingNotification>) {
+        for candidate in exiting {
+            if !self.exiting.iter().any(|current| {
+                current.notification.activation_id == candidate.notification.activation_id
+            }) {
+                self.exiting.push(candidate);
+            }
+        }
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn clear_exiting_for_active_notifications(&mut self) {
+        self.exiting.retain(|candidate| {
+            !self
+                .ordered_ids
+                .iter()
+                .any(|id| id == &candidate.notification.activation_id)
+        });
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn clear_exiting(&mut self) {
+        self.exiting.clear();
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn finish_exit(&mut self, id: &str) {
+        self.exiting
+            .retain(|candidate| candidate.notification.activation_id != id);
+    }
 }
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -437,10 +535,16 @@ pub(super) struct NotificationCarouselController {
     state: RwSignal<NotificationCarouselState>,
     #[cfg(feature = "hydrate")]
     reduced_motion: RwSignal<bool>,
+    #[cfg(feature = "hydrate")]
+    notification_snapshot: RwSignal<Vec<PetNotificationPresentation>>,
 }
 
 impl NotificationCarouselController {
-    fn new(ordered_ids: Vec<String>, reduced_motion: RwSignal<bool>) -> Self {
+    fn new(
+        ordered_ids: Vec<String>,
+        notifications: Vec<PetNotificationPresentation>,
+        reduced_motion: RwSignal<bool>,
+    ) -> Self {
         let state = RwSignal::new(NotificationCarouselState::new(ordered_ids));
         #[cfg(feature = "hydrate")]
         resize_notification_window(
@@ -448,11 +552,13 @@ impl NotificationCarouselController {
             false,
         );
         #[cfg(not(feature = "hydrate"))]
-        let _ = reduced_motion;
+        let _ = (notifications, reduced_motion);
         Self {
             state,
             #[cfg(feature = "hydrate")]
             reduced_motion,
+            #[cfg(feature = "hydrate")]
+            notification_snapshot: RwSignal::new(notifications),
         }
     }
 
@@ -472,11 +578,48 @@ impl NotificationCarouselController {
         self.state.get().visual_for(id)
     }
 
+    fn exiting_notifications(&self) -> Vec<ExitingNotification> {
+        self.state.get().exiting.clone()
+    }
+
     #[cfg(feature = "hydrate")]
-    fn reconcile(&self, ordered_ids: Vec<String>) {
+    fn reconcile(&self, notifications: Vec<PetNotificationPresentation>) {
+        let ordered_ids: Vec<_> = notifications
+            .iter()
+            .map(|notification| notification.activation_id.clone())
+            .collect();
+        let previous_notifications = self.notification_snapshot.get_untracked();
+        let should_animate = !self.reduced_motion.get_untracked();
+        let mut exiting = Vec::new();
         let mut changed = false;
-        self.state
-            .update(|state| changed = state.reconcile(ordered_ids));
+        self.state.update(|state| {
+            exiting = previous_notifications
+                .iter()
+                .filter_map(|notification| {
+                    if ordered_ids
+                        .iter()
+                        .any(|id| id == &notification.activation_id)
+                    {
+                        return None;
+                    }
+                    match state.visual_for(&notification.activation_id).role {
+                        NotificationCardRole::Top | NotificationCardRole::Bottom => {
+                            Some(ExitingNotification {
+                                notification: notification.clone(),
+                                role: state.visual_for(&notification.activation_id).role,
+                            })
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+            changed = state.reconcile(ordered_ids);
+            state.clear_exiting_for_active_notifications();
+            if changed && should_animate {
+                state.queue_exiting(exiting.clone());
+            }
+        });
+        self.notification_snapshot.set(notifications);
         if changed {
             resize_notification_window(
                 self.state.get_untracked().stack_height().saturating_add(8),
@@ -542,6 +685,24 @@ impl NotificationCarouselController {
     }
 
     #[cfg(feature = "hydrate")]
+    fn handle_animation_end(&self, event: web_sys::AnimationEvent) {
+        if event.animation_name() != "notification-card-fadeout" {
+            return;
+        }
+        use wasm_bindgen::JsCast;
+        let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let Some(id) = target.get_attribute("data-notification-id") else {
+            return;
+        };
+        self.state.update(|state| state.finish_exit(&id));
+    }
+
+    #[cfg(feature = "hydrate")]
     fn focus_notification(&self, id: &str) {
         let mut found = false;
         self.state.update(|state| found = state.focus_index(id));
@@ -584,6 +745,8 @@ fn NotificationCard(
     notification: PetNotificationPresentation,
     wall_clock: RwSignal<u64>,
     carousel: NotificationCarouselController,
+    exiting: bool,
+    exit_role: Option<NotificationCardRole>,
 ) -> AnyView {
     let activation_id = notification.activation_id;
     let kind = notification.kind;
@@ -623,7 +786,8 @@ fn NotificationCard(
                 class="notification-activate"
                 type="button"
                 aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
-                tabindex="0"
+                tabindex=if exiting { "-1" } else { "0" }
+                disabled=exiting
                 on:focus=move |_| activate_carousel.focus_notification(&activate_focus_id)
                 on:click=move |_| activate_native_notification(&activate_id)
             >
@@ -633,7 +797,8 @@ fn NotificationCard(
                 class="notification-dismiss"
                 type="button"
                 aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
-                tabindex="0"
+                tabindex=if exiting { "-1" } else { "0" }
+                disabled=exiting
                 on:focus=move |_| dismiss_carousel.focus_notification(&dismiss_focus_id)
                 on:click=move |_| dismiss_native_notification(&dismiss_id)
             >
@@ -647,6 +812,8 @@ fn NotificationCard(
             class="notification-activate"
             type="button"
             aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
+            tabindex=if exiting { "-1" } else { "0" }
+            disabled=exiting
         >
             <NotificationOpenIcon/>
         </button>
@@ -654,6 +821,8 @@ fn NotificationCard(
             class="notification-dismiss"
             type="button"
             aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
+            tabindex=if exiting { "-1" } else { "0" }
+            disabled=exiting
         >
             <NotificationDismissIcon/>
         </button>
@@ -670,31 +839,42 @@ fn NotificationCard(
     let current_id = activation_id.clone();
     let foreground_carousel = carousel.clone();
     let foreground_id = activation_id.clone();
+    let is_exit_top = exiting && exit_role == Some(NotificationCardRole::Top);
+    let is_exit_bottom = exiting && exit_role == Some(NotificationCardRole::Bottom);
     view! {
         <article
             class="notification-card"
             class:notification-unread=unread
             class:notification-card-no-status=kind == PetNotificationKind::Completion
             class:notification-card-top=move || {
-                top_carousel.visual_for(&top_id).role == NotificationCardRole::Top
+                is_exit_top
+                    || (!exiting
+                        && top_carousel.visual_for(&top_id).role == NotificationCardRole::Top)
             }
             class:notification-card-bottom=move || {
-                bottom_carousel.visual_for(&bottom_id).role == NotificationCardRole::Bottom
+                is_exit_bottom
+                    || (!exiting
+                        && bottom_carousel.visual_for(&bottom_id).role == NotificationCardRole::Bottom)
             }
             class:notification-card-top-behind=move || {
-                top_behind_carousel.visual_for(&top_behind_id).role
-                    == NotificationCardRole::TopBehind
+                !exiting
+                    && top_behind_carousel.visual_for(&top_behind_id).role
+                        == NotificationCardRole::TopBehind
             }
             class:notification-card-bottom-behind=move || {
-                bottom_behind_carousel.visual_for(&bottom_behind_id).role
-                    == NotificationCardRole::BottomBehind
+                !exiting
+                    && bottom_behind_carousel.visual_for(&bottom_behind_id).role
+                        == NotificationCardRole::BottomBehind
             }
             class:notification-card-current=move || current_carousel
                 .visual_for(&current_id)
                 .current
+                && !exiting
             class:notification-card-foreground=move || foreground_carousel
                 .visual_for(&foreground_id)
                 .foreground
+                && !exiting
+            class:notification-card-exiting=exiting
             data-notification-id=activation_id
             data-notification-kind=kind.as_str()
         >

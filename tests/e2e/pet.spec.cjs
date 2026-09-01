@@ -55,6 +55,7 @@ async function replacePresentation(page, overrides = {}) {
   expect(response.ok()).toBeTruthy();
   const applied = await response.json();
   await expect(app).toHaveAttribute("data-revision", String(applied.revision));
+  await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
   return applied;
 }
 
@@ -1126,6 +1127,44 @@ test("three notifications request a compact native window after two dismissals",
   await expect(
     stack.locator(".notification-card.notification-card-bottom"),
   ).toHaveCount(1);
+});
+
+test("dismissed notification cards fade out before unmounting", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupThreeNotificationFixture(page, "three-fadeout");
+  const stack = page.locator(".notification-stack");
+  const dismissed = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${ids.a}']`,
+  );
+
+  await dismissed.locator(".notification-dismiss").click();
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+
+  const exiting = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.a}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  await expect(exiting).toHaveClass(/notification-card-bottom/);
+  await expect(exiting).toHaveCSS("top", "78px");
+  await expect(exiting).toHaveCSS("animation-name", "notification-card-fadeout");
+  await expect(exiting).toHaveCSS("pointer-events", "none");
+  await expect(exiting).toHaveCount(0);
+
+  const nextDismissed = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${ids.c}']`,
+  );
+  await nextDismissed.locator(".notification-dismiss").click();
+  await expectVisibleNotificationIds(stack, [ids.b]);
+
+  const exitingTop = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.c}']`,
+  );
+  await expect(exitingTop).toHaveCount(1);
+  await expect(exitingTop).toHaveClass(/notification-card-top/);
+  await expect(exitingTop).toHaveCSS("top", "12px");
+  await expect(exitingTop).toHaveCSS("animation-name", "notification-card-fadeout");
+  await expect(exitingTop).toHaveCount(0);
 });
 
 for (const scenario of fourNotificationConsecutiveDismissalCases) {
