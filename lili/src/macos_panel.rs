@@ -9,13 +9,15 @@ use std::{
 };
 
 use block2::RcBlock;
+use core_graphics::display::CGDisplay;
 use objc2::{
     msg_send,
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
 use objc2_app_kit::{
-    NSEvent, NSEventMask, NSEventType, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSEvent, NSEventMask, NSEventType, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
+use objc2_foundation::NSPoint;
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 const CURRENT_PROCESS: u32 = 2;
 const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
@@ -35,7 +37,14 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-type ContextMenuHandler = Arc<dyn Fn() + Send + Sync>;
+#[derive(Clone, Copy, Debug)]
+pub struct ContextMenuEvent {
+    pub screen_x: f64,
+    pub screen_y: f64,
+    pub timestamp_us: u64,
+}
+
+type ContextMenuHandler = Arc<dyn Fn(ContextMenuEvent) + Send + Sync>;
 
 const PET_SPRITE_HEIGHT: f64 = 208.0;
 const PET_SPRITE_WIDTH: f64 = 192.0;
@@ -56,7 +65,7 @@ thread_local! {
 
 pub fn configure(
     window: &tauri::WebviewWindow,
-    context_menu_handler: impl Fn() + Send + Sync + 'static,
+    context_menu_handler: impl Fn(ContextMenuEvent) + Send + Sync + 'static,
 ) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
     let context_menu_handler: ContextMenuHandler = Arc::new(context_menu_handler);
@@ -92,6 +101,32 @@ pub fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<(
             let _: () = msg_send![native_window, orderFront: sender];
         }
     })
+}
+
+pub fn set_position_sync(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+) -> tauri::Result<()> {
+    let raw_window = window.ns_window()?;
+    if raw_window.is_null() {
+        return Err(tauri::Error::InvalidWindowHandle);
+    }
+    let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
+    let scale_factor = native_window.backingScaleFactor();
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let logical_x = f64::from(position.x) / scale_factor;
+    let logical_y = f64::from(position.y) / scale_factor;
+    let top_left = NSPoint::new(
+        logical_x,
+        CGDisplay::main().pixels_high() as f64 - logical_y,
+    );
+    // Tao dispatches this frame update asynchronously; apply it synchronously before showing.
+    native_window.setFrameTopLeftPoint(top_left);
+    Ok(())
 }
 
 fn configure_panel(window: &tauri::WebviewWindow) -> tauri::Result<isize> {
@@ -267,9 +302,12 @@ fn install_context_menu_monitor() {
             state.lock().ok().map(|state| {
                 let suppressed = state.suppressed_windows.contains(&window_number);
                 let handler = state.pet.as_ref().and_then(|(pet_window_number, handler)| {
-                    (event_type == NSEventType::RightMouseDown
-                        && window_number == *pet_window_number
-                        && event_hits_pet_sprite(event))
+                    should_open_pet_context_menu(
+                        event_type,
+                        window_number,
+                        *pet_window_number,
+                        event_hits_pet_sprite(event),
+                    )
                     .then(|| Arc::clone(handler))
                 });
                 (suppressed, handler)
@@ -281,7 +319,12 @@ fn install_context_menu_monitor() {
             return event as *const NSEvent as *mut NSEvent;
         }
         if let Some(handler) = handler {
-            handler();
+            let location = NSEvent::mouseLocation();
+            handler(ContextMenuEvent {
+                screen_x: location.x,
+                screen_y: location.y,
+                timestamp_us: event_timestamp_us(event.timestamp()),
+            });
         }
         std::ptr::null_mut()
     });
@@ -290,6 +333,55 @@ fn install_context_menu_monitor() {
     if let Some(monitor) = monitor {
         CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
     }
+}
+
+pub fn screen_point_to_tauri(
+    screen_x: f64,
+    screen_y: f64,
+    scale_factor: f64,
+) -> tauri::PhysicalPosition<i32> {
+    screen_point_to_tauri_with_display_height(
+        screen_x,
+        screen_y,
+        scale_factor,
+        CGDisplay::main().pixels_high() as f64,
+    )
+}
+
+fn screen_point_to_tauri_with_display_height(
+    screen_x: f64,
+    screen_y: f64,
+    scale_factor: f64,
+    display_height: f64,
+) -> tauri::PhysicalPosition<i32> {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    // Keep the conversion aligned with Tao's macOS cursor_position implementation.
+    let top_left_y = display_height - screen_y;
+    tauri::PhysicalPosition::new(
+        (screen_x * scale_factor).round() as i32,
+        (top_left_y * scale_factor).round() as i32,
+    )
+}
+
+fn event_timestamp_us(timestamp: f64) -> u64 {
+    if timestamp.is_finite() && timestamp > 0.0 {
+        (timestamp * 1_000_000.0).round() as u64
+    } else {
+        0
+    }
+}
+
+fn should_open_pet_context_menu(
+    event_type: NSEventType,
+    window_number: isize,
+    pet_window_number: isize,
+    hits_pet_sprite: bool,
+) -> bool {
+    event_type == NSEventType::RightMouseUp && window_number == pet_window_number && hits_pet_sprite
 }
 
 fn event_hits_pet_sprite(event: &NSEvent) -> bool {
@@ -306,7 +398,12 @@ fn pet_sprite_contains(x: f64, y: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::pet_sprite_contains;
+    use objc2_app_kit::NSEventType;
+
+    use super::{
+        pet_sprite_contains, screen_point_to_tauri_with_display_height,
+        should_open_pet_context_menu,
+    };
 
     #[test]
     fn pet_hit_region_is_centered_and_includes_its_edges() {
@@ -315,5 +412,35 @@ mod tests {
         assert!(pet_sprite_contains(160.0, 180.0));
         assert!(!pet_sprite_contains(63.9, 180.0));
         assert!(!pet_sprite_contains(160.0, 284.1));
+    }
+
+    #[test]
+    fn context_menu_opens_after_the_right_click_position_is_stable() {
+        assert!(!should_open_pet_context_menu(
+            NSEventType::RightMouseDown,
+            7,
+            7,
+            true
+        ));
+        assert!(should_open_pet_context_menu(
+            NSEventType::RightMouseUp,
+            7,
+            7,
+            true
+        ));
+        assert!(!should_open_pet_context_menu(
+            NSEventType::RightMouseUp,
+            7,
+            7,
+            false
+        ));
+    }
+
+    #[test]
+    fn screen_point_conversion_accounts_for_retina_scale() {
+        assert_eq!(
+            screen_point_to_tauri_with_display_height(100.0, 450.0, 2.0, 900.0),
+            tauri::PhysicalPosition::new(200, 900)
+        );
     }
 }

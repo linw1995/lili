@@ -256,6 +256,26 @@ test("pet owns the context menu gesture", async ({ page }) => {
   expect(await page.evaluate(() => window.__LILI_INVOKES__.length)).toBe(invokeCount);
 });
 
+test("pet context menu text cannot be selected", async ({ page }) => {
+  await page.goto("/context-menu");
+  const menu = page.locator("menu");
+  const button = menu.locator("button").first();
+  await expect(menu).toBeVisible();
+  await expect(menu).toHaveCSS("user-select", "none");
+  await expect(button).toHaveCSS("user-select", "none");
+
+  const bounds = await button.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(bounds.x + 8, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width - 8, bounds.y + bounds.height / 2, {
+    steps: 4,
+  });
+  await page.mouse.up();
+
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
+});
+
 test("left drag continues to use native window movement", async ({ page }) => {
   await openPet(page);
   await page.evaluate(() => {
