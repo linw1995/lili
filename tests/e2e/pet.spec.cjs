@@ -601,18 +601,18 @@ test("multiple notifications keep two cards visible while scrolling", async ({
       };
     };
     return {
-      older: readCard("accordion-oldest"),
+      incoming: readCard("accordion-middle"),
       shared: readCard("accordion-newest"),
       outgoing: readCard("accordion-latest"),
     };
   });
   expect(transitionFrame.shared.zIndex).toBe("3");
-  expect(transitionFrame.older.opacity).toBeGreaterThan(0);
-  expect(transitionFrame.older.opacity).toBeLessThan(1);
+  expect(transitionFrame.incoming.opacity).toBeGreaterThan(0);
+  expect(transitionFrame.incoming.opacity).toBeLessThan(1);
   expect(transitionFrame.outgoing.opacity).toBeGreaterThan(0);
   expect(transitionFrame.outgoing.opacity).toBeLessThan(1);
-  expect(transitionFrame.shared.bottom).toBeGreaterThan(transitionFrame.older.top);
-  expect(transitionFrame.older.bottom).toBeGreaterThan(transitionFrame.shared.top);
+  expect(transitionFrame.shared.bottom).toBeGreaterThan(transitionFrame.incoming.top);
+  expect(transitionFrame.incoming.bottom).toBeGreaterThan(transitionFrame.shared.top);
   expect(transitionFrame.shared.bottom).toBeGreaterThan(transitionFrame.outgoing.top);
   expect(transitionFrame.outgoing.bottom).toBeGreaterThan(transitionFrame.shared.top);
   await page.mouse.wheel(0, -120);
@@ -640,6 +640,71 @@ test("multiple notifications keep two cards visible while scrolling", async ({
   await expect
     .poll(visibleCardIds)
     .toEqual(["accordion-newest", "accordion-latest"]);
+});
+
+test("scrolling and dismissal share one fade contract", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupFourNotificationFixture(page, "shared-fade");
+  const stack = page.locator(".notification-stack");
+  const incoming = stack.locator(`[data-notification-id='${ids.c}']`);
+  const outgoing = stack.locator(`[data-notification-id='${ids.a}']`);
+
+  await expect(incoming).toHaveClass(/notification-card-top-behind/);
+  await expect(incoming).toHaveCSS("opacity", "0");
+  const scrollContract = await incoming.evaluate((card) => {
+    const style = getComputedStyle(card);
+    return {
+      durationMs: Number.parseFloat(
+        style.getPropertyValue("--notification-fade-duration"),
+      ),
+      timing: style.getPropertyValue("--notification-fade-easing").trim(),
+      fadedScale: new DOMMatrixReadOnly(style.transform).a,
+    };
+  });
+
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+  await page.waitForTimeout(200);
+  const transitionFrame = await Promise.all([
+    incoming.evaluate((card) => Number(getComputedStyle(card).opacity)),
+    outgoing.evaluate((card) => Number(getComputedStyle(card).opacity)),
+  ]);
+  expect(transitionFrame[0]).toBeGreaterThan(0);
+  expect(transitionFrame[0]).toBeLessThan(1);
+  expect(transitionFrame[1]).toBeGreaterThan(0);
+  expect(transitionFrame[1]).toBeLessThan(1);
+
+  await page.waitForTimeout(320);
+  await expect(incoming).toHaveCSS("opacity", "1");
+  await expect(outgoing).toHaveCSS("opacity", "0");
+
+  const dismissed = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${ids.b}']`,
+  );
+  await dismissed.locator(".notification-dismiss").click();
+  const exiting = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.b}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  const removalContract = await exiting.evaluate((card) => {
+    const style = getComputedStyle(card);
+    const animation = card.getAnimations()[0];
+    const frames = animation.effect.getKeyframes();
+    const lastFrame = frames.at(-1);
+    return {
+      durationMs: Number(animation.effect.getTiming().duration),
+      timing: style.animationTimingFunction,
+      fadedOpacity: lastFrame.opacity,
+      fadedScale: new DOMMatrixReadOnly(lastFrame.transform).a,
+    };
+  });
+  expect(removalContract.durationMs).toBe(scrollContract.durationMs);
+  expect(removalContract.timing).toBe(scrollContract.timing);
+  expect(removalContract.fadedOpacity).toBe("0");
+  expect(removalContract.fadedScale).toBeCloseTo(scrollContract.fadedScale, 5);
+  await expect(exiting).toHaveCount(0);
 });
 
 test("line-mode wheel input advances the notification carousel", async ({
