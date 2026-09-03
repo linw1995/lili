@@ -71,7 +71,11 @@ class PluginHooksTests(unittest.TestCase):
         self.assertNotIn('Command::new("powershell.exe")', acceptance)
         self.assertIn('arg("--installed-codex-home")', acceptance)
         self.assertIn('arg("--installed-plugin-root")', acceptance)
-        self.assertIn('run = client._completed_hook(thread_id, "sessionStart")', hook_trust)
+        start_turn = hook_trust.index("turn_id = client._start_turn(")
+        await_hook = hook_trust.index(
+            'run = client._completed_hook(thread_id, "sessionStart", turn_id)'
+        )
+        self.assertLess(start_turn, await_hook)
         self.assertIn('runner.environment["SystemRoot"] = system_root', hook_trust)
 
     def test_hook_trust_failure_is_reported_on_stderr(self) -> None:

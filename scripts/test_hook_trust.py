@@ -557,7 +557,10 @@ def dispatch_installed_plugin_hook(
         client.trust(list(initial.values()))
         hook_map(client.hooks(), selector, "trusted")
         thread_id = client.start_thread()
-        run = client._completed_hook(thread_id, "sessionStart")
+        turn_id = client._start_turn(
+            thread_id, "Exercise the installed Marketplace session hook."
+        )
+        run = client._completed_hook(thread_id, "sessionStart", turn_id)
         client.shutdown()
     finally:
         client.close()
