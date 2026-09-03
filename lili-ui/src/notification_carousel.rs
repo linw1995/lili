@@ -2,7 +2,10 @@ use leptos::prelude::*;
 use lili_core::{PetNotificationKind, PetNotificationPresentation, PetPresentationState};
 
 #[cfg(feature = "hydrate")]
-use super::{activate_native_notification, animation_clock_ms, dismiss_native_notification};
+use super::{
+    activate_native_notification, animation_clock_ms, dismiss_native_notification,
+    focus_native_pet_window,
+};
 use super::{notification_kind_label, relative_time_label};
 
 #[component]
@@ -203,6 +206,7 @@ struct NotificationCarouselState {
     transition_until_ms: u64,
     exiting: Vec<ExitingNotification>,
     pending_exit_tops: Vec<(String, f64)>,
+    return_focus_when_settled: bool,
 }
 
 impl NotificationCarouselState {
@@ -234,6 +238,7 @@ impl NotificationCarouselState {
             transition_until_ms: 0,
             exiting: Vec::new(),
             pending_exit_tops: Vec::new(),
+            return_focus_when_settled: false,
         }
     }
 
@@ -326,6 +331,9 @@ impl NotificationCarouselState {
         });
 
         self.ordered_ids = ordered_ids;
+        if !self.ordered_ids.is_empty() {
+            self.return_focus_when_settled = false;
+        }
         self.window_start = preserved_window_start.unwrap_or_else(|| self.maximum_window_start());
         self.foreground_index = previous_foreground_id
             .and_then(|foreground_id| {
@@ -491,10 +499,18 @@ impl NotificationCarouselState {
     }
 
     #[cfg(feature = "hydrate")]
-    fn prepare_exit(&mut self, id: &str, top: f64) {
-        self.pending_exit_tops
-            .retain(|(candidate, _)| candidate != id);
-        self.pending_exit_tops.push((id.to_owned(), top));
+    fn prepare_exit(&mut self, id: &str, top: Option<f64>, return_focus: bool) {
+        if let Some(top) = top {
+            self.pending_exit_tops
+                .retain(|(candidate, _)| candidate != id);
+            self.pending_exit_tops.push((id.to_owned(), top));
+        }
+        self.return_focus_when_settled = return_focus
+            && self.ordered_ids.len() == 1
+            && self
+                .ordered_ids
+                .first()
+                .is_some_and(|current| current == id);
     }
 
     #[cfg(feature = "hydrate")]
@@ -507,9 +523,21 @@ impl NotificationCarouselState {
     }
 
     #[cfg(feature = "hydrate")]
-    fn finish_exit(&mut self, id: &str) {
+    fn finish_exit(&mut self, id: &str) -> bool {
         self.exiting
             .retain(|candidate| candidate.notification.activation_id != id);
+        self.take_focus_return_if_settled()
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn take_focus_return_if_settled(&mut self) -> bool {
+        let should_return = self.return_focus_when_settled
+            && self.ordered_ids.is_empty()
+            && self.exiting.is_empty();
+        if should_return {
+            self.return_focus_when_settled = false;
+        }
+        should_return
     }
 }
 
@@ -599,6 +627,7 @@ impl NotificationCarouselController {
             .collect();
         let previous_notifications = self.notification_snapshot.get_untracked();
         let should_animate = !self.reduced_motion.get_untracked();
+        let mut return_focus = false;
         self.state.update(|state| {
             let mut exiting = Vec::new();
             let had_two_visible_slots = state.visible_count() == 2;
@@ -629,16 +658,25 @@ impl NotificationCarouselController {
             if changed && should_animate {
                 state.queue_exiting(exiting);
             }
+            return_focus = state.take_focus_return_if_settled();
         });
         self.notification_snapshot.set(notifications);
+        if return_focus {
+            focus_native_pet_window();
+        }
     }
 
     #[cfg(feature = "hydrate")]
     fn settle_motion(&self) {
+        let mut return_focus = false;
         self.state.update(|state| {
             state.jump_to_pending();
             state.clear_exiting();
+            return_focus = state.take_focus_return_if_settled();
         });
+        if return_focus {
+            focus_native_pet_window();
+        }
     }
 
     #[cfg(feature = "hydrate")]
@@ -648,9 +686,10 @@ impl NotificationCarouselController {
 
     #[cfg(feature = "hydrate")]
     fn prepare_exit(&self, id: &str, event: &web_sys::MouseEvent) {
-        if let Some(top) = notification_top_from_click(event) {
-            self.state.update(|state| state.prepare_exit(id, top));
-        }
+        let top = notification_top_from_click(event);
+        let return_focus = event.detail() == 0;
+        self.state
+            .update(|state| state.prepare_exit(id, top, return_focus));
     }
 
     #[cfg(feature = "hydrate")]
@@ -719,9 +758,12 @@ impl NotificationCarouselController {
         let Some(id) = target.get_attribute("data-notification-id") else {
             return;
         };
-        self.state.update(|state| {
-            state.finish_exit(&id);
-        });
+        let mut return_focus = false;
+        self.state
+            .update(|state| return_focus = state.finish_exit(&id));
+        if return_focus {
+            focus_native_pet_window();
+        }
     }
 
     #[cfg(feature = "hydrate")]
@@ -918,6 +960,7 @@ fn NotificationCard(
                 .foreground
                 && !exiting
             class:notification-card-exiting=exiting
+            aria-hidden=exiting.then_some("true")
             style:top=exit_top.map(|top| format!("{top}px"))
             data-notification-id=activation_id
             data-notification-kind=kind.as_str()

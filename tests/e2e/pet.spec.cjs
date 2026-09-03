@@ -1289,6 +1289,7 @@ test("dismissed notification cards fade out before unmounting", async ({ page })
   await expect(exiting).toHaveClass(/notification-card-bottom/);
   await expect(exiting).toHaveCSS("top", "78px");
   await expect(exiting).toHaveCSS("animation-name", "notification-card-fadeout");
+  await expect(exiting).toHaveAttribute("aria-hidden", "true");
   await expect(exiting).toHaveCSS("pointer-events", "none");
   await expect(exiting).toHaveCount(0);
 
@@ -1306,6 +1307,69 @@ test("dismissed notification cards fade out before unmounting", async ({ page })
   await expect(exitingFinal).toHaveCSS("top", "78px");
   await expect(exitingFinal).toHaveCSS("animation-name", "notification-card-fadeout");
   await expect(exitingFinal).toHaveCount(0);
+});
+
+test("final dismissal returns focus only after a keyboard exit", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("keyboard-final", "completion", "Alpha", "Done", now),
+    ],
+  });
+
+  const dismiss = page.locator(
+    "[data-notification-id='keyboard-final'] .notification-dismiss",
+  );
+  await dismiss.focus();
+  await page.keyboard.press("Enter");
+  const exiting = page.locator(
+    ".notification-card-exiting[data-notification-id='keyboard-final']",
+  );
+  await expect(exiting).toHaveCount(1);
+  await page.waitForTimeout(100);
+  expect(
+    await page.evaluate(() =>
+      window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+    ),
+  ).toBe(false);
+  await expect(exiting).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+      ),
+    )
+    .toBe(true);
+
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("pointer-final", "completion", "Beta", "Done", now + 100),
+    ],
+  });
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+  });
+  await page
+    .locator("[data-notification-id='pointer-final'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+    ),
+  ).toBe(false);
 });
 
 for (const scenario of [
@@ -1402,6 +1466,15 @@ test("final notification completes immediately with reduced motion", async ({
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openNotifications(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
   await replacePresentation(page, {
     unreadNotificationCount: 1,
     notifications: [
@@ -1412,10 +1485,21 @@ test("final notification completes immediately with reduced motion", async ({
     "data-reduced-motion",
     "true",
   );
-  await page.locator("[data-notification-id='reduced-final'] .notification-dismiss").click();
+  const dismiss = page.locator(
+    "[data-notification-id='reduced-final'] .notification-dismiss",
+  );
+  await dismiss.focus();
+  await page.keyboard.press("Enter");
 
   await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
   await expect(page.locator(".notification-card")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+      ),
+    )
+    .toBe(true);
 });
 
 test("rapid final dismissals fade from each card's rendered position", async ({
