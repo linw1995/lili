@@ -14,6 +14,7 @@ const STACK_TOP_BELOW: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[repr(u8)]
 pub(crate) enum NotificationHitRegionMode {
     #[default]
     Empty,
@@ -25,25 +26,24 @@ pub(crate) enum NotificationHitRegionMode {
 }
 
 impl NotificationHitRegionMode {
+    const ALL: [Self; 6] = [
+        Self::Empty,
+        Self::Top,
+        Self::Bottom,
+        Self::Both,
+        Self::Reflow,
+        Self::Scroll,
+    ];
+
     pub(crate) const fn code(self) -> u8 {
-        match self {
-            Self::Empty => 0,
-            Self::Top => 1,
-            Self::Bottom => 2,
-            Self::Both => 3,
-            Self::Reflow => 4,
-            Self::Scroll => 5,
-        }
+        self as u8
     }
 
-    pub(crate) const fn from_code(code: u8) -> Self {
-        match code {
-            1 => Self::Top,
-            2 => Self::Bottom,
-            3 => Self::Both,
-            4 => Self::Reflow,
-            5 => Self::Scroll,
-            _ => Self::Empty,
+    pub(crate) fn from_code(code: u8) -> Self {
+        if let Some(mode) = Self::ALL.get(code as usize) {
+            *mode
+        } else {
+            Self::Empty
         }
     }
 
@@ -174,15 +174,19 @@ mod tests {
 
     #[test]
     fn wire_modes_match_the_ui_contract() {
-        for (value, expected) in [
-            ("\"empty\"", Mode::Empty),
-            ("\"top\"", Mode::Top),
-            ("\"bottom\"", Mode::Bottom),
-            ("\"both\"", Mode::Both),
-            ("\"reflow\"", Mode::Reflow),
-            ("\"scroll\"", Mode::Scroll),
+        for (code, value, expected) in [
+            (0, "\"empty\"", Mode::Empty),
+            (1, "\"top\"", Mode::Top),
+            (2, "\"bottom\"", Mode::Bottom),
+            (3, "\"both\"", Mode::Both),
+            (4, "\"reflow\"", Mode::Reflow),
+            (5, "\"scroll\"", Mode::Scroll),
         ] {
             assert_eq!(serde_json::from_str::<Mode>(value).unwrap(), expected);
+            assert_eq!(expected.code(), code);
+            assert_eq!(Mode::from_code(code), expected);
         }
+        assert_eq!(Mode::from_code(6), Mode::Empty);
+        assert_eq!(Mode::from_code(u8::MAX), Mode::Empty);
     }
 }

@@ -113,44 +113,50 @@ unsafe extern "system" fn notification_mouse_hook(
 }
 
 fn refresh_mouse_passthrough() {
-    let Some(state) = NOTIFICATION_HIT_REGION_STATE.get() else {
+    let Some((window, ignores_mouse_events)) = next_mouse_passthrough() else {
         return;
     };
-    let Ok(mut state) = state.lock() else {
-        return;
-    };
-    let Some(window) = state.window.clone() else {
-        return;
-    };
-    let hit_test = if MOUSE_HOOK_INSTALLED.load(Ordering::Acquire) {
-        (|| {
-            let hwnd = HWND(state.hwnd as _);
-            let mut point = POINT::default();
-            unsafe { GetCursorPos(&mut point) }.ok()?;
-            unsafe { ScreenToClient(hwnd, &mut point) }
-                .as_bool()
-                .then_some(())?;
-            let scale = state.scale_factor;
-            Some(contains(
-                state.mode,
-                state.below_pet,
-                f64::from(point.x) / scale,
-                f64::from(point.y) / scale,
-            ))
-        })()
-    } else {
-        None
-    };
-    let ignores_mouse_events = hit_test.is_some_and(|contains| !contains);
-    if state.ignores_mouse_events == Some(ignores_mouse_events) {
-        return;
-    }
-    state.ignores_mouse_events = Some(ignores_mouse_events);
-    drop(state);
     if window
         .set_ignore_cursor_events(ignores_mouse_events)
         .is_err()
-        && let Some(state) = NOTIFICATION_HIT_REGION_STATE.get()
+    {
+        clear_requested_passthrough();
+    }
+}
+
+fn next_mouse_passthrough() -> Option<(tauri::WebviewWindow, bool)> {
+    let state = NOTIFICATION_HIT_REGION_STATE.get()?;
+    let mut state = state.lock().ok()?;
+    let window = state.window.clone()?;
+    let ignores_mouse_events = mouse_hits_window(&state).is_some_and(|contains| !contains);
+    if state.ignores_mouse_events == Some(ignores_mouse_events) {
+        return None;
+    }
+    state.ignores_mouse_events = Some(ignores_mouse_events);
+    Some((window, ignores_mouse_events))
+}
+
+fn mouse_hits_window(state: &NotificationHitRegionState) -> Option<bool> {
+    if !MOUSE_HOOK_INSTALLED.load(Ordering::Acquire) {
+        return None;
+    }
+    let hwnd = HWND(state.hwnd as _);
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point) }.ok()?;
+    unsafe { ScreenToClient(hwnd, &mut point) }
+        .as_bool()
+        .then_some(())?;
+    let scale = state.scale_factor;
+    Some(contains(
+        state.mode,
+        state.below_pet,
+        f64::from(point.x) / scale,
+        f64::from(point.y) / scale,
+    ))
+}
+
+fn clear_requested_passthrough() {
+    if let Some(state) = NOTIFICATION_HIT_REGION_STATE.get()
         && let Ok(mut state) = state.lock()
     {
         state.ignores_mouse_events = None;
