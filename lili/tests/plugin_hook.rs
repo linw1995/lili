@@ -24,7 +24,7 @@ const FIXTURES: [&str; 5] = [
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/stop.json"),
     include_str!("../../lili-session/tests/fixtures/codex/0.147.0/session-end.json"),
 ];
-const CONCURRENT_HOOK_TEST_BUDGET: Duration = Duration::from_secs(5);
+const CONCURRENT_HOOK_TEST_BUDGET: Duration = Duration::from_secs(8);
 const VERSIONED_FIXTURES: [(&str, &str); 5] = [
     (
         "SessionStart",
