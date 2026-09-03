@@ -1194,10 +1194,10 @@ test("three notifications keep the fixed two-slot window after two dismissals", 
     .poll(() =>
       stack.locator(".notification-card-current").evaluate((card) => {
         const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
-        return Math.round(stackBounds.bottom - card.getBoundingClientRect().bottom);
+        return stackBounds.bottom - card.getBoundingClientRect().bottom;
       }),
     )
-    .toBe(12);
+    .toBeCloseTo(12, 1);
   const geometry = await stack.locator(".notification-card-current").evaluate((card) => {
     const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
     const cardBounds = card.getBoundingClientRect();
@@ -1207,7 +1207,7 @@ test("three notifications keep the fixed two-slot window after two dismissals", 
     };
   });
   expect(geometry.stackHeight).toBe(148);
-  expect(geometry.bottomGap).toBe(12);
+  expect(geometry.bottomGap).toBeCloseTo(12, 1);
   await expect(
     stack.locator(".notification-card.notification-card-bottom"),
   ).toHaveCount(1);
