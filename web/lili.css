@@ -86,10 +86,15 @@ body {
   background: transparent;
   background-color: transparent;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: none;
   position: absolute;
   right: 12px;
   z-index: 2;
+}
+
+.notification-stack.notification-stack-more-top,
+.notification-stack.notification-stack-more-bottom {
+  pointer-events: auto;
 }
 
 .notification-card.notification-card-top {

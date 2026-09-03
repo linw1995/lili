@@ -1207,6 +1207,69 @@ test("three notifications keep the fixed two-slot window after two dismissals", 
   ).toHaveCount(1);
 });
 
+test("unused notification slots do not capture pointer input", async ({ page }) => {
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("pointer-hit-region", "completion", "Alpha", "Done", now),
+    ],
+  });
+  const stack = page.locator(".notification-stack");
+  const card = stack.locator(".notification-card-current");
+
+  const hitTest = await stack.evaluate((element) => {
+    const current = element.querySelector(".notification-card-current");
+    if (!(current instanceof HTMLElement)) {
+      throw new Error("current notification card is missing");
+    }
+    const stackBounds = element.getBoundingClientRect();
+    const cardBounds = current.getBoundingClientRect();
+    const topGap = cardBounds.top - stackBounds.top;
+    const bottomGap = stackBounds.bottom - cardBounds.bottom;
+    const emptyY =
+      topGap >= bottomGap
+        ? stackBounds.top + topGap / 2
+        : cardBounds.bottom + bottomGap / 2;
+    const emptyTarget = document.elementFromPoint(
+      stackBounds.left + stackBounds.width / 2,
+      emptyY,
+    );
+    const cardTarget = document.elementFromPoint(
+      cardBounds.left + cardBounds.width / 2,
+      cardBounds.top + cardBounds.height / 2,
+    );
+    return {
+      stackPointerEvents: getComputedStyle(element).pointerEvents,
+      cardPointerEvents: getComputedStyle(current).pointerEvents,
+      emptySlotHitsStack:
+        emptyTarget instanceof Element && element.contains(emptyTarget),
+      cardHitsCurrent:
+        cardTarget instanceof Element &&
+        cardTarget.closest(".notification-card-current") === current,
+    };
+  });
+  expect(hitTest).toEqual({
+    stackPointerEvents: "none",
+    cardPointerEvents: "auto",
+    emptySlotHitsStack: false,
+    cardHitsCurrent: true,
+  });
+
+  await card.locator(".notification-dismiss").click();
+  await expect(page.locator(".notification-card")).toHaveCount(0);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "0");
+  const emptyStackHits = await stack.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const target = document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      bounds.top + bounds.height / 2,
+    );
+    return target instanceof Element && element.contains(target);
+  });
+  expect(emptyStackHits).toBe(false);
+});
+
 test("dismissed notification cards fade out before unmounting", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await openNotifications(page);
