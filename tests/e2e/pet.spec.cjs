@@ -1315,6 +1315,41 @@ test("dismissed notification cards fade out before unmounting", async ({ page })
   await expect(exitingFinal).toHaveCount(0);
 });
 
+test("placement flips rebase a captured notification exit", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  await page.addStyleTag({
+    content: ".notification-card-exiting { animation-duration: 2s; }",
+  });
+  const notifications = [
+    notification("placement-survivor", "completion", "Alpha", "Older", now),
+    notification("placement-exit", "completion", "Beta", "Newer", now + 100),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+  const stack = page.locator(".notification-stack");
+
+  await stack
+    .locator("[data-notification-id='placement-exit'] .notification-dismiss")
+    .click();
+  const exiting = stack.locator(
+    ".notification-card-exiting[data-notification-id='placement-exit']",
+  );
+  const survivor = stack.locator(
+    ".notification-card-current[data-notification-id='placement-survivor']",
+  );
+  await expect(exiting).toHaveCSS("top", "78px");
+
+  await page.evaluate(() => {
+    document.documentElement.dataset.notificationPlacement = "below";
+  });
+
+  await expect(exiting).toHaveCSS("top", "12px");
+  await expect(survivor).toHaveCSS("top", "78px");
+});
+
 test("final dismissal returns focus only after a keyboard exit", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await openNotifications(page);
@@ -1697,7 +1732,9 @@ test("dismissing a fading-in card preserves its rendered visual state", async ({
   const exitStart = await exiting.evaluate((card) => {
     const style = getComputedStyle(card);
     return {
-      top: Number.parseFloat(card.style.top),
+      top: Number.parseFloat(
+        card.style.getPropertyValue("--notification-exit-top"),
+      ),
       opacity: Number.parseFloat(
         card.style.getPropertyValue("--notification-exit-opacity"),
       ),

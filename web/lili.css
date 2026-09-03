@@ -77,6 +77,8 @@ body {
 }
 
 .notification-stack {
+  --notification-card-height: 58px;
+
   box-sizing: border-box;
   bottom: 4px;
   display: block;
@@ -244,7 +246,7 @@ html[data-notification-placement="below"] .notification-more-bottom {
   color: var(--notification-foreground);
   box-sizing: border-box;
   display: block;
-  height: 58px;
+  height: var(--notification-card-height);
   left: 0;
   overflow: hidden;
   opacity: var(--notification-fade-opacity);
@@ -278,7 +280,19 @@ html[data-notification-placement="below"] .notification-more-bottom {
     notification-card-fadeout var(--notification-fade-duration) var(--notification-fade-easing)
     forwards;
   pointer-events: none;
+  transition: none;
   z-index: 4;
+}
+
+.notification-card.notification-card-exiting[data-notification-exit-placement] {
+  top: var(--notification-exit-top);
+}
+
+html[data-notification-placement="below"]
+  .notification-card.notification-card-exiting[data-notification-exit-placement="above"],
+html:not([data-notification-placement="below"])
+  .notification-card.notification-card-exiting[data-notification-exit-placement="below"] {
+  top: calc(100% - var(--notification-card-height) - var(--notification-exit-top));
 }
 
 @keyframes notification-card-fadeout {

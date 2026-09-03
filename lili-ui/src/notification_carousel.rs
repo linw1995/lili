@@ -230,6 +230,7 @@ struct NotificationExitVisual {
     top: f64,
     opacity: String,
     transform: String,
+    below_pet: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -909,6 +910,7 @@ fn notification_exit_visual_from_click(
             top,
             opacity,
             transform,
+            below_pet: notification_window_is_below(),
         },
     )
 }
@@ -1038,9 +1040,12 @@ fn NotificationCard(
     let foreground_id = activation_id.clone();
     let is_exit_top = exit_role == Some(NotificationCardRole::Top);
     let is_exit_bottom = exit_role == Some(NotificationCardRole::Bottom);
+    let exit_placement = exit_visual
+        .as_ref()
+        .map(|visual| if visual.below_pet { "below" } else { "above" });
     let exit_style = exit_visual.map(|visual| {
         format!(
-            "top: {}px; --notification-exit-opacity: {}; --notification-exit-transform: {};",
+            "--notification-exit-top: {}px; --notification-exit-opacity: {}; --notification-exit-transform: {};",
             visual.top, visual.opacity, visual.transform
         )
     });
@@ -1082,6 +1087,7 @@ fn NotificationCard(
             style=exit_style
             data-notification-id=activation_id
             data-notification-kind=kind.as_str()
+            data-notification-exit-placement=exit_placement
         >
             <div class="notification-card-body">
                 {status}
@@ -1200,6 +1206,7 @@ mod tests {
             top: 42.0,
             opacity: "0.5".to_owned(),
             transform: "matrix(0.98, 0, 0, 0.98, 0, 0)".to_owned(),
+            below_pet: false,
         };
         state
             .pending_exit_visuals
