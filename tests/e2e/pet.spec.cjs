@@ -1564,12 +1564,17 @@ test("rapid dismissal during reflow fades from the rendered position", async ({
     .click();
   await page.waitForTimeout(180);
 
-  const renderedTop = await moving.evaluate((card) =>
-    Number.parseFloat(getComputedStyle(card).top),
-  );
+  const renderedTop = await moving.locator(".notification-dismiss").evaluate((button) => {
+    const card = button.closest(".notification-card");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("notification card is missing");
+    }
+    const top = Number.parseFloat(getComputedStyle(card).top);
+    button.click();
+    return top;
+  });
   expect(renderedTop).toBeGreaterThan(12);
   expect(renderedTop).toBeLessThan(78);
-  await moving.locator(".notification-dismiss").click({ force: true });
 
   const exiting = stack.locator(
     `.notification-card-exiting[data-notification-id='${ids.b}']`,
@@ -1596,20 +1601,25 @@ test("dismissing a fading-in card preserves its rendered visual state", async ({
   );
   await expect(incoming).toHaveClass(/notification-card-top/);
   await page.waitForTimeout(180);
-  const rendered = await incoming.evaluate((card) => {
+  const rendered = await incoming.locator(".notification-dismiss").evaluate((button) => {
+    const card = button.closest(".notification-card");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("notification card is missing");
+    }
     const style = getComputedStyle(card);
-    return {
+    const visual = {
       top: Number.parseFloat(style.top),
       opacity: Number(style.opacity),
       scale: new DOMMatrixReadOnly(style.transform).a,
     };
+    button.click();
+    return visual;
   });
   expect(rendered.opacity).toBeGreaterThan(0);
   expect(rendered.opacity).toBeLessThan(1);
   expect(rendered.scale).toBeGreaterThan(0.96);
   expect(rendered.scale).toBeLessThan(1);
 
-  await incoming.locator(".notification-dismiss").evaluate((button) => button.click());
   const exiting = stack.locator(
     `.notification-card-exiting[data-notification-id='${ids.c}']`,
   );
