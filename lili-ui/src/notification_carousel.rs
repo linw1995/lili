@@ -4,7 +4,7 @@ use lili_core::{PetNotificationKind, PetNotificationPresentation, PetPresentatio
 #[cfg(feature = "hydrate")]
 use super::{
     activate_native_notification, animation_clock_ms, dismiss_native_notification,
-    focus_native_pet_window,
+    focus_native_pet_window, set_native_notification_hit_region,
 };
 use super::{notification_kind_label, relative_time_label};
 
@@ -34,6 +34,14 @@ pub(super) fn NotificationCarousel(
             if reduced_motion.get() {
                 motion_carousel.settle_motion();
             }
+        });
+        let native_hit_carousel = carousel.clone();
+        Effect::new(move |previous: Option<NativeNotificationHitRegionMode>| {
+            let mode = native_hit_carousel.native_hit_region_mode();
+            if previous != Some(mode) {
+                set_native_notification_hit_region(mode.as_str());
+            }
+            mode
         });
     }
     let cards_carousel = carousel.clone();
@@ -184,6 +192,31 @@ pub(super) enum NotificationCardRole {
     BottomBehind,
 }
 
+#[cfg(any(test, feature = "hydrate"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeNotificationHitRegionMode {
+    Empty,
+    Top,
+    Bottom,
+    Both,
+    Reflow,
+    Scroll,
+}
+
+#[cfg(any(test, feature = "hydrate"))]
+impl NativeNotificationHitRegionMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Both => "both",
+            Self::Reflow => "reflow",
+            Self::Scroll => "scroll",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ExitingNotification {
     notification: PetNotificationPresentation,
@@ -213,6 +246,7 @@ struct NotificationCarouselState {
     transition_until_ms: u64,
     exiting: Vec<ExitingNotification>,
     pending_exit_visuals: Vec<(String, NotificationExitVisual)>,
+    survivor_reflowing: bool,
     return_focus_when_settled: bool,
 }
 
@@ -245,6 +279,7 @@ impl NotificationCarouselState {
             transition_until_ms: 0,
             exiting: Vec::new(),
             pending_exit_visuals: Vec::new(),
+            survivor_reflowing: false,
             return_focus_when_settled: false,
         }
     }
@@ -320,6 +355,31 @@ impl NotificationCarouselState {
     }
 
     #[cfg(any(test, feature = "hydrate"))]
+    fn native_hit_region_mode(&self) -> NativeNotificationHitRegionMode {
+        if self.survivor_reflowing {
+            return NativeNotificationHitRegionMode::Reflow;
+        }
+        if self.has_more_top() || self.has_more_bottom() {
+            return NativeNotificationHitRegionMode::Scroll;
+        }
+        let mut top = false;
+        let mut bottom = false;
+        for id in &self.ordered_ids {
+            match self.visual_for(id).role {
+                NotificationCardRole::Top => top = true,
+                NotificationCardRole::Bottom => bottom = true,
+                _ => {}
+            }
+        }
+        match (top, bottom) {
+            (false, false) => NativeNotificationHitRegionMode::Empty,
+            (true, false) => NativeNotificationHitRegionMode::Top,
+            (false, true) => NativeNotificationHitRegionMode::Bottom,
+            (true, true) => NativeNotificationHitRegionMode::Both,
+        }
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
     fn reconcile(&mut self, ordered_ids: Vec<String>) -> bool {
         if self.ordered_ids == ordered_ids {
             return false;
@@ -338,6 +398,9 @@ impl NotificationCarouselState {
         });
 
         self.ordered_ids = ordered_ids;
+        if self.ordered_ids.len() != 1 {
+            self.survivor_reflowing = false;
+        }
         if !self.ordered_ids.is_empty() {
             self.return_focus_when_settled = false;
         }
@@ -502,6 +565,7 @@ impl NotificationCarouselState {
     #[cfg(feature = "hydrate")]
     fn clear_exiting(&mut self) {
         self.exiting.clear();
+        self.survivor_reflowing = false;
     }
 
     #[cfg(feature = "hydrate")]
@@ -533,14 +597,31 @@ impl NotificationCarouselState {
         Some(self.pending_exit_visuals.swap_remove(index).1)
     }
 
-    #[cfg(feature = "hydrate")]
+    #[cfg(any(test, feature = "hydrate"))]
     fn finish_exit(&mut self, id: &str) -> bool {
+        let starts_survivor_reflow = self.ordered_ids.len() == 1
+            && self.exiting.iter().any(|candidate| {
+                candidate.notification.activation_id == id && candidate.preserve_survivor_slot
+            });
         self.exiting
             .retain(|candidate| candidate.notification.activation_id != id);
+        if starts_survivor_reflow
+            && !self
+                .exiting
+                .iter()
+                .any(|candidate| candidate.preserve_survivor_slot)
+        {
+            self.survivor_reflowing = true;
+        }
         self.take_focus_return_if_settled()
     }
 
-    #[cfg(feature = "hydrate")]
+    #[cfg(any(test, feature = "hydrate"))]
+    fn finish_survivor_reflow(&mut self) {
+        self.survivor_reflowing = false;
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
     fn take_focus_return_if_settled(&mut self) -> bool {
         let should_return = self.return_focus_when_settled
             && self.ordered_ids.is_empty()
@@ -620,6 +701,11 @@ impl NotificationCarouselController {
 
     pub(super) fn has_more_bottom(&self) -> bool {
         self.state.get().has_more_bottom()
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn native_hit_region_mode(&self) -> NativeNotificationHitRegionMode {
+        self.state.get().native_hit_region_mode()
     }
 
     pub(super) fn visual_for(&self, id: &str) -> NotificationCardVisual {
@@ -747,8 +833,10 @@ impl NotificationCarouselController {
         }
         let now_ms = animation_clock_ms();
         let mut finished = false;
-        self.state
-            .update(|state| finished = state.finish_transition(now_ms));
+        self.state.update(|state| {
+            state.finish_survivor_reflow();
+            finished = state.finish_transition(now_ms);
+        });
         if finished {
             self.process_pending_at(now_ms);
         }
@@ -1331,13 +1419,65 @@ mod tests {
         });
         assert_eq!(state.visible_count(), 2);
         assert_eq!(state.visual_for("oldest").role, NotificationCardRole::Top);
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Top
+        );
 
-        state.exiting.clear();
+        assert!(!state.finish_exit("newest"));
         assert_eq!(state.visible_count(), 1);
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Reflow
+        );
         assert_eq!(
             state.visual_for("oldest").role,
             NotificationCardRole::Bottom
         );
+
+        state.finish_survivor_reflow();
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Bottom
+        );
+    }
+
+    #[test]
+    fn native_hit_region_tracks_scroll_and_visible_slots() {
+        let mut state = NotificationCarouselState::new(vec![
+            "oldest".to_owned(),
+            "middle".to_owned(),
+            "newest".to_owned(),
+        ]);
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Scroll
+        );
+
+        assert!(state.reconcile(vec!["middle".to_owned(), "newest".to_owned()]));
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Both
+        );
+
+        assert!(state.reconcile(vec!["newest".to_owned()]));
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Bottom
+        );
+
+        assert!(state.reconcile(Vec::new()));
+        assert_eq!(
+            state.native_hit_region_mode(),
+            NativeNotificationHitRegionMode::Empty
+        );
+
+        assert_eq!(NativeNotificationHitRegionMode::Empty.as_str(), "empty");
+        assert_eq!(NativeNotificationHitRegionMode::Top.as_str(), "top");
+        assert_eq!(NativeNotificationHitRegionMode::Bottom.as_str(), "bottom");
+        assert_eq!(NativeNotificationHitRegionMode::Both.as_str(), "both");
+        assert_eq!(NativeNotificationHitRegionMode::Reflow.as_str(), "reflow");
+        assert_eq!(NativeNotificationHitRegionMode::Scroll.as_str(), "scroll");
     }
 
     #[test]

@@ -6,10 +6,15 @@ mod diagnostics;
 pub mod hook_forwarder;
 mod integration_cli;
 mod ipc_signer;
+#[cfg(target_os = "linux")]
+mod linux_notification_hit_region;
 mod loopback;
 #[cfg(target_os = "macos")]
 mod macos_panel;
+mod notification_hit_region;
 mod platform_pinning;
+#[cfg(target_os = "windows")]
+mod windows_notification_hit_region;
 
 use std::time::Duration;
 #[cfg(target_os = "macos")]
@@ -41,6 +46,7 @@ use lili_session::{
 #[cfg(test)]
 use lili_session::{ClaimedSpoolRecord, SpoolStore};
 use loopback::LoopbackServer;
+use notification_hit_region::NotificationHitRegionMode;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
     ipc::CapabilityBuilder,
@@ -121,6 +127,7 @@ struct NotificationWindowLayoutInput {
 #[derive(Clone, Default)]
 struct NotificationWindowState {
     placement: Arc<AtomicU8>,
+    hit_region: Arc<AtomicU8>,
     hide_generation: Arc<AtomicU64>,
     hide_scheduled: Arc<AtomicBool>,
 }
@@ -132,6 +139,20 @@ impl NotificationWindowState {
 
     fn set(&self, placement: NotificationWindowPlacement) {
         self.placement.store(placement.code(), Ordering::Release);
+    }
+
+    fn hit_region(&self) -> NotificationHitRegionMode {
+        NotificationHitRegionMode::from_code(self.hit_region.load(Ordering::Acquire))
+    }
+
+    fn set_hit_region(&self, mode: NotificationHitRegionMode) {
+        self.hit_region.store(mode.code(), Ordering::Release);
+    }
+
+    fn reconcile_hit_region(&self, notification_count: usize) -> NotificationHitRegionMode {
+        let mode = self.hit_region().fallback_for_count(notification_count);
+        self.set_hit_region(mode);
+        mode
     }
 
     fn schedule_hide(&self) -> Option<u64> {
@@ -249,6 +270,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             open_pet_context_menu,
             focus_notification_window,
             focus_pet_window,
+            set_notification_hit_region,
             run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -430,7 +452,8 @@ fn register_notification_window_capability(
         .local(false)
         .window(NOTIFICATION_WINDOW_LABEL)
         .permission("allow-sign-loopback-request")
-        .permission("allow-focus-pet-window");
+        .permission("allow-focus-pet-window")
+        .permission("allow-set-notification-hit-region");
     app.add_capability(capability)
 }
 
@@ -638,9 +661,58 @@ fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result
     macos_panel::configure_auxiliary(window)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    suppress_webview_context_menu(window)
+    suppress_webview_context_menu(window)?;
+    linux_notification_hit_region::configure(window)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)?;
+    windows_notification_hit_region::configure(window)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)?;
+    window.set_ignore_cursor_events(true)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    macos_panel::update_notification_hit_region(window, mode, below_pet)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    linux_notification_hit_region::update(window, mode, below_pet)
+}
+
+#[cfg(target_os = "windows")]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    windows_notification_hit_region::update(window, mode, below_pet)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    _below_pet: bool,
+) -> tauri::Result<()> {
+    window.set_ignore_cursor_events(mode == NotificationHitRegionMode::Empty)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -732,6 +804,8 @@ fn notification_window_sync_action(
 }
 
 fn sync_notification_window(app: &tauri::AppHandle, unread: usize) {
+    let window_state = app.state::<NotificationWindowState>().inner().clone();
+    window_state.reconcile_hit_region(unread);
     position_notification_window(app);
     let Some(pet) = app.get_webview_window("pet") else {
         return;
@@ -739,13 +813,6 @@ fn sync_notification_window(app: &tauri::AppHandle, unread: usize) {
     let Some(notification) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) else {
         return;
     };
-    let window_state = app.state::<NotificationWindowState>().inner().clone();
-    #[cfg(target_os = "macos")]
-    let _ = macos_panel::update_notification_hit_region(
-        &notification,
-        unread,
-        window_state.get() == NotificationWindowPlacement::Below,
-    );
     match notification_window_sync_action(unread, pet.is_visible().unwrap_or(false)) {
         NotificationWindowSyncAction::Show => {
             window_state.cancel_scheduled_hide();
@@ -864,11 +931,11 @@ fn position_notification_window(app: &tauri::AppHandle) {
     if !positioned_natively {
         let _ = notification.set_position(layout.position);
     }
-    app.state::<NotificationWindowState>().set(layout.placement);
-    #[cfg(target_os = "macos")]
-    let _ = macos_panel::update_notification_hit_region(
+    let window_state = app.state::<NotificationWindowState>();
+    window_state.set(layout.placement);
+    let _ = apply_notification_hit_region(
         &notification,
-        current_unread_notification_count(app),
+        window_state.hit_region(),
         layout.placement == NotificationWindowPlacement::Below,
     );
     apply_notification_window_placement(&notification, layout.placement);
@@ -1737,6 +1804,26 @@ fn focus_pet_window(app: tauri::AppHandle) -> Result<bool, String> {
     }
     window.set_focus().map_err(|error| error.to_string())?;
     let _ = window.eval("document.querySelector('.pet-sprite')?.focus()");
+    Ok(true)
+}
+
+#[tauri::command]
+fn set_notification_hit_region(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+) -> Result<bool, String> {
+    if window.label() != NOTIFICATION_WINDOW_LABEL {
+        return Ok(false);
+    }
+    let state = app.state::<NotificationWindowState>();
+    state.set_hit_region(mode);
+    apply_notification_hit_region(
+        &window,
+        mode,
+        state.get() == NotificationWindowPlacement::Below,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(true)
 }
 

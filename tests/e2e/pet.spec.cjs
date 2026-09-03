@@ -1183,7 +1183,13 @@ test("three notifications keep the fixed two-slot window after two dismissals", 
   await dismissVisibleNotification(stack, ids.b);
   await expectVisibleNotificationIds(stack, [ids.c]);
 
-  expect(await page.evaluate(() => window.__LILI_INVOKES__)).toEqual([]);
+  expect(
+    await page.evaluate(() =>
+      window.__LILI_INVOKES__.filter(
+        (call) => call.name === "resize_notification_window",
+      ),
+    ),
+  ).toEqual([]);
   await expect
     .poll(() =>
       stack.locator(".notification-card-current").evaluate((card) => {
@@ -1391,6 +1397,15 @@ for (const scenario of [
   test(`final two notifications ${scenario.name} preserve the exit lifecycle`, async ({
     page,
   }) => {
+    await page.addInitScript(() => {
+      window.__LILI_INVOKES__ = [];
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (name, args) => {
+          window.__LILI_INVOKES__.push({ name, args });
+          return true;
+        },
+      };
+    });
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await openNotifications(page);
     const ids = await setupTwoNotificationFixture(
@@ -1399,6 +1414,9 @@ for (const scenario of [
     );
     const stack = page.locator(".notification-stack");
     await expectVisibleNotificationIds(stack, [ids.a, ids.b]);
+    await page.evaluate(() => {
+      window.__LILI_INVOKES__ = [];
+    });
 
     const first = stack.locator(
       `.notification-card-current[data-notification-id='${ids[scenario.first]}']`,
@@ -1424,6 +1442,15 @@ for (const scenario of [
     expect(Math.abs(firstExitTop - firstTop)).toBeLessThan(2);
     await expect(remaining).toHaveClass(new RegExp(scenario.remainingRoleDuringExit));
     await expect(remaining).toHaveCSS("opacity", "1");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.__LILI_INVOKES__
+            .filter((call) => call.name === "set_notification_hit_region")
+            .at(-1)?.args?.mode,
+        ),
+      )
+      .toBe(scenario.first === "a" ? "top" : "bottom");
     const remainingTopDuringExit = await remaining.evaluate(
       (card) => card.getBoundingClientRect().top,
     );
@@ -1435,6 +1462,17 @@ for (const scenario of [
       `.notification-card-current[data-notification-id='${ids[scenario.remaining]}']`,
     );
     await expect(remainingAfterExit).toHaveCSS("opacity", "1");
+    if (scenario.first === "a") {
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            window.__LILI_INVOKES__
+              .filter((call) => call.name === "set_notification_hit_region")
+              .some((call) => call.args?.mode === "reflow"),
+          ),
+        )
+        .toBe(true);
+    }
     await page.waitForTimeout(500);
 
     const finalCard = stack.locator(
@@ -1458,6 +1496,15 @@ for (const scenario of [
     await expect(finalExit).toHaveCount(0);
     await expect(stack).toHaveAttribute("data-notification-visible-count", "0");
     await expect(page.locator(".notification-card")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.__LILI_INVOKES__
+            .filter((call) => call.name === "set_notification_hit_region")
+            .at(-1)?.args?.mode,
+        ),
+      )
+      .toBe("empty");
   });
 }
 

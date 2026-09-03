@@ -1131,6 +1131,12 @@ export function focusNativePetWindow() {
   if (!invoke) return;
   void invoke('focus_pet_window').catch(() => {});
 }
+
+export function setNativeNotificationHitRegion(mode) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('set_notification_hit_region', { mode }).catch(() => {});
+}
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
@@ -1150,6 +1156,9 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativePetWindow)]
     fn focus_native_pet_window();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = setNativeNotificationHitRegion)]
+    fn set_native_notification_hit_region(mode: &str);
 }
 
 #[cfg(feature = "hydrate")]
@@ -1310,7 +1319,9 @@ fn install_context_menu_handlers() {
 
 #[cfg(test)]
 mod tests {
-    use lili_core::{PetLifecycleState, PetNotificationPresentation};
+    use lili_core::PetLifecycleState;
+    #[cfg(feature = "ssr")]
+    use lili_core::PetNotificationPresentation;
 
     use super::*;
 

@@ -19,6 +19,12 @@ use objc2_app_kit::{
     NSWindowStyleMask,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint};
+
+use crate::notification_hit_region::{
+    NotificationHitRegionMode, WINDOW_HEIGHT as NOTIFICATION_WINDOW_HEIGHT,
+    contains as notification_hit_region_contains,
+};
+
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 const CURRENT_PROCESS: u32 = 2;
 const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
@@ -51,20 +57,11 @@ const PET_SPRITE_HEIGHT: f64 = 208.0;
 const PET_SPRITE_WIDTH: f64 = 192.0;
 const PET_WINDOW_HEIGHT: f64 = 360.0;
 const PET_WINDOW_WIDTH: f64 = 320.0;
-const NOTIFICATION_WINDOW_HEIGHT: f64 = 158.0;
-const NOTIFICATION_WINDOW_WIDTH: f64 = 320.0;
-const NOTIFICATION_STACK_HEIGHT: f64 = 148.0;
-const NOTIFICATION_STACK_HORIZONTAL_INSET: f64 = 12.0;
-const NOTIFICATION_CARD_HEIGHT: f64 = 58.0;
-const NOTIFICATION_CARD_TOP_OFFSET: f64 = 12.0;
-const NOTIFICATION_CARD_BOTTOM_OFFSET: f64 = 78.0;
-const NOTIFICATION_STACK_TOP_ABOVE: f64 = 6.0;
-const NOTIFICATION_STACK_TOP_BELOW: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug)]
 struct NotificationHitRegion {
     window_number: isize,
-    notification_count: usize,
+    mode: NotificationHitRegionMode,
     below_pet: bool,
 }
 
@@ -109,7 +106,7 @@ pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 
 pub fn update_notification_hit_region(
     window: &tauri::WebviewWindow,
-    notification_count: usize,
+    mode: NotificationHitRegionMode,
     below_pet: bool,
 ) -> tauri::Result<()> {
     let raw_window = window.ns_window()?;
@@ -124,7 +121,7 @@ pub fn update_notification_hit_region(
         .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?
         .notification_hit_region = Some(NotificationHitRegion {
         window_number,
-        notification_count,
+        mode,
         below_pet,
     });
     if MainThreadMarker::new().is_some() {
@@ -276,7 +273,7 @@ fn register_notification_hit_region(window_number: isize) -> tauri::Result<()> {
         .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?
         .notification_hit_region = Some(NotificationHitRegion {
         window_number,
-        notification_count: 0,
+        mode: NotificationHitRegionMode::Empty,
         below_pet: false,
     });
     install_notification_global_monitor();
@@ -324,50 +321,11 @@ fn refresh_notification_mouse_passthrough() {
     }
     let point = window.convertPointFromScreen(NSEvent::mouseLocation());
     window.setIgnoresMouseEvents(!notification_hit_region_contains(
-        hit_region.notification_count,
+        hit_region.mode,
         hit_region.below_pet,
         point.x,
-        point.y,
+        NOTIFICATION_WINDOW_HEIGHT - point.y,
     ));
-}
-
-fn notification_hit_region_contains(
-    notification_count: usize,
-    below_pet: bool,
-    x: f64,
-    y: f64,
-) -> bool {
-    let max_x = NOTIFICATION_WINDOW_WIDTH - NOTIFICATION_STACK_HORIZONTAL_INSET;
-    if !(NOTIFICATION_STACK_HORIZONTAL_INSET..=max_x).contains(&x) || notification_count == 0 {
-        return false;
-    }
-    let stack_top = if below_pet {
-        NOTIFICATION_STACK_TOP_BELOW
-    } else {
-        NOTIFICATION_STACK_TOP_ABOVE
-    };
-    if notification_count > 2 {
-        // Hidden cards make the whole stack a scroll surface, including its gaps.
-        let min_y = NOTIFICATION_WINDOW_HEIGHT - stack_top - NOTIFICATION_STACK_HEIGHT;
-        let max_y = NOTIFICATION_WINDOW_HEIGHT - stack_top;
-        return (min_y..=max_y).contains(&y);
-    }
-    let contains_card = |top_offset: f64| {
-        let max_y = NOTIFICATION_WINDOW_HEIGHT - stack_top - top_offset;
-        let min_y = max_y - NOTIFICATION_CARD_HEIGHT;
-        (min_y..=max_y).contains(&y)
-    };
-    if notification_count == 1 {
-        let offset = if below_pet {
-            NOTIFICATION_CARD_TOP_OFFSET
-        } else {
-            NOTIFICATION_CARD_BOTTOM_OFFSET
-        };
-        contains_card(offset)
-    } else {
-        contains_card(NOTIFICATION_CARD_TOP_OFFSET)
-            || contains_card(NOTIFICATION_CARD_BOTTOM_OFFSET)
-    }
 }
 
 pub fn hide_dock_icon() {
@@ -603,8 +561,8 @@ mod tests {
     use objc2_app_kit::NSEventType;
 
     use super::{
-        native_top_left_point, notification_hit_region_contains, pet_sprite_contains,
-        screen_point_to_tauri_with_display_height, should_open_pet_context_menu,
+        native_top_left_point, pet_sprite_contains, screen_point_to_tauri_with_display_height,
+        should_open_pet_context_menu,
     };
 
     #[test]
@@ -614,28 +572,6 @@ mod tests {
         assert!(pet_sprite_contains(160.0, 180.0));
         assert!(!pet_sprite_contains(63.9, 180.0));
         assert!(!pet_sprite_contains(160.0, 284.1));
-    }
-
-    #[test]
-    fn notification_hit_region_matches_visible_cards_and_scroll_surface() {
-        assert!(!notification_hit_region_contains(0, false, 160.0, 45.0));
-
-        assert!(notification_hit_region_contains(1, false, 160.0, 45.0));
-        assert!(!notification_hit_region_contains(1, false, 160.0, 110.0));
-        assert!(notification_hit_region_contains(1, true, 160.0, 110.0));
-        assert!(!notification_hit_region_contains(1, true, 160.0, 45.0));
-
-        assert!(notification_hit_region_contains(2, false, 160.0, 45.0));
-        assert!(notification_hit_region_contains(2, false, 160.0, 110.0));
-        assert!(!notification_hit_region_contains(2, false, 160.0, 78.0));
-        assert!(notification_hit_region_contains(2, true, 160.0, 45.0));
-        assert!(notification_hit_region_contains(2, true, 160.0, 110.0));
-        assert!(!notification_hit_region_contains(2, true, 160.0, 77.0));
-
-        assert!(notification_hit_region_contains(3, false, 160.0, 78.0));
-        assert!(notification_hit_region_contains(3, true, 160.0, 78.0));
-        assert!(!notification_hit_region_contains(3, false, 8.0, 78.0));
-        assert!(!notification_hit_region_contains(3, false, 312.0, 78.0));
     }
 
     #[test]
