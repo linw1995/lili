@@ -109,21 +109,17 @@ pub fn update_notification_hit_region(
     mode: NotificationHitRegionMode,
     below_pet: bool,
 ) -> tauri::Result<()> {
-    let raw_window = window.ns_window()?;
-    if raw_window.is_null() {
-        return Err(tauri::Error::InvalidWindowHandle);
-    }
-    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
-    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
     let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
-    state
+    let mut state = state
         .lock()
-        .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?
-        .notification_hit_region = Some(NotificationHitRegion {
-        window_number,
-        mode,
-        below_pet,
-    });
+        .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?;
+    let hit_region = state
+        .notification_hit_region
+        .as_mut()
+        .ok_or_else(|| tauri::Error::AssetNotFound("notification hit region".to_owned()))?;
+    hit_region.mode = mode;
+    hit_region.below_pet = below_pet;
+    drop(state);
     if MainThreadMarker::new().is_some() {
         refresh_notification_mouse_passthrough();
         Ok(())
