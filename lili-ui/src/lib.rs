@@ -1110,8 +1110,11 @@ export function activateNativePet(trigger) {
   });
 }
 
-export function dismissNativeNotification(id) {
-  void fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+export async function dismissNativeNotification(id) {
+  const response = await fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error('notification dismissal failed');
 }
 
 export function openNativePetContextMenu(screenX, screenY) {
@@ -1126,16 +1129,16 @@ export function focusNativeNotifications() {
   void invoke('focus_notification_window').catch(() => {});
 }
 
-export function resizeNotificationWindow(height) {
-  const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (!invoke) return;
-  void invoke('resize_notification_window', { height }).catch(() => {});
-}
-
 export function focusNativePetWindow() {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;
   void invoke('focus_pet_window').catch(() => {});
+}
+
+export function setNativeNotificationHitRegion(mode) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  void invoke('set_notification_hit_region', { mode }).catch(() => {});
 }
 "#)]
 extern "C" {
@@ -1146,7 +1149,7 @@ extern "C" {
     fn activate_native_pet(trigger: &str);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = dismissNativeNotification)]
-    fn dismiss_native_notification(id: &str);
+    fn dismiss_native_notification(id: &str) -> js_sys::Promise;
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = openNativePetContextMenu)]
     fn open_native_pet_context_menu(screen_x: i32, screen_y: i32);
@@ -1154,11 +1157,11 @@ extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativeNotifications)]
     fn focus_native_notifications();
 
-    #[wasm_bindgen::prelude::wasm_bindgen(js_name = resizeNotificationWindow)]
-    fn resize_notification_window(height: u32);
-
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativePetWindow)]
     fn focus_native_pet_window();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = setNativeNotificationHitRegion)]
+    fn set_native_notification_hit_region(mode: &str);
 }
 
 #[cfg(feature = "hydrate")]
@@ -1319,7 +1322,9 @@ fn install_context_menu_handlers() {
 
 #[cfg(test)]
 mod tests {
-    use lili_core::{PetLifecycleState, PetNotificationPresentation};
+    use lili_core::PetLifecycleState;
+    #[cfg(feature = "ssr")]
+    use lili_core::PetNotificationPresentation;
 
     use super::*;
 

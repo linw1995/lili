@@ -7,6 +7,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -364,7 +365,11 @@ class AppServerClient:
         require(run.get("source") == "plugin", f"Codex dispatched {event_name} outside the plugin")
         require(run.get("handlerType") == "command", f"Codex did not dispatch {event_name} as a command")
         require(run.get("executionMode") == "sync", f"Codex changed {event_name} execution mode")
-        require(run.get("status") == "completed", f"Codex did not complete the trusted {event_name} hook")
+        require(
+            run.get("status") == "completed",
+            f"Codex did not complete the trusted {event_name} hook: "
+            f"status={run.get('status')}; entries={run.get('entries')}",
+        )
         return run
 
     def _send(self, message: dict) -> None:
@@ -539,8 +544,15 @@ def dispatch_installed_plugin_hook(
     runner.verify_version()
     if os.name == "nt":
         system_root = os.environ.get("SystemRoot")
+        local_app_data = os.environ.get("LOCALAPPDATA")
         require(isinstance(system_root, str) and system_root, "Windows system root is missing")
-        runner.environment["SystemRoot"] = system_root
+        require(
+            isinstance(local_app_data, str) and local_app_data,
+            "Windows local application data is missing",
+        )
+        runner.environment.update(
+            {"SystemRoot": system_root, "LOCALAPPDATA": local_app_data}
+        )
         temporary = codex_home.resolve() / "acceptance-temp"
         temporary.mkdir(parents=True, exist_ok=True)
         runner.environment.update({"TEMP": str(temporary), "TMP": str(temporary)})
@@ -556,7 +568,10 @@ def dispatch_installed_plugin_hook(
         client.trust(list(initial.values()))
         hook_map(client.hooks(), selector, "trusted")
         thread_id = client.start_thread()
-        run = client._completed_hook(thread_id, "sessionStart")
+        turn_id = client._start_turn(
+            thread_id, "Exercise the installed Marketplace session hook."
+        )
+        run = client._completed_hook(thread_id, "sessionStart", turn_id)
         client.shutdown()
     finally:
         client.close()
@@ -725,7 +740,7 @@ def main() -> int:
                 arguments.dispatch_cwd,
             )
     except (MarketplaceRoundTripError, OSError, KeyError, TypeError, ValueError) as error:
-        print(f"hook trust round trip failed: {error}")
+        print(f"hook trust round trip failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0

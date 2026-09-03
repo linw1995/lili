@@ -9,7 +9,13 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-hydrate = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys", "leptos/hydrate"]
+hydrate = [
+  "dep:js-sys",
+  "dep:wasm-bindgen",
+  "dep:wasm-bindgen-futures",
+  "dep:web-sys",
+  "leptos/hydrate",
+]
 ssr = ["leptos/ssr"]
 
 [dependencies]
@@ -19,7 +25,10 @@ lili-core = { path = "../lili-core" }
 lili-pet = { path = "../lili-pet" }
 serde_json.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = [
+  "AnimationEvent",
+  "CssStyleDeclaration",
   "Document",
   "DomRect",
   "Element",

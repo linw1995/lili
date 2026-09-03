@@ -18,7 +18,7 @@ use crate::{
 
 const CLAIM_LEASE_MS: i64 = 30_000;
 const HOOK_BUSY_TIMEOUT: Duration = Duration::from_millis(700);
-const DEBUG_HOOK_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+const DEBUG_HOOK_BUSY_TIMEOUT: Duration = Duration::from_secs(4);
 
 fn hook_busy_timeout() -> Duration {
     // Coverage-instrumented debug binaries add startup overhead to each Hook process; keep that

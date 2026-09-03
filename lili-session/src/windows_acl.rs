@@ -17,8 +17,8 @@ use windows_sys::Win32::{
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
         GetSecurityDescriptorControl, GetTokenInformation, NO_INHERITANCE,
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, SE_DACL_PROTECTED, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
-        TokenUser,
+        PSID, SE_DACL_PROTECTED, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_INFORMATION_CLASS,
+        TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
     },
     Storage::FileSystem::{
         FILE_ALL_ACCESS, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -30,7 +30,7 @@ use windows_sys::Win32::{
 pub(crate) fn enforce_owner_only(path: &Path, container: bool) -> io::Result<()> {
     validate_owner(path)?;
     let current_user = CurrentUser::read()?;
-    let sid = current_user.sid()?;
+    let sid = current_user.user_sid()?;
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: FILE_ALL_ACCESS,
         grfAccessMode: SET_ACCESS,
@@ -75,7 +75,8 @@ pub(crate) fn enforce_owner_only(path: &Path, container: bool) -> io::Result<()>
 
 pub(crate) fn validate_owner(path: &Path) -> io::Result<()> {
     let current_user = CurrentUser::read()?;
-    let expected_owner = current_user.sid()?;
+    let expected_owner = current_user.owner_sid()?;
+    let expected_user = current_user.user_sid()?;
     let wide_path = wide_path(path);
     let mut owner: PSID = null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
@@ -96,7 +97,8 @@ pub(crate) fn validate_owner(path: &Path) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let _descriptor = LocalAllocation(descriptor);
-    if !same_sid(owner, expected_owner) {
+    // Elevated tokens may use an owner-capable group as the default owner for new objects.
+    if !same_sid(owner, expected_owner) && !same_sid(owner, expected_user) {
         return Err(unsafe_acl_error());
     }
     Ok(())
@@ -104,7 +106,8 @@ pub(crate) fn validate_owner(path: &Path) -> io::Result<()> {
 
 pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
     let current_user = CurrentUser::read()?;
-    let expected_owner = current_user.sid()?;
+    let expected_owner = current_user.owner_sid()?;
+    let expected_user = current_user.user_sid()?;
     let wide_path = wide_path(path);
     let mut owner: PSID = null_mut();
     let mut dacl: *mut ACL = null_mut();
@@ -126,7 +129,7 @@ pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let descriptor = LocalAllocation(descriptor);
-    if dacl.is_null() || !same_sid(owner, expected_owner) {
+    if dacl.is_null() || (!same_sid(owner, expected_owner) && !same_sid(owner, expected_user)) {
         return Err(unsafe_acl_error());
     }
 
@@ -167,7 +170,7 @@ pub(crate) fn validate_owner_only(path: &Path) -> io::Result<()> {
     let ace_sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
     if u32::from(ace.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
         || ace.Mask != FILE_ALL_ACCESS
-        || !same_sid(ace_sid, expected_owner)
+        || !same_sid(ace_sid, expected_user)
     {
         return Err(unsafe_acl_error());
     }
@@ -208,7 +211,8 @@ fn unsafe_acl_error() -> io::Error {
 
 struct CurrentUser {
     _token: TokenHandle,
-    information: Vec<usize>,
+    user_information: Vec<usize>,
+    owner_information: Vec<usize>,
 }
 
 impl CurrentUser {
@@ -219,39 +223,20 @@ impl CurrentUser {
             return Err(io::Error::last_os_error());
         }
         let token = TokenHandle(token);
-        let mut required = 0;
-        // SAFETY: A null buffer with zero length is the documented size query.
-        unsafe {
-            GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required);
-        }
-        if required < size_of::<TOKEN_USER>() as u32 {
-            return Err(io::Error::last_os_error());
-        }
-        let words = (required as usize).div_ceil(size_of::<usize>());
-        let mut information = vec![0_usize; words];
-        // SAFETY: The aligned buffer is at least `required` bytes and remains alive below.
-        if unsafe {
-            GetTokenInformation(
-                token.0,
-                TokenUser,
-                information.as_mut_ptr().cast(),
-                required,
-                &mut required,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let user_information = read_token_information(token.0, TokenUser, size_of::<TOKEN_USER>())?;
+        let owner_information =
+            read_token_information(token.0, TokenOwner, size_of::<TOKEN_OWNER>())?;
         Ok(Self {
             _token: token,
-            information,
+            user_information,
+            owner_information,
         })
     }
 
-    fn sid(&self) -> io::Result<PSID> {
+    fn user_sid(&self) -> io::Result<PSID> {
         // SAFETY: A successful TokenUser query initialized a TOKEN_USER at the buffer start.
         let sid = unsafe {
-            self.information
+            self.user_information
                 .as_ptr()
                 .cast::<TOKEN_USER>()
                 .read()
@@ -266,6 +251,55 @@ impl CurrentUser {
         }
         Ok(sid)
     }
+
+    fn owner_sid(&self) -> io::Result<PSID> {
+        // SAFETY: A successful TokenOwner query initialized a TOKEN_OWNER at the buffer start.
+        let sid = unsafe {
+            self.owner_information
+                .as_ptr()
+                .cast::<TOKEN_OWNER>()
+                .read()
+                .Owner
+        };
+        if sid.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process token omitted its owner SID",
+            ));
+        }
+        Ok(sid)
+    }
+}
+
+fn read_token_information(
+    token: HANDLE,
+    information_class: TOKEN_INFORMATION_CLASS,
+    minimum_size: usize,
+) -> io::Result<Vec<usize>> {
+    let mut required = 0;
+    // SAFETY: A null buffer with zero length is the documented size query.
+    unsafe {
+        GetTokenInformation(token, information_class, null_mut(), 0, &mut required);
+    }
+    if required < u32::try_from(minimum_size).expect("token information size fits in u32") {
+        return Err(io::Error::last_os_error());
+    }
+    let words = (required as usize).div_ceil(size_of::<usize>());
+    let mut information = vec![0_usize; words];
+    // SAFETY: The aligned buffer is at least `required` bytes and remains alive for the caller.
+    if unsafe {
+        GetTokenInformation(
+            token,
+            information_class,
+            information.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information)
 }
 
 struct TokenHandle(HANDLE);
@@ -303,6 +337,21 @@ mod tests {
     static NEXT_TEST_FILE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
+    fn new_directory_owner_matches_the_current_token() {
+        let sequence = NEXT_TEST_FILE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "lili-session-owner-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+
+        validate_owner(&path).unwrap();
+        enforce_owner_only(&path, true).unwrap();
+
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
     fn owner_comparison_rejects_a_different_valid_sid() {
         let current_user = CurrentUser::read().unwrap();
         let mut world_sid = [0_u8; 68];
@@ -320,7 +369,7 @@ mod tests {
             0
         );
         assert!(!same_sid(
-            current_user.sid().unwrap(),
+            current_user.user_sid().unwrap(),
             world_sid.as_mut_ptr().cast()
         ));
     }

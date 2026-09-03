@@ -15,9 +15,16 @@ use objc2::{
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
 use objc2_app_kit::{
-    NSEvent, NSEventMask, NSEventType, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSEvent, NSEventMask, NSEventType, NSWindow, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
-use objc2_foundation::NSPoint;
+use objc2_foundation::{MainThreadMarker, NSPoint};
+
+use crate::notification_hit_region::{
+    NotificationHitRegionMode, WINDOW_HEIGHT as NOTIFICATION_WINDOW_HEIGHT,
+    contains as notification_hit_region_contains,
+};
+
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 const CURRENT_PROCESS: u32 = 2;
 const PROCESS_TRANSFORM_TO_UI_ELEMENT_APPLICATION: i32 = 4;
@@ -51,16 +58,27 @@ const PET_SPRITE_WIDTH: f64 = 192.0;
 const PET_WINDOW_HEIGHT: f64 = 360.0;
 const PET_WINDOW_WIDTH: f64 = 320.0;
 
+#[derive(Clone, Copy, Debug)]
+struct NotificationHitRegion {
+    window_number: isize,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+}
+
 #[derive(Default)]
 struct ContextMenuState {
     pet: Option<(isize, ContextMenuHandler)>,
     suppressed_windows: HashSet<isize>,
+    notification_hit_region: Option<NotificationHitRegion>,
 }
 
 static CONTEXT_MENU_STATE: OnceLock<Mutex<ContextMenuState>> = OnceLock::new();
 thread_local! {
     static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
         const { std::cell::RefCell::new(None) };
+    static NOTIFICATION_GLOBAL_MONITOR: std::cell::RefCell<
+        Option<objc2::rc::Retained<AnyObject>>
+    > = const { std::cell::RefCell::new(None) };
 }
 
 pub fn configure(
@@ -82,7 +100,32 @@ pub fn configure(
 
 pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
-    register_context_menu_suppression(window_number)
+    register_context_menu_suppression(window_number)?;
+    register_notification_hit_region(window_number)
+}
+
+pub fn update_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
+    let mut state = state
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?;
+    let hit_region = state
+        .notification_hit_region
+        .as_mut()
+        .ok_or_else(|| tauri::Error::AssetNotFound("notification hit region".to_owned()))?;
+    hit_region.mode = mode;
+    hit_region.below_pet = below_pet;
+    drop(state);
+    if MainThreadMarker::new().is_some() {
+        refresh_notification_mouse_passthrough();
+        Ok(())
+    } else {
+        window.run_on_main_thread(refresh_notification_mouse_passthrough)
+    }
 }
 
 pub fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -106,27 +149,63 @@ pub fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<(
 pub fn set_position_sync(
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
+    destination_scale_factor: f64,
+) -> tauri::Result<()> {
+    if MainThreadMarker::new().is_some() {
+        return set_position_on_main_thread(window, position, destination_scale_factor);
+    }
+
+    let target = window.clone();
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    window.run_on_main_thread(move || {
+        let result = set_position_on_main_thread(&target, position, destination_scale_factor);
+        let _ = result_tx.send(result);
+    })?;
+    result_rx
+        .recv()
+        .map_err(|_| tauri::Error::AssetNotFound("notification position task".to_owned()))?
+}
+
+fn set_position_on_main_thread(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+    destination_scale_factor: f64,
 ) -> tauri::Result<()> {
     let raw_window = window.ns_window()?;
     if raw_window.is_null() {
         return Err(tauri::Error::InvalidWindowHandle);
     }
     let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
-    let scale_factor = native_window.backingScaleFactor();
-    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+    let top_left = native_top_left_point(
+        position,
+        destination_scale_factor,
+        CGDisplay::main().pixels_high() as f64,
+    );
+    // The window still reports its source display scale until this move completes.
+    native_window.setFrameTopLeftPoint(top_left);
+    Ok(())
+}
+
+fn valid_scale_factor(scale_factor: f64) -> f64 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
     } else {
         1.0
-    };
-    let logical_x = f64::from(position.x) / scale_factor;
-    let logical_y = f64::from(position.y) / scale_factor;
-    let top_left = NSPoint::new(
-        logical_x,
-        CGDisplay::main().pixels_high() as f64 - logical_y,
-    );
-    // Tao dispatches this frame update asynchronously; apply it synchronously before showing.
-    native_window.setFrameTopLeftPoint(top_left);
-    Ok(())
+    }
+}
+
+fn native_top_left_point(
+    position: tauri::PhysicalPosition<i32>,
+    scale_factor: f64,
+    display_height_points: f64,
+) -> NSPoint {
+    let scale_factor = valid_scale_factor(scale_factor);
+    // Match Tao's macOS conversion: the display height is already in AppKit's global
+    // coordinate space, while Tao's physical position still needs scale conversion.
+    NSPoint::new(
+        f64::from(position.x) / scale_factor,
+        display_height_points - f64::from(position.y) / scale_factor,
+    )
 }
 
 fn configure_panel(window: &tauri::WebviewWindow) -> tauri::Result<isize> {
@@ -181,6 +260,68 @@ fn register_context_menu_suppression(window_number: isize) -> tauri::Result<()> 
         .insert(window_number);
     install_context_menu_monitor();
     Ok(())
+}
+
+fn register_notification_hit_region(window_number: isize) -> tauri::Result<()> {
+    let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
+    state
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?
+        .notification_hit_region = Some(NotificationHitRegion {
+        window_number,
+        mode: NotificationHitRegionMode::Empty,
+        below_pet: false,
+    });
+    install_notification_global_monitor();
+    refresh_notification_mouse_passthrough();
+    Ok(())
+}
+
+fn install_notification_global_monitor() {
+    let already_installed = NOTIFICATION_GLOBAL_MONITOR.with(|monitor| monitor.borrow().is_some());
+    if already_installed {
+        return;
+    }
+    let mask = NSEventMask::MouseMoved
+        | NSEventMask::LeftMouseDragged
+        | NSEventMask::RightMouseDragged
+        | NSEventMask::OtherMouseDragged;
+    let global_block = RcBlock::new(move |_event: NonNull<NSEvent>| {
+        refresh_notification_mouse_passthrough();
+    });
+    if let Some(monitor) =
+        NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global_block)
+    {
+        NOTIFICATION_GLOBAL_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
+}
+
+fn refresh_notification_mouse_passthrough() {
+    let tracking_available = CONTEXT_MENU_MONITOR.with(|monitor| monitor.borrow().is_some())
+        && NOTIFICATION_GLOBAL_MONITOR.with(|monitor| monitor.borrow().is_some());
+    let hit_region = CONTEXT_MENU_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.notification_hit_region);
+    let (Some(hit_region), Some(mtm)) = (hit_region, MainThreadMarker::new()) else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(mtm);
+    let Some(window) = application.windowWithWindowNumber(hit_region.window_number) else {
+        return;
+    };
+    window.setAcceptsMouseMovedEvents(true);
+    if !tracking_available {
+        window.setIgnoresMouseEvents(false);
+        return;
+    }
+    let point = window.convertPointFromScreen(NSEvent::mouseLocation());
+    window.setIgnoresMouseEvents(!notification_hit_region_contains(
+        hit_region.mode,
+        hit_region.below_pet,
+        point.x,
+        NOTIFICATION_WINDOW_HEIGHT - point.y,
+    ));
 }
 
 pub fn hide_dock_icon() {
@@ -298,6 +439,16 @@ fn install_context_menu_monitor() {
         let event = unsafe { event.as_ref() };
         let window_number = event.windowNumber();
         let event_type = event.r#type();
+        if matches!(
+            event_type,
+            NSEventType::MouseMoved
+                | NSEventType::LeftMouseDragged
+                | NSEventType::RightMouseDragged
+                | NSEventType::OtherMouseDragged
+        ) {
+            refresh_notification_mouse_passthrough();
+            return event as *const NSEvent as *mut NSEvent;
+        }
         let Some((suppressed, handler)) = CONTEXT_MENU_STATE.get().and_then(|state| {
             state.lock().ok().map(|state| {
                 let suppressed = state.suppressed_windows.contains(&window_number);
@@ -328,7 +479,12 @@ fn install_context_menu_monitor() {
         }
         std::ptr::null_mut()
     });
-    let mask = NSEventMask::RightMouseDown | NSEventMask::RightMouseUp;
+    let mask = NSEventMask::RightMouseDown
+        | NSEventMask::RightMouseUp
+        | NSEventMask::MouseMoved
+        | NSEventMask::LeftMouseDragged
+        | NSEventMask::RightMouseDragged
+        | NSEventMask::OtherMouseDragged;
     let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
     if let Some(monitor) = monitor {
         CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
@@ -352,7 +508,7 @@ fn screen_point_to_tauri_with_display_height(
     screen_x: f64,
     screen_y: f64,
     scale_factor: f64,
-    display_height: f64,
+    display_height_points: f64,
 ) -> tauri::PhysicalPosition<i32> {
     let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -360,7 +516,7 @@ fn screen_point_to_tauri_with_display_height(
         1.0
     };
     // Keep the conversion aligned with Tao's macOS cursor_position implementation.
-    let top_left_y = display_height - screen_y;
+    let top_left_y = display_height_points - screen_y;
     tauri::PhysicalPosition::new(
         (screen_x * scale_factor).round() as i32,
         (top_left_y * scale_factor).round() as i32,
@@ -401,7 +557,7 @@ mod tests {
     use objc2_app_kit::NSEventType;
 
     use super::{
-        pet_sprite_contains, screen_point_to_tauri_with_display_height,
+        native_top_left_point, pet_sprite_contains, screen_point_to_tauri_with_display_height,
         should_open_pet_context_menu,
     };
 
@@ -442,5 +598,24 @@ mod tests {
             screen_point_to_tauri_with_display_height(100.0, 450.0, 2.0, 900.0),
             tauri::PhysicalPosition::new(200, 900)
         );
+    }
+
+    #[test]
+    fn native_frame_position_round_trips_tao_screen_coordinates() {
+        let position = screen_point_to_tauri_with_display_height(100.0, 450.0, 2.0, 900.0);
+        let top_left = native_top_left_point(position, 2.0, 900.0);
+        assert_eq!(top_left.x, 100.0);
+        assert_eq!(top_left.y, 450.0);
+    }
+
+    #[test]
+    fn native_frame_position_uses_the_destination_display_scale() {
+        let position = screen_point_to_tauri_with_display_height(100.0, 450.0, 1.0, 900.0);
+        let top_left = native_top_left_point(position, 1.0, 900.0);
+        assert_eq!(top_left.x, 100.0);
+        assert_eq!(top_left.y, 450.0);
+
+        let stale_source_scale = native_top_left_point(position, 2.0, 900.0);
+        assert_ne!(stale_source_scale, top_left);
     }
 }

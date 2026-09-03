@@ -2701,9 +2701,11 @@ dependencies = [
  "axum-server",
  "base64 0.22.1",
  "block2",
+ "cairo-rs",
  "core-graphics",
  "getrandom 0.4.3",
  "gio",
+ "gtk",
  "hmac",
  "lili-actions",
  "lili-app-state",
@@ -2869,6 +2871,7 @@ dependencies = [
  "lili-pet",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

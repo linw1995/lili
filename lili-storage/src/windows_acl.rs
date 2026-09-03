@@ -14,7 +14,8 @@ use windows_sys::Win32::{
             SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
         },
         DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        PSECURITY_DESCRIPTOR, PSID, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
+        TokenOwner, TokenUser,
     },
     Security::{
         NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
@@ -26,7 +27,7 @@ use windows_sys::Win32::{
 pub fn enforce_owner_only(path: &Path, container: bool) -> io::Result<()> {
     validate_owner(path)?;
     let current_user = CurrentUser::read()?;
-    let sid = current_user.sid()?;
+    let sid = current_user.user_sid()?;
     let entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: FILE_ALL_ACCESS,
         grfAccessMode: SET_ACCESS,
@@ -71,7 +72,8 @@ pub fn enforce_owner_only(path: &Path, container: bool) -> io::Result<()> {
 
 fn validate_owner(path: &Path) -> io::Result<()> {
     let current_user = CurrentUser::read()?;
-    let expected_owner = current_user.sid()?;
+    let expected_owner = current_user.owner_sid()?;
+    let expected_user = current_user.user_sid()?;
     let wide_path = wide_path(path);
     let mut owner: PSID = null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
@@ -92,7 +94,8 @@ fn validate_owner(path: &Path) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let _descriptor = LocalAllocation(descriptor);
-    if owner.is_null() || !same_sid(owner, expected_owner) {
+    // Elevated tokens may use an owner-capable group as the default owner for new objects.
+    if owner.is_null() || (!same_sid(owner, expected_owner) && !same_sid(owner, expected_user)) {
         return Err(unsafe_acl_error());
     }
     Ok(())
@@ -117,7 +120,8 @@ fn unsafe_acl_error() -> io::Error {
 
 struct CurrentUser {
     _token: TokenHandle,
-    information: Vec<usize>,
+    user_information: Vec<usize>,
+    owner_information: Vec<usize>,
 }
 
 impl CurrentUser {
@@ -128,39 +132,21 @@ impl CurrentUser {
             return Err(io::Error::last_os_error());
         }
         let token = TokenHandle(token);
-        let mut required = 0;
-        // SAFETY: A null buffer with zero length is the documented size query.
-        unsafe {
-            GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required);
-        }
-        if required < u32::try_from(mem::size_of::<TOKEN_USER>()).unwrap_or(u32::MAX) {
-            return Err(io::Error::last_os_error());
-        }
-        let words = (required as usize).div_ceil(mem::size_of::<usize>());
-        let mut information = vec![0_usize; words];
-        // SAFETY: The aligned buffer is at least `required` bytes and remains alive below.
-        if unsafe {
-            GetTokenInformation(
-                token.0,
-                TokenUser,
-                information.as_mut_ptr().cast(),
-                required,
-                &mut required,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        let user_information =
+            read_token_information(token.0, TokenUser, mem::size_of::<TOKEN_USER>())?;
+        let owner_information =
+            read_token_information(token.0, TokenOwner, mem::size_of::<TOKEN_OWNER>())?;
         Ok(Self {
             _token: token,
-            information,
+            user_information,
+            owner_information,
         })
     }
 
-    fn sid(&self) -> io::Result<PSID> {
+    fn user_sid(&self) -> io::Result<PSID> {
         // SAFETY: A successful TokenUser query initialized a TOKEN_USER at the buffer start.
         let sid = unsafe {
-            self.information
+            self.user_information
                 .as_ptr()
                 .cast::<TOKEN_USER>()
                 .read()
@@ -175,6 +161,55 @@ impl CurrentUser {
         }
         Ok(sid)
     }
+
+    fn owner_sid(&self) -> io::Result<PSID> {
+        // SAFETY: A successful TokenOwner query initialized a TOKEN_OWNER at the buffer start.
+        let sid = unsafe {
+            self.owner_information
+                .as_ptr()
+                .cast::<TOKEN_OWNER>()
+                .read()
+                .Owner
+        };
+        if sid.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process token omitted its owner SID",
+            ));
+        }
+        Ok(sid)
+    }
+}
+
+fn read_token_information(
+    token: HANDLE,
+    information_class: TOKEN_INFORMATION_CLASS,
+    minimum_size: usize,
+) -> io::Result<Vec<usize>> {
+    let mut required = 0;
+    // SAFETY: A null buffer with zero length is the documented size query.
+    unsafe {
+        GetTokenInformation(token, information_class, null_mut(), 0, &mut required);
+    }
+    if required < u32::try_from(minimum_size).unwrap_or(u32::MAX) {
+        return Err(io::Error::last_os_error());
+    }
+    let words = (required as usize).div_ceil(mem::size_of::<usize>());
+    let mut information = vec![0_usize; words];
+    // SAFETY: The aligned buffer is at least `required` bytes and remains alive for the caller.
+    if unsafe {
+        GetTokenInformation(
+            token,
+            information_class,
+            information.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information)
 }
 
 struct TokenHandle(HANDLE);
@@ -196,5 +231,22 @@ impl Drop for LocalAllocation {
         unsafe {
             LocalFree(self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_directory_owner_matches_the_current_token() {
+        let path =
+            std::env::temp_dir().join(format!("lili-storage-owner-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+
+        validate_owner(&path).unwrap();
+        enforce_owner_only(&path, true).unwrap();
+
+        std::fs::remove_dir(path).unwrap();
     }
 }

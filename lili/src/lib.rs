@@ -6,10 +6,15 @@ mod diagnostics;
 pub mod hook_forwarder;
 mod integration_cli;
 mod ipc_signer;
+#[cfg(target_os = "linux")]
+mod linux_notification_hit_region;
 mod loopback;
 #[cfg(target_os = "macos")]
 mod macos_panel;
+mod notification_hit_region;
 mod platform_pinning;
+#[cfg(target_os = "windows")]
+mod windows_notification_hit_region;
 
 use std::time::Duration;
 #[cfg(target_os = "macos")]
@@ -41,6 +46,7 @@ use lili_session::{
 #[cfg(test)]
 use lili_session::{ClaimedSpoolRecord, SpoolStore};
 use loopback::LoopbackServer;
+use notification_hit_region::NotificationHitRegionMode;
 use tauri::{
     Manager, WebviewUrl, WebviewWindowBuilder,
     ipc::CapabilityBuilder,
@@ -60,7 +66,7 @@ const NATIVE_CONTEXT_MENU_DEDUP_WINDOW: Duration = Duration::from_millis(250);
 const NOTIFICATION_WINDOW_LABEL: &str = "pet-notifications";
 const NOTIFICATION_WINDOW_WIDTH: u32 = 320;
 const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
-const NOTIFICATION_WINDOW_MIN_HEIGHT: u32 = 16;
+const NOTIFICATION_WINDOW_HIDE_DELAY: Duration = Duration::from_secs(5);
 const NOTIFICATION_SHADOW_INSET: i32 = 12;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
@@ -119,15 +125,52 @@ struct NotificationWindowLayoutInput {
 }
 
 #[derive(Clone, Default)]
-struct NotificationWindowState(Arc<AtomicU8>);
+struct NotificationWindowState {
+    placement: Arc<AtomicU8>,
+    hit_region: Arc<AtomicU8>,
+    hide_generation: Arc<AtomicU64>,
+    hide_scheduled: Arc<AtomicBool>,
+}
 
 impl NotificationWindowState {
     fn get(&self) -> NotificationWindowPlacement {
-        NotificationWindowPlacement::from_code(self.0.load(Ordering::Acquire))
+        NotificationWindowPlacement::from_code(self.placement.load(Ordering::Acquire))
     }
 
     fn set(&self, placement: NotificationWindowPlacement) {
-        self.0.store(placement.code(), Ordering::Release);
+        self.placement.store(placement.code(), Ordering::Release);
+    }
+
+    fn hit_region(&self) -> NotificationHitRegionMode {
+        NotificationHitRegionMode::from_code(self.hit_region.load(Ordering::Acquire))
+    }
+
+    fn set_hit_region(&self, mode: NotificationHitRegionMode) {
+        self.hit_region.store(mode.code(), Ordering::Release);
+    }
+
+    fn reconcile_hit_region(&self, notification_count: usize) -> NotificationHitRegionMode {
+        let mode = self.hit_region().fallback_for_count(notification_count);
+        self.set_hit_region(mode);
+        mode
+    }
+
+    fn schedule_hide(&self) -> Option<u64> {
+        self.hide_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(self.hide_generation.fetch_add(1, Ordering::AcqRel) + 1)
+    }
+
+    fn cancel_scheduled_hide(&self) {
+        if self.hide_scheduled.swap(false, Ordering::AcqRel) {
+            self.hide_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn hide_is_current(&self, generation: u64) -> bool {
+        self.hide_scheduled.load(Ordering::Acquire)
+            && self.hide_generation.load(Ordering::Acquire) == generation
     }
 }
 
@@ -195,6 +238,7 @@ enum ContextMenuPointer {
 #[derive(Clone, Copy, Debug)]
 struct ContextMenuRequest {
     position: tauri::PhysicalPosition<i32>,
+    scale_factor: f64,
     native_event_time_us: Option<u64>,
 }
 
@@ -226,7 +270,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             open_pet_context_menu,
             focus_notification_window,
             focus_pet_window,
-            resize_notification_window,
+            set_notification_hit_region,
             run_pet_context_action,
             complete_desktop_acceptance,
             complete_desktop_smoke
@@ -409,7 +453,7 @@ fn register_notification_window_capability(
         .window(NOTIFICATION_WINDOW_LABEL)
         .permission("allow-sign-loopback-request")
         .permission("allow-focus-pet-window")
-        .permission("allow-resize-notification-window");
+        .permission("allow-set-notification-hit-region");
     app.add_capability(capability)
 }
 
@@ -553,7 +597,12 @@ fn create_context_menu_window(
                     || timestamp_us >= latest_native_event_time_us.load(Ordering::Acquire)
             });
             if is_current {
-                let _ = position_context_menu(&state_app, &window, request.position);
+                let _ = position_context_menu(
+                    &state_app,
+                    &window,
+                    request.position,
+                    request.scale_factor,
+                );
             }
         }
     })
@@ -612,9 +661,58 @@ fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result
     macos_panel::configure_auxiliary(window)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    suppress_webview_context_menu(window)
+    suppress_webview_context_menu(window)?;
+    linux_notification_hit_region::configure(window)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)?;
+    windows_notification_hit_region::configure(window)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    suppress_webview_context_menu(window)?;
+    window.set_ignore_cursor_events(true)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    macos_panel::update_notification_hit_region(window, mode, below_pet)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    linux_notification_hit_region::update(window, mode, below_pet)
+}
+
+#[cfg(target_os = "windows")]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    windows_notification_hit_region::update(window, mode, below_pet)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn apply_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    mode: NotificationHitRegionMode,
+    _below_pet: bool,
+) -> tauri::Result<()> {
+    window.set_ignore_cursor_events(mode == NotificationHitRegionMode::Empty)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -685,7 +783,29 @@ fn handle_pet_move(app: &tauri::AppHandle) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NotificationWindowSyncAction {
+    Show,
+    Hide,
+    ScheduleHide,
+}
+
+fn notification_window_sync_action(
+    unread: usize,
+    pet_visible: bool,
+) -> NotificationWindowSyncAction {
+    if !pet_visible {
+        NotificationWindowSyncAction::Hide
+    } else if unread > 0 {
+        NotificationWindowSyncAction::Show
+    } else {
+        NotificationWindowSyncAction::ScheduleHide
+    }
+}
+
 fn sync_notification_window(app: &tauri::AppHandle, unread: usize) {
+    let window_state = app.state::<NotificationWindowState>().inner().clone();
+    window_state.reconcile_hit_region(unread);
     position_notification_window(app);
     let Some(pet) = app.get_webview_window("pet") else {
         return;
@@ -693,17 +813,66 @@ fn sync_notification_window(app: &tauri::AppHandle, unread: usize) {
     let Some(notification) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) else {
         return;
     };
-    if unread > 0 && pet.is_visible().unwrap_or(false) {
-        let _ = show_notification_window_without_focus(&notification);
-    } else {
-        let _ = notification.hide();
+    match notification_window_sync_action(unread, pet.is_visible().unwrap_or(false)) {
+        NotificationWindowSyncAction::Show => {
+            window_state.cancel_scheduled_hide();
+            let _ = show_notification_window_without_focus(&notification);
+        }
+        NotificationWindowSyncAction::Hide => {
+            window_state.cancel_scheduled_hide();
+            let _ = notification.hide();
+        }
+        NotificationWindowSyncAction::ScheduleHide => {
+            schedule_notification_window_hide(app, &notification, window_state);
+        }
     }
 }
 
+fn schedule_notification_window_hide(
+    app: &tauri::AppHandle,
+    notification: &tauri::WebviewWindow,
+    state: NotificationWindowState,
+) {
+    let Some(generation) = state.schedule_hide() else {
+        return;
+    };
+    let app = app.clone();
+    let notification = notification.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(NOTIFICATION_WINDOW_HIDE_DELAY).await;
+        if !state.hide_is_current(generation) {
+            return;
+        }
+        let main_app = app.clone();
+        let main_notification = notification.clone();
+        let main_state = state.clone();
+        if notification
+            .run_on_main_thread(move || {
+                if !main_state.hide_is_current(generation) {
+                    return;
+                }
+                if current_unread_notification_count(&main_app) == 0 {
+                    let _ = main_notification.hide();
+                }
+                main_state.cancel_scheduled_hide();
+            })
+            .is_err()
+        {
+            state.cancel_scheduled_hide();
+        }
+    });
+}
+
+fn current_unread_notification_count(app: &tauri::AppHandle) -> usize {
+    let presentations = app
+        .state::<PetContextActions>()
+        .state
+        .subscribe_pet_presentation();
+    presentations.borrow().unread_notification_count
+}
+
 fn sync_notification_window_from_state(app: &tauri::AppHandle) {
-    let actions = app.state::<PetContextActions>();
-    let unread =
-        tauri::async_runtime::block_on(actions.state.pet_presentation()).unread_notification_count;
+    let unread = current_unread_notification_count(app);
     sync_notification_window(app, unread);
 }
 
@@ -720,14 +889,15 @@ fn position_notification_window(app: &tauri::AppHandle) {
     let Ok(pet_size) = pet.outer_size() else {
         return;
     };
-    let notification_size = notification.outer_size().unwrap_or_else(|_| {
-        tauri::PhysicalSize::new(NOTIFICATION_WINDOW_WIDTH, NOTIFICATION_WINDOW_HEIGHT)
-    });
     let scale = pet
         .scale_factor()
         .ok()
         .filter(|scale| scale.is_finite() && *scale > 0.0)
         .unwrap_or(1.0);
+    let notification_size = tauri::PhysicalSize::new(
+        logical_dimension_to_physical(NOTIFICATION_WINDOW_WIDTH, scale),
+        logical_dimension_to_physical(NOTIFICATION_WINDOW_HEIGHT, scale),
+    );
     let gap = (f64::from(NOTIFICATION_WINDOW_GAP) * scale)
         .round()
         .clamp(0.0, f64::from(i32::MAX)) as i32;
@@ -753,12 +923,36 @@ fn position_notification_window(app: &tauri::AppHandle) {
         gap,
         scale,
     });
-    let _ = notification.set_position(layout.position);
-    app.state::<NotificationWindowState>().set(layout.placement);
+    #[cfg(target_os = "macos")]
+    let positioned_natively =
+        macos_panel::set_position_sync(&notification, layout.position, scale).is_ok();
+    #[cfg(not(target_os = "macos"))]
+    let positioned_natively = false;
+    if !positioned_natively {
+        let _ = notification.set_position(layout.position);
+    }
+    let window_state = app.state::<NotificationWindowState>();
+    window_state.set(layout.placement);
+    let _ = apply_notification_hit_region(
+        &notification,
+        window_state.hit_region(),
+        layout.placement == NotificationWindowPlacement::Below,
+    );
     apply_notification_window_placement(&notification, layout.placement);
     if notification.is_visible().unwrap_or(false) {
         let _ = show_notification_window_without_focus(&notification);
     }
+}
+
+fn logical_dimension_to_physical(value: u32, scale: f64) -> u32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (f64::from(value) * scale)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
 fn show_notification_window_without_focus(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -1384,8 +1578,14 @@ fn open_pet_context_menu_at(
         return Ok(());
     }
     let position = context_menu_position(source, &window, pointer);
+    let scale_factor = source
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
     let request = ContextMenuRequest {
         position,
+        scale_factor,
         native_event_time_us,
     };
     show_context_menu_request(app, &window, navigation, request)
@@ -1460,7 +1660,7 @@ fn show_context_menu_request(
     if queue_context_menu_until_ready(navigation, request)? {
         Ok(())
     } else {
-        position_context_menu(app, window, request.position)
+        position_context_menu(app, window, request.position, request.scale_factor)
     }
 }
 
@@ -1501,6 +1701,7 @@ fn position_context_menu(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
+    destination_scale_factor: f64,
 ) -> Result<(), String> {
     let app = app.clone();
     let target = window.clone();
@@ -1510,12 +1711,15 @@ fn position_context_menu(
             let result = (|| {
                 sync_context_menu_state(&app, &target);
                 #[cfg(target_os = "macos")]
-                macos_panel::set_position_sync(&target, position)
+                macos_panel::set_position_sync(&target, position, destination_scale_factor)
                     .map_err(|error| format!("failed to position pet context menu: {error}"))?;
                 #[cfg(not(target_os = "macos"))]
-                target
-                    .set_position(position)
-                    .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+                {
+                    let _ = destination_scale_factor;
+                    target
+                        .set_position(position)
+                        .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+                }
                 target
                     .show()
                     .map_err(|error| format!("failed to show pet context menu: {error}"))?;
@@ -1604,23 +1808,22 @@ fn focus_pet_window(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn resize_notification_window(
+fn set_notification_hit_region(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    height: u32,
+    mode: NotificationHitRegionMode,
 ) -> Result<bool, String> {
-    if window.label() != NOTIFICATION_WINDOW_LABEL
-        || !(NOTIFICATION_WINDOW_MIN_HEIGHT..=NOTIFICATION_WINDOW_HEIGHT).contains(&height)
-    {
+    if window.label() != NOTIFICATION_WINDOW_LABEL {
         return Ok(false);
     }
-    window
-        .set_size(tauri::LogicalSize::new(
-            f64::from(NOTIFICATION_WINDOW_WIDTH),
-            f64::from(height),
-        ))
-        .map_err(|error| error.to_string())?;
-    position_notification_window(&app);
+    let state = app.state::<NotificationWindowState>();
+    state.set_hit_region(mode);
+    apply_notification_hit_region(
+        &window,
+        mode,
+        state.get() == NotificationWindowPlacement::Below,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(true)
 }
 
@@ -1995,6 +2198,8 @@ fn hide_pet_window(app: &tauri::AppHandle, visibility: &CheckMenuItem<tauri::Wry
         && window.hide().is_ok()
     {
         let _ = visibility.set_checked(false);
+        app.state::<NotificationWindowState>()
+            .cancel_scheduled_hide();
         if let Some(notification) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) {
             let _ = notification.hide();
         }
@@ -2325,6 +2530,51 @@ mod tests {
                 placement: NotificationWindowPlacement::Above,
             }
         );
+    }
+
+    #[test]
+    fn notification_window_keeps_the_two_slot_height() {
+        assert_eq!(NOTIFICATION_WINDOW_HEIGHT, 158);
+        assert_eq!(
+            logical_dimension_to_physical(NOTIFICATION_WINDOW_HEIGHT, 2.0),
+            316
+        );
+    }
+
+    #[test]
+    fn empty_notification_state_schedules_a_delayed_hide() {
+        assert_eq!(NOTIFICATION_WINDOW_HIDE_DELAY, Duration::from_secs(5));
+        assert_eq!(
+            notification_window_sync_action(0, true),
+            NotificationWindowSyncAction::ScheduleHide
+        );
+        assert_eq!(
+            notification_window_sync_action(1, true),
+            NotificationWindowSyncAction::Show
+        );
+        assert_eq!(
+            notification_window_sync_action(1, false),
+            NotificationWindowSyncAction::Hide
+        );
+        assert_eq!(
+            notification_window_sync_action(0, false),
+            NotificationWindowSyncAction::Hide
+        );
+    }
+
+    #[test]
+    fn new_notification_invalidates_a_scheduled_hide() {
+        let state = NotificationWindowState::default();
+        let generation = state.schedule_hide().expect("hide should be scheduled");
+        assert!(state.hide_is_current(generation));
+        assert_eq!(state.schedule_hide(), None);
+
+        state.cancel_scheduled_hide();
+
+        assert!(!state.hide_is_current(generation));
+        let next_generation = state.schedule_hide().expect("hide should be rescheduled");
+        assert_ne!(next_generation, generation);
+        assert!(state.hide_is_current(next_generation));
     }
 
     #[test]

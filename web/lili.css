@@ -20,6 +20,10 @@
   --notification-status-failure-surface: #4e2c35;
   --notification-status-completion: #8be6c4;
   --notification-status-completion-surface: #244b46;
+  --notification-fade-duration: 460ms;
+  --notification-fade-easing: cubic-bezier(0.4, 0, 0.6, 1);
+  --notification-fade-opacity: 0;
+  --notification-fade-scale: 0.96;
 }
 
 @media (prefers-color-scheme: light) {
@@ -73,27 +77,26 @@ body {
 }
 
 .notification-stack {
+  --notification-card-height: 58px;
+
   box-sizing: border-box;
   bottom: 4px;
   display: block;
-  height: 82px;
+  height: 148px;
   left: 12px;
   padding-block: 12px;
   background: transparent;
   background-color: transparent;
   overflow: visible;
-  pointer-events: auto;
+  pointer-events: none;
   position: absolute;
   right: 12px;
   z-index: 2;
 }
 
-.notification-stack[data-notification-visible-count="0"] {
-  height: 24px;
-}
-
-.notification-stack[data-notification-visible-count="2"] {
-  height: 148px;
+.notification-stack.notification-stack-more-top,
+.notification-stack.notification-stack-more-bottom {
+  pointer-events: auto;
 }
 
 .notification-card.notification-card-top {
@@ -161,19 +164,19 @@ html[data-notification-placement="below"] .notification-stack {
   top: 4px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-top {
+html[data-notification-placement="below"] .notification-card.notification-card-top {
   top: 78px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-bottom {
+html[data-notification-placement="below"] .notification-card.notification-card-bottom {
   top: 12px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-top-behind {
+html[data-notification-placement="below"] .notification-card.notification-card-top-behind {
   top: 84px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-bottom-behind {
+html[data-notification-placement="below"] .notification-card.notification-card-bottom-behind {
   top: 4px;
 }
 
@@ -243,20 +246,20 @@ html[data-notification-placement="below"] .notification-more-bottom {
   color: var(--notification-foreground);
   box-sizing: border-box;
   display: block;
-  height: 58px;
+  height: var(--notification-card-height);
   left: 0;
   overflow: hidden;
-  opacity: 0;
+  opacity: var(--notification-fade-opacity);
   pointer-events: none;
   position: absolute;
   right: 0;
   top: 12px;
   transform-origin: center;
-  transform: scale(0.96);
+  transform: scale(var(--notification-fade-scale));
   transition:
-    top 460ms cubic-bezier(0.4, 0, 0.6, 1),
-    opacity 460ms cubic-bezier(0.4, 0, 0.6, 1),
-    transform 460ms cubic-bezier(0.4, 0, 0.6, 1);
+    top var(--notification-fade-duration) var(--notification-fade-easing),
+    opacity var(--notification-fade-duration) var(--notification-fade-easing),
+    transform var(--notification-fade-duration) var(--notification-fade-easing);
   will-change: top, opacity, transform;
   z-index: 1;
 }
@@ -272,11 +275,43 @@ html[data-notification-placement="below"] .notification-more-bottom {
   z-index: 3;
 }
 
+.notification-card-exiting {
+  animation:
+    notification-card-fadeout var(--notification-fade-duration) var(--notification-fade-easing)
+    forwards;
+  pointer-events: none;
+  transition: none;
+  z-index: 4;
+}
+
+.notification-card.notification-card-exiting[data-notification-exit-placement] {
+  top: var(--notification-exit-top);
+}
+
+html[data-notification-placement="below"]
+  .notification-card.notification-card-exiting[data-notification-exit-placement="above"],
+html:not([data-notification-placement="below"])
+  .notification-card.notification-card-exiting[data-notification-exit-placement="below"] {
+  top: calc(100% - var(--notification-card-height) - var(--notification-exit-top));
+}
+
+@keyframes notification-card-fadeout {
+  from {
+    opacity: var(--notification-exit-opacity, 1);
+    transform: var(--notification-exit-transform, scale(1));
+  }
+
+  to {
+    opacity: var(--notification-fade-opacity);
+    transform: scale(var(--notification-fade-scale));
+  }
+}
+
 .notification-card-top-behind,
 .notification-card-bottom-behind {
-  opacity: 0.24;
+  opacity: var(--notification-fade-opacity);
   pointer-events: none;
-  transform: scale(0.96);
+  transform: scale(var(--notification-fade-scale));
   z-index: 1;
 }
 
@@ -288,11 +323,23 @@ html[data-notification-placement="below"] .notification-more-bottom {
   .notification-more {
     transition: none;
   }
+
+  .notification-card-exiting {
+    animation: none;
+    opacity: var(--notification-fade-opacity);
+    transform: scale(var(--notification-fade-scale));
+  }
 }
 
 #lili-app[data-reduced-motion="true"] .notification-card,
 #lili-app[data-reduced-motion="true"] .notification-more {
   transition: none;
+}
+
+#lili-app[data-reduced-motion="true"] .notification-card-exiting {
+  animation: none;
+  opacity: var(--notification-fade-opacity);
+  transform: scale(var(--notification-fade-scale));
 }
 
 .notification-card::before {

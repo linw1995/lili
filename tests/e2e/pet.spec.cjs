@@ -35,7 +35,11 @@ async function openNotifications(page) {
   );
 }
 
-async function replacePresentation(page, overrides = {}) {
+async function replacePresentation(
+  page,
+  overrides = {},
+  { waitForExits = true } = {},
+) {
   const app = page.locator("#lili-app");
   const current = JSON.parse(await app.getAttribute("data-presentation"));
   const next = {
@@ -55,7 +59,103 @@ async function replacePresentation(page, overrides = {}) {
   expect(response.ok()).toBeTruthy();
   const applied = await response.json();
   await expect(app).toHaveAttribute("data-revision", String(applied.revision));
+  if (waitForExits) {
+    await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
+  }
   return applied;
+}
+
+async function visibleNotificationIdsBottomToTop(stack) {
+  return stack.evaluate((element) =>
+    [...element.querySelectorAll(".notification-card.notification-card-current")]
+      .filter((card) =>
+        ["notification-card-top", "notification-card-bottom"].some((role) =>
+          card.classList.contains(role),
+        ),
+      )
+      .sort(
+        (left, right) =>
+          right.getBoundingClientRect().top - left.getBoundingClientRect().top,
+      )
+      .map((card) => card.dataset.notificationId),
+  );
+}
+
+async function expectVisibleNotificationIds(stack, expected) {
+  await expect
+    .poll(() => visibleNotificationIdsBottomToTop(stack))
+    .toEqual(expected);
+}
+
+async function scrollToOlderWindow(page, stack) {
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+  await page.waitForTimeout(500);
+}
+
+async function dismissVisibleNotification(stack, id) {
+  const card = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${id}']`,
+  );
+  await expect(card).toHaveCount(1);
+  await card.locator(".notification-dismiss").click();
+  await expect(
+    stack.locator(`[data-notification-id='${id}']`),
+  ).toHaveCount(0);
+}
+
+async function setupFourNotificationFixture(page, prefix) {
+  const ids = {
+    a: `${prefix}-a`,
+    b: `${prefix}-b`,
+    c: `${prefix}-c`,
+    d: `${prefix}-d`,
+  };
+  const notifications = [
+    notification(ids.d, "completion", "Delta", "Notification D", now),
+    notification(ids.c, "failure", "Charlie", "Notification C", now + 100),
+    notification(ids.b, "attention", "Bravo", "Notification B", now + 200),
+    notification(ids.a, "completion", "Alpha", "Notification A", now + 300),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+  return ids;
+}
+
+async function setupThreeNotificationFixture(page, prefix) {
+  const ids = {
+    a: `${prefix}-a`,
+    b: `${prefix}-b`,
+    c: `${prefix}-c`,
+  };
+  const notifications = [
+    notification(ids.c, "completion", "Charlie", "Notification C", now),
+    notification(ids.b, "failure", "Bravo", "Notification B", now + 100),
+    notification(ids.a, "attention", "Alpha", "Notification A", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+  return ids;
+}
+
+async function setupTwoNotificationFixture(page, prefix) {
+  const ids = {
+    a: `${prefix}-a`,
+    b: `${prefix}-b`,
+  };
+  const notifications = [
+    notification(ids.b, "completion", "Bravo", "Notification B", now),
+    notification(ids.a, "attention", "Alpha", "Notification A", now + 100),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+  return ids;
 }
 
 let diagnostics = [];
@@ -523,18 +623,18 @@ test("multiple notifications keep two cards visible while scrolling", async ({
       };
     };
     return {
-      older: readCard("accordion-oldest"),
+      incoming: readCard("accordion-middle"),
       shared: readCard("accordion-newest"),
       outgoing: readCard("accordion-latest"),
     };
   });
   expect(transitionFrame.shared.zIndex).toBe("3");
-  expect(transitionFrame.older.opacity).toBeGreaterThan(0);
-  expect(transitionFrame.older.opacity).toBeLessThan(1);
+  expect(transitionFrame.incoming.opacity).toBeGreaterThan(0);
+  expect(transitionFrame.incoming.opacity).toBeLessThan(1);
   expect(transitionFrame.outgoing.opacity).toBeGreaterThan(0);
   expect(transitionFrame.outgoing.opacity).toBeLessThan(1);
-  expect(transitionFrame.shared.bottom).toBeGreaterThan(transitionFrame.older.top);
-  expect(transitionFrame.older.bottom).toBeGreaterThan(transitionFrame.shared.top);
+  expect(transitionFrame.shared.bottom).toBeGreaterThan(transitionFrame.incoming.top);
+  expect(transitionFrame.incoming.bottom).toBeGreaterThan(transitionFrame.shared.top);
   expect(transitionFrame.shared.bottom).toBeGreaterThan(transitionFrame.outgoing.top);
   expect(transitionFrame.outgoing.bottom).toBeGreaterThan(transitionFrame.shared.top);
   await page.mouse.wheel(0, -120);
@@ -562,6 +662,71 @@ test("multiple notifications keep two cards visible while scrolling", async ({
   await expect
     .poll(visibleCardIds)
     .toEqual(["accordion-newest", "accordion-latest"]);
+});
+
+test("scrolling and dismissal share one fade contract", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupFourNotificationFixture(page, "shared-fade");
+  const stack = page.locator(".notification-stack");
+  const incoming = stack.locator(`[data-notification-id='${ids.c}']`);
+  const outgoing = stack.locator(`[data-notification-id='${ids.a}']`);
+
+  await expect(incoming).toHaveClass(/notification-card-top-behind/);
+  await expect(incoming).toHaveCSS("opacity", "0");
+  const scrollContract = await incoming.evaluate((card) => {
+    const style = getComputedStyle(card);
+    return {
+      durationMs: Number.parseFloat(
+        style.getPropertyValue("--notification-fade-duration"),
+      ),
+      timing: style.getPropertyValue("--notification-fade-easing").trim(),
+      fadedScale: new DOMMatrixReadOnly(style.transform).a,
+    };
+  });
+
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+  await page.waitForTimeout(200);
+  const transitionFrame = await Promise.all([
+    incoming.evaluate((card) => Number(getComputedStyle(card).opacity)),
+    outgoing.evaluate((card) => Number(getComputedStyle(card).opacity)),
+  ]);
+  expect(transitionFrame[0]).toBeGreaterThan(0);
+  expect(transitionFrame[0]).toBeLessThan(1);
+  expect(transitionFrame[1]).toBeGreaterThan(0);
+  expect(transitionFrame[1]).toBeLessThan(1);
+
+  await page.waitForTimeout(320);
+  await expect(incoming).toHaveCSS("opacity", "1");
+  await expect(outgoing).toHaveCSS("opacity", "0");
+
+  const dismissed = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${ids.b}']`,
+  );
+  await dismissed.locator(".notification-dismiss").click();
+  const exiting = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.b}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  const removalContract = await exiting.evaluate((card) => {
+    const style = getComputedStyle(card);
+    const animation = card.getAnimations()[0];
+    const frames = animation.effect.getKeyframes();
+    const lastFrame = frames.at(-1);
+    return {
+      durationMs: Number(animation.effect.getTiming().duration),
+      timing: style.animationTimingFunction,
+      fadedOpacity: lastFrame.opacity,
+      fadedScale: new DOMMatrixReadOnly(lastFrame.transform).a,
+    };
+  });
+  expect(removalContract.durationMs).toBe(scrollContract.durationMs);
+  expect(removalContract.timing).toBe(scrollContract.timing);
+  expect(removalContract.fadedOpacity).toBe("0");
+  expect(removalContract.fadedScale).toBeCloseTo(scrollContract.fadedScale, 5);
+  await expect(exiting).toHaveCount(0);
 });
 
 test("line-mode wheel input advances the notification carousel", async ({
@@ -724,6 +889,1070 @@ test("notification carousel remains switchable after the list shrinks", async ({
   await expect
     .poll(visibleCardIds)
     .toEqual(["shrink-oldest", "shrink-middle"]);
+});
+
+test("dismissing one notification preserves the current carousel window", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("dismiss-oldest", "completion", "Alpha", "Oldest", now),
+    notification("dismiss-middle", "failure", "Beta", "Middle", now + 100),
+    notification("dismiss-newest", "attention", "Gamma", "Newest", now + 200),
+    notification("dismiss-latest", "completion", "Delta", "Latest", now + 300),
+    notification("dismiss-extra", "failure", "Epsilon", "Extra", now + 400),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  const visibleCardIds = () =>
+    stack.evaluate((element) =>
+      [...element.querySelectorAll(".notification-card.notification-card-current")]
+        .filter((card) =>
+          ["notification-card-top", "notification-card-bottom"].some((role) =>
+            card.classList.contains(role),
+          ),
+        )
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
+        .map((card) => card.dataset.notificationId),
+    );
+
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["dismiss-latest", "dismiss-extra"]);
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["dismiss-newest", "dismiss-latest"]);
+  await page.waitForTimeout(500);
+  await page.mouse.wheel(0, -120);
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["dismiss-middle", "dismiss-newest"]);
+  await page.waitForTimeout(500);
+
+  await page
+    .locator("[data-notification-id='dismiss-newest'] .notification-dismiss")
+    .click();
+
+  await expect(page.locator(".notification-card")).toHaveCount(4);
+  await expect
+    .poll(visibleCardIds)
+    .toEqual(["dismiss-middle", "dismiss-latest"]);
+});
+
+const fourNotificationConsecutiveDismissalCases = [
+  {
+    name: "latest window bottom then bottom",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "a",
+    afterFirst: ["b", "c"],
+    second: "b",
+    final: ["c", "d"],
+  },
+  {
+    name: "latest window bottom then top",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "a",
+    afterFirst: ["b", "c"],
+    second: "c",
+    final: ["b", "d"],
+  },
+  {
+    name: "latest window top then bottom",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "a",
+    final: ["c", "d"],
+  },
+  {
+    name: "latest window top then top",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "c",
+    final: ["a", "d"],
+  },
+  {
+    name: "middle window bottom then bottom",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "a",
+    final: ["c", "d"],
+  },
+  {
+    name: "middle window bottom then top",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "c",
+    final: ["a", "d"],
+  },
+  {
+    name: "middle window top then bottom",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "c",
+    afterFirst: ["b", "d"],
+    second: "b",
+    final: ["a", "d"],
+  },
+  {
+    name: "middle window top then top",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "c",
+    afterFirst: ["b", "d"],
+    second: "d",
+    final: ["a", "b"],
+  },
+  {
+    name: "oldest window bottom then bottom",
+    scrollSteps: 2,
+    initial: ["c", "d"],
+    first: "c",
+    afterFirst: ["b", "d"],
+    second: "b",
+    final: ["a", "d"],
+  },
+  {
+    name: "oldest window bottom then top",
+    scrollSteps: 2,
+    initial: ["c", "d"],
+    first: "c",
+    afterFirst: ["b", "d"],
+    second: "d",
+    final: ["a", "b"],
+  },
+  {
+    name: "oldest window top then bottom",
+    scrollSteps: 2,
+    initial: ["c", "d"],
+    first: "d",
+    afterFirst: ["b", "c"],
+    second: "b",
+    final: ["a", "c"],
+  },
+  {
+    name: "oldest window top then top",
+    scrollSteps: 2,
+    initial: ["c", "d"],
+    first: "d",
+    afterFirst: ["b", "c"],
+    second: "c",
+    final: ["a", "b"],
+  },
+];
+
+const threeNotificationConsecutiveDismissalCases = [
+  {
+    name: "latest window bottom then bottom",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "a",
+    afterFirst: ["b", "c"],
+    second: "b",
+    final: ["c"],
+  },
+  {
+    name: "latest window bottom then top",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "a",
+    afterFirst: ["b", "c"],
+    second: "c",
+    final: ["b"],
+  },
+  {
+    name: "latest window top then bottom",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "a",
+    final: ["c"],
+  },
+  {
+    name: "latest window top then top",
+    scrollSteps: 0,
+    initial: ["a", "b"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "c",
+    final: ["a"],
+  },
+  {
+    name: "oldest window bottom then bottom",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "a",
+    final: ["c"],
+  },
+  {
+    name: "oldest window bottom then top",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "b",
+    afterFirst: ["a", "c"],
+    second: "c",
+    final: ["a"],
+  },
+  {
+    name: "oldest window top then bottom",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "c",
+    afterFirst: ["a", "b"],
+    second: "a",
+    final: ["b"],
+  },
+  {
+    name: "oldest window top then top",
+    scrollSteps: 1,
+    initial: ["b", "c"],
+    first: "c",
+    afterFirst: ["a", "b"],
+    second: "b",
+    final: ["a"],
+  },
+];
+
+for (const scenario of threeNotificationConsecutiveDismissalCases) {
+  test(`three notifications ${scenario.name}`, async ({ page }) => {
+    await openNotifications(page);
+    const ids = await setupThreeNotificationFixture(
+      page,
+      `three-${scenario.name.replaceAll(" ", "-")}`,
+    );
+    const stack = page.locator(".notification-stack");
+    const resolveIds = (keys) => keys.map((key) => ids[key]);
+
+    for (let step = 0; step < scenario.scrollSteps; step += 1) {
+      await scrollToOlderWindow(page, stack);
+    }
+    await expectVisibleNotificationIds(stack, resolveIds(scenario.initial));
+
+    await dismissVisibleNotification(stack, ids[scenario.first]);
+    await expectVisibleNotificationIds(stack, resolveIds(scenario.afterFirst));
+
+    await dismissVisibleNotification(stack, ids[scenario.second]);
+    await expectVisibleNotificationIds(stack, resolveIds(scenario.final));
+    await expect(page.locator(".notification-card")).toHaveCount(1);
+    await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
+    await expect(stack).not.toHaveClass(/notification-stack-more-top/);
+    await expect(stack).not.toHaveClass(/notification-stack-more-bottom/);
+    await expect(
+      stack.locator(".notification-card.notification-card-bottom"),
+    ).toHaveCount(1);
+    await expect
+      .poll(() => stack.evaluate((element) => getComputedStyle(element).height))
+      .toBe("148px");
+  });
+}
+
+test("three notifications keep the fixed two-slot window after two dismissals", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await openNotifications(page);
+  const ids = await setupThreeNotificationFixture(page, "three-fixed-window");
+  const stack = page.locator(".notification-stack");
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+  });
+
+  await expectVisibleNotificationIds(stack, [ids.a, ids.b]);
+  await dismissVisibleNotification(stack, ids.a);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+  await dismissVisibleNotification(stack, ids.b);
+  await expectVisibleNotificationIds(stack, [ids.c]);
+
+  expect(
+    await page.evaluate(() =>
+      window.__LILI_INVOKES__.filter(
+        (call) => call.name === "resize_notification_window",
+      ),
+    ),
+  ).toEqual([]);
+  await expect
+    .poll(() =>
+      stack.locator(".notification-card-current").evaluate((card) => {
+        const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
+        return stackBounds.bottom - card.getBoundingClientRect().bottom;
+      }),
+    )
+    .toBeCloseTo(12, 1);
+  const geometry = await stack.locator(".notification-card-current").evaluate((card) => {
+    const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
+    const cardBounds = card.getBoundingClientRect();
+    return {
+      stackHeight: stackBounds.height,
+      bottomGap: stackBounds.bottom - cardBounds.bottom,
+    };
+  });
+  expect(geometry.stackHeight).toBe(148);
+  expect(geometry.bottomGap).toBeCloseTo(12, 1);
+  await expect(
+    stack.locator(".notification-card.notification-card-bottom"),
+  ).toHaveCount(1);
+});
+
+test("unused notification slots do not capture pointer input", async ({ page }) => {
+  await openNotifications(page);
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("pointer-hit-region", "completion", "Alpha", "Done", now),
+    ],
+  });
+  const stack = page.locator(".notification-stack");
+  const card = stack.locator(".notification-card-current");
+
+  const hitTest = await stack.evaluate((element) => {
+    const current = element.querySelector(".notification-card-current");
+    if (!(current instanceof HTMLElement)) {
+      throw new Error("current notification card is missing");
+    }
+    const stackBounds = element.getBoundingClientRect();
+    const cardBounds = current.getBoundingClientRect();
+    const topGap = cardBounds.top - stackBounds.top;
+    const bottomGap = stackBounds.bottom - cardBounds.bottom;
+    const emptyY =
+      topGap >= bottomGap
+        ? stackBounds.top + topGap / 2
+        : cardBounds.bottom + bottomGap / 2;
+    const emptyTarget = document.elementFromPoint(
+      stackBounds.left + stackBounds.width / 2,
+      emptyY,
+    );
+    const cardTarget = document.elementFromPoint(
+      cardBounds.left + cardBounds.width / 2,
+      cardBounds.top + cardBounds.height / 2,
+    );
+    return {
+      stackPointerEvents: getComputedStyle(element).pointerEvents,
+      cardPointerEvents: getComputedStyle(current).pointerEvents,
+      emptySlotHitsStack:
+        emptyTarget instanceof Element && element.contains(emptyTarget),
+      cardHitsCurrent:
+        cardTarget instanceof Element &&
+        cardTarget.closest(".notification-card-current") === current,
+    };
+  });
+  expect(hitTest).toEqual({
+    stackPointerEvents: "none",
+    cardPointerEvents: "auto",
+    emptySlotHitsStack: false,
+    cardHitsCurrent: true,
+  });
+
+  await card.locator(".notification-dismiss").click();
+  await expect(page.locator(".notification-card")).toHaveCount(0);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "0");
+  const emptyStackHits = await stack.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const target = document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      bounds.top + bounds.height / 2,
+    );
+    return target instanceof Element && element.contains(target);
+  });
+  expect(emptyStackHits).toBe(false);
+});
+
+test("dismissed notification cards fade out before unmounting", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupThreeNotificationFixture(page, "three-fadeout");
+  const stack = page.locator(".notification-stack");
+  const dismissed = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${ids.a}']`,
+  );
+
+  await dismissed.locator(".notification-dismiss").click();
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+
+  const exiting = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.a}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  await expect(exiting).toHaveClass(/notification-card-bottom/);
+  await expect(exiting).toHaveCSS("top", "78px");
+  await expect(exiting).toHaveCSS("animation-name", "notification-card-fadeout");
+  await expect(exiting).toHaveAttribute("aria-hidden", "true");
+  await expect(exiting).toHaveCSS("pointer-events", "none");
+  await expect(exiting).toHaveCount(0);
+
+  const nextDismissed = stack.locator(
+    `.notification-card.notification-card-current[data-notification-id='${ids.b}']`,
+  );
+  await nextDismissed.locator(".notification-dismiss").click();
+  await expectVisibleNotificationIds(stack, [ids.c]);
+
+  const exitingFinal = stack.locator(
+    `.notification-card.notification-card-exiting[data-notification-id='${ids.b}']`,
+  );
+  await expect(exitingFinal).toHaveCount(1);
+  await expect(exitingFinal).toHaveClass(/notification-card-bottom/);
+  await expect(exitingFinal).toHaveCSS("top", "78px");
+  await expect(exitingFinal).toHaveCSS("animation-name", "notification-card-fadeout");
+  await expect(exitingFinal).toHaveCount(0);
+});
+
+test("placement flips rebase a captured notification exit", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  await page.addStyleTag({
+    content: ".notification-card-exiting { animation-duration: 2s; }",
+  });
+  const notifications = [
+    notification("placement-survivor", "completion", "Alpha", "Older", now),
+    notification("placement-exit", "completion", "Beta", "Newer", now + 100),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+  const stack = page.locator(".notification-stack");
+
+  await stack
+    .locator("[data-notification-id='placement-exit'] .notification-dismiss")
+    .click();
+  const exiting = stack.locator(
+    ".notification-card-exiting[data-notification-id='placement-exit']",
+  );
+  const survivor = stack.locator(
+    ".notification-card-current[data-notification-id='placement-survivor']",
+  );
+  await expect(exiting).toHaveCSS("top", "78px");
+
+  await page.evaluate(() => {
+    document.documentElement.dataset.notificationPlacement = "below";
+  });
+
+  await expect(exiting).toHaveCSS("top", "12px");
+  await expect(survivor).toHaveCSS("top", "78px");
+});
+
+test("failed dismissal discards its captured exit snapshot", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  await page.addStyleTag({
+    content: ".notification-card-exiting { animation-duration: 2s; }",
+  });
+  const id = "failed-dismissal";
+  const dismissUrl = `**/api/v1/notifications/${id}/dismiss`;
+  await page.route(dismissUrl, (route) => route.fulfill({ status: 500 }));
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification(id, "completion", "Workspace", "Still active", now),
+    ],
+  });
+
+  const response = page.waitForResponse(
+    (candidate) => candidate.url().endsWith(`/notifications/${id}/dismiss`),
+  );
+  await page.locator(`[data-notification-id='${id}'] .notification-dismiss`).click();
+  await response;
+  await page.waitForTimeout(50);
+  diagnostics = diagnostics.filter(
+    (entry) => !entry.includes("status of 500 (Internal Server Error)"),
+  );
+  await replacePresentation(
+    page,
+    { unreadNotificationCount: 0, notifications: [] },
+    { waitForExits: false },
+  );
+
+  const exiting = page.locator(
+    `.notification-card-exiting[data-notification-id='${id}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  await expect(exiting).not.toHaveAttribute("data-notification-exit-placement");
+  expect(
+    await exiting.evaluate((card) =>
+      card.style.getPropertyValue("--notification-exit-top"),
+    ),
+  ).toBe("");
+  await page.unroute(dismissUrl);
+});
+
+test("final dismissal returns focus only after a keyboard exit", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("keyboard-final", "completion", "Alpha", "Done", now),
+    ],
+  });
+
+  const dismiss = page.locator(
+    "[data-notification-id='keyboard-final'] .notification-dismiss",
+  );
+  await dismiss.focus();
+  await page.keyboard.press("Enter");
+  const exiting = page.locator(
+    ".notification-card-exiting[data-notification-id='keyboard-final']",
+  );
+  await expect(exiting).toHaveCount(1);
+  await page.waitForTimeout(100);
+  expect(
+    await page.evaluate(() =>
+      window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+    ),
+  ).toBe(false);
+  await expect(exiting).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+      ),
+    )
+    .toBe(true);
+
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("pointer-final", "completion", "Beta", "Done", now + 100),
+    ],
+  });
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+  });
+  await page
+    .locator("[data-notification-id='pointer-final'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+    ),
+  ).toBe(false);
+});
+
+for (const scenario of [
+  {
+    name: "bottom then final",
+    first: "a",
+    remaining: "b",
+    remainingRoleDuringExit: "notification-card-top",
+    expectedReflowDelta: 66,
+  },
+  {
+    name: "top then final",
+    first: "b",
+    remaining: "a",
+    remainingRoleDuringExit: "notification-card-bottom",
+    expectedReflowDelta: 0,
+  },
+]) {
+  test(`final two notifications ${scenario.name} preserve the exit lifecycle`, async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      window.__LILI_INVOKES__ = [];
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (name, args) => {
+          window.__LILI_INVOKES__.push({ name, args });
+          return true;
+        },
+      };
+    });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await openNotifications(page);
+    const ids = await setupTwoNotificationFixture(
+      page,
+      `final-two-${scenario.name.replaceAll(" ", "-")}`,
+    );
+    const stack = page.locator(".notification-stack");
+    await expectVisibleNotificationIds(stack, [ids.a, ids.b]);
+    await page.evaluate(() => {
+      window.__LILI_INVOKES__ = [];
+    });
+
+    const first = stack.locator(
+      `.notification-card-current[data-notification-id='${ids[scenario.first]}']`,
+    );
+    const remaining = stack.locator(
+      `.notification-card-current[data-notification-id='${ids[scenario.remaining]}']`,
+    );
+    const firstTop = await first.evaluate((card) => card.getBoundingClientRect().top);
+    const remainingTop = await remaining.evaluate(
+      (card) => card.getBoundingClientRect().top,
+    );
+    await first.locator(".notification-dismiss").click();
+
+    const firstExit = stack.locator(
+      `.notification-card-exiting[data-notification-id='${ids[scenario.first]}']`,
+    );
+    await expect(firstExit).toHaveCount(1);
+    await expect(stack).toHaveAttribute("data-notification-visible-count", "2");
+    await page.waitForTimeout(100);
+    const firstExitTop = await firstExit.evaluate(
+      (card) => card.getBoundingClientRect().top,
+    );
+    expect(Math.abs(firstExitTop - firstTop)).toBeLessThan(2);
+    await expect(remaining).toHaveClass(new RegExp(scenario.remainingRoleDuringExit));
+    await expect(remaining).toHaveCSS("opacity", "1");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.__LILI_INVOKES__
+            .filter((call) => call.name === "set_notification_hit_region")
+            .at(-1)?.args?.mode,
+        ),
+      )
+      .toBe(scenario.first === "a" ? "top" : "bottom");
+    const remainingTopDuringExit = await remaining.evaluate(
+      (card) => card.getBoundingClientRect().top,
+    );
+    expect(Math.abs(remainingTopDuringExit - remainingTop)).toBeLessThan(2);
+
+    await expect(firstExit).toHaveCount(0);
+    await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
+    const remainingAfterExit = stack.locator(
+      `.notification-card-current[data-notification-id='${ids[scenario.remaining]}']`,
+    );
+    await expect(remainingAfterExit).toHaveCSS("opacity", "1");
+    if (scenario.first === "a") {
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            window.__LILI_INVOKES__
+              .filter((call) => call.name === "set_notification_hit_region")
+              .some((call) => call.args?.mode === "reflow"),
+          ),
+        )
+        .toBe(true);
+    }
+    await page.waitForTimeout(500);
+
+    const finalCard = stack.locator(
+      `.notification-card-current[data-notification-id='${ids[scenario.remaining]}']`,
+    );
+    const finalTop = await finalCard.evaluate((card) => card.getBoundingClientRect().top);
+    expect(Math.abs(finalTop - remainingTop - scenario.expectedReflowDelta)).toBeLessThan(2);
+    await finalCard.locator(".notification-dismiss").click();
+
+    const finalExit = stack.locator(
+      `.notification-card-exiting[data-notification-id='${ids[scenario.remaining]}']`,
+    );
+    await expect(finalExit).toHaveCount(1);
+    await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
+    await page.waitForTimeout(100);
+    const finalExitTop = await finalExit.evaluate(
+      (card) => card.getBoundingClientRect().top,
+    );
+    expect(Math.abs(finalExitTop - finalTop)).toBeLessThan(2);
+
+    await expect(finalExit).toHaveCount(0);
+    await expect(stack).toHaveAttribute("data-notification-visible-count", "0");
+    await expect(page.locator(".notification-card")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.__LILI_INVOKES__
+            .filter((call) => call.name === "set_notification_hit_region")
+            .at(-1)?.args?.mode,
+        ),
+      )
+      .toBe("empty");
+  });
+}
+
+test("final notification completes immediately with reduced motion", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openNotifications(page);
+  await page.evaluate(() => {
+    window.__LILI_INVOKES__ = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async (name, args) => {
+        window.__LILI_INVOKES__.push({ name, args });
+        return true;
+      },
+    };
+  });
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification("reduced-final", "completion", "Alpha", "Done", now),
+    ],
+  });
+  await expect(page.locator("#lili-app")).toHaveAttribute(
+    "data-reduced-motion",
+    "true",
+  );
+  const dismiss = page.locator(
+    "[data-notification-id='reduced-final'] .notification-dismiss",
+  );
+  await dismiss.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
+  await expect(page.locator(".notification-card")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__LILI_INVOKES__.some((call) => call.name === "focus_pet_window"),
+      ),
+    )
+    .toBe(true);
+});
+
+test("rapid final dismissals fade from each card's rendered position", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupTwoNotificationFixture(page, "rapid-final-two");
+  const stack = page.locator(".notification-stack");
+
+  await stack
+    .locator(`.notification-card-current[data-notification-id='${ids.a}'] .notification-dismiss`)
+    .click();
+  const firstExit = stack.locator(
+    `.notification-card-exiting[data-notification-id='${ids.a}']`,
+  );
+  await expect(firstExit).toHaveCount(1);
+  await page.waitForTimeout(250);
+
+  const second = stack.locator(
+    `.notification-card-current[data-notification-id='${ids.b}']`,
+  );
+  const renderedTop = await second.evaluate(
+    (card) => card.getBoundingClientRect().top,
+  );
+  await second.locator(".notification-dismiss").click({ force: true });
+  const secondExit = stack.locator(
+    `.notification-card-exiting[data-notification-id='${ids.b}']`,
+  );
+  await expect(secondExit).toHaveCount(1);
+  const exitStyle = await secondExit.getAttribute("style");
+  expect(exitStyle).toContain("top");
+  const exitTop = await secondExit.evaluate(
+    (card) => card.getBoundingClientRect().top,
+  );
+  expect(Math.abs(exitTop - renderedTop)).toBeLessThan(2);
+  await expect(stack.locator(".notification-card-exiting")).toHaveCount(2);
+
+  await expect(firstExit).toHaveCount(0);
+  await expect(secondExit).toHaveCount(1);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
+  const topAfterFirstExit = await secondExit.evaluate(
+    (card) => card.getBoundingClientRect().top,
+  );
+  expect(Math.abs(topAfterFirstExit - exitTop)).toBeLessThan(2);
+  await expect(secondExit).toHaveCount(0);
+});
+
+test("rapid dismissal during reflow fades from the rendered position", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupThreeNotificationFixture(page, "rapid-reflow");
+  const stack = page.locator(".notification-stack");
+  const moving = stack.locator(
+    `.notification-card-current[data-notification-id='${ids.b}']`,
+  );
+
+  await stack
+    .locator(`.notification-card-current[data-notification-id='${ids.a}'] .notification-dismiss`)
+    .click();
+  await page.waitForTimeout(180);
+
+  const renderedTop = await moving.locator(".notification-dismiss").evaluate((button) => {
+    const card = button.closest(".notification-card");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("notification card is missing");
+    }
+    const top = Number.parseFloat(getComputedStyle(card).top);
+    button.click();
+    return top;
+  });
+  expect(renderedTop).toBeGreaterThan(12);
+  expect(renderedTop).toBeLessThan(78);
+
+  const exiting = stack.locator(
+    `.notification-card-exiting[data-notification-id='${ids.b}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  const exitTop = await exiting.evaluate((card) =>
+    Number.parseFloat(getComputedStyle(card).top),
+  );
+  expect(Math.abs(exitTop - renderedTop)).toBeLessThan(2);
+});
+
+test("dismissing a fading-in card preserves its rendered visual state", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupFourNotificationFixture(page, "fading-in-dismissal");
+  const stack = page.locator(".notification-stack");
+  const dismissUrl = `**/api/v1/notifications/${encodeURIComponent(ids.c)}/dismiss`;
+  let releaseDismiss;
+  const dismissGate = new Promise((resolve) => {
+    releaseDismiss = resolve;
+  });
+  let observeDismiss;
+  const dismissObserved = new Promise((resolve) => {
+    observeDismiss = resolve;
+  });
+  await page.route(dismissUrl, async (route) => {
+    observeDismiss();
+    await dismissGate;
+    await route.continue();
+  });
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+
+  const incoming = stack.locator(
+    `.notification-card-current[data-notification-id='${ids.c}']`,
+  );
+  await expect(incoming).toHaveClass(/notification-card-top/);
+  await page.waitForTimeout(180);
+  const rendered = await incoming.locator(".notification-dismiss").evaluate((button) => {
+    const card = button.closest(".notification-card");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("notification card is missing");
+    }
+    const style = getComputedStyle(card);
+    const visual = {
+      top: Number.parseFloat(style.top),
+      opacity: Number(style.opacity),
+      scale: new DOMMatrixReadOnly(style.transform).a,
+    };
+    button.click();
+    return visual;
+  });
+  await dismissObserved;
+  const presentation = JSON.parse(
+    await page.locator("#lili-app").getAttribute("data-presentation"),
+  );
+  await replacePresentation(page, {
+    unreadNotificationCount: presentation.unreadNotificationCount,
+    notifications: presentation.notifications,
+  });
+  releaseDismiss();
+  expect(rendered.opacity).toBeGreaterThan(0);
+  expect(rendered.opacity).toBeLessThan(1);
+  expect(rendered.scale).toBeGreaterThan(0.96);
+  expect(rendered.scale).toBeLessThan(1);
+
+  const exiting = stack.locator(
+    `.notification-card-exiting[data-notification-id='${ids.c}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  const exitStart = await exiting.evaluate((card) => {
+    const style = getComputedStyle(card);
+    return {
+      top: Number.parseFloat(
+        card.style.getPropertyValue("--notification-exit-top"),
+      ),
+      opacity: Number.parseFloat(
+        card.style.getPropertyValue("--notification-exit-opacity"),
+      ),
+      scale: new DOMMatrixReadOnly(
+        card.style.getPropertyValue("--notification-exit-transform"),
+      ).a,
+      renderedOpacity: Number(style.opacity),
+    };
+  });
+  expect(exitStart.top).toBeCloseTo(rendered.top, 1);
+  expect(exitStart.opacity).toBeCloseTo(rendered.opacity, 2);
+  expect(exitStart.scale).toBeCloseTo(rendered.scale, 2);
+  expect(exitStart.renderedOpacity).toBeLessThanOrEqual(rendered.opacity + 0.08);
+  await page.unroute(dismissUrl);
+});
+
+for (const scenario of fourNotificationConsecutiveDismissalCases) {
+  test(`four notifications ${scenario.name}`, async ({ page }) => {
+    await openNotifications(page);
+    const ids = await setupFourNotificationFixture(
+      page,
+      `four-${scenario.name.replaceAll(" ", "-")}`,
+    );
+    const stack = page.locator(".notification-stack");
+    const resolveIds = (keys) => keys.map((key) => ids[key]);
+
+    for (let step = 0; step < scenario.scrollSteps; step += 1) {
+      await scrollToOlderWindow(page, stack);
+    }
+    await expectVisibleNotificationIds(stack, resolveIds(scenario.initial));
+
+    await dismissVisibleNotification(stack, ids[scenario.first]);
+    await expectVisibleNotificationIds(stack, resolveIds(scenario.afterFirst));
+
+    await dismissVisibleNotification(stack, ids[scenario.second]);
+    await expectVisibleNotificationIds(stack, resolveIds(scenario.final));
+    await expect(page.locator(".notification-card")).toHaveCount(2);
+    await expect(stack).toHaveAttribute("data-notification-visible-count", "2");
+    await expect(stack).not.toHaveClass(/notification-stack-more-top/);
+    await expect(stack).not.toHaveClass(/notification-stack-more-bottom/);
+  });
+}
+
+test("non-current four-notification cards are not dismissible", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const ids = await setupFourNotificationFixture(page, "four-hidden");
+  const stack = page.locator(".notification-stack");
+
+  await scrollToOlderWindow(page, stack);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+
+  for (const id of [ids.a, ids.d]) {
+    const card = stack.locator(`[data-notification-id='${id}']`);
+    await expect(card).not.toHaveClass(/notification-card-current/);
+    await expect(card.locator(".notification-dismiss")).toHaveCount(1);
+    await expect
+      .poll(() => card.evaluate((element) => getComputedStyle(element).pointerEvents))
+      .toBe("none");
+  }
+});
+
+test("four notifications preserve the reflowed window while scrolling after a dismissal", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const ids = await setupFourNotificationFixture(page, "four-scroll-after-dismiss");
+  const stack = page.locator(".notification-stack");
+
+  await scrollToOlderWindow(page, stack);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.c]);
+
+  await dismissVisibleNotification(stack, ids.c);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.d]);
+
+  await stack.hover();
+  await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(500);
+  await expectVisibleNotificationIds(stack, [ids.a, ids.b]);
+
+  await page.mouse.wheel(0, -120);
+  await page.waitForTimeout(500);
+  await expectVisibleNotificationIds(stack, [ids.b, ids.d]);
+
+  await dismissVisibleNotification(stack, ids.d);
+  await expectVisibleNotificationIds(stack, [ids.a, ids.b]);
+  await expect(page.locator(".notification-card")).toHaveCount(2);
+});
+
+test("dismissing the first card repeatedly keeps the remaining stack sorted from the bottom", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("slot-oldest", "completion", "Alpha", "Oldest", now),
+    notification("slot-middle", "failure", "Beta", "Middle", now + 100),
+    notification("slot-newest", "attention", "Gamma", "Newest", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  await expect(
+    page.locator("[data-notification-id='slot-newest']"),
+  ).toHaveClass(/notification-card-bottom/);
+
+  await page
+    .locator("[data-notification-id='slot-newest'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(2);
+  await expect(
+    page.locator("[data-notification-id='slot-middle']"),
+  ).toHaveClass(/notification-card-bottom/);
+
+  await page
+    .locator("[data-notification-id='slot-middle'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(1);
+  await expect(
+    page.locator("[data-notification-id='slot-oldest']"),
+  ).toHaveClass(/notification-card-bottom/);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
+});
+
+test("dismissing the second card repeatedly keeps the stack sorted from the bottom", async ({
+  page,
+}) => {
+  await openNotifications(page);
+  const notifications = [
+    notification("reverse-oldest", "completion", "Alpha", "Oldest", now),
+    notification("reverse-middle", "failure", "Beta", "Middle", now + 100),
+    notification("reverse-newest", "attention", "Gamma", "Newest", now + 200),
+  ];
+  await replacePresentation(page, {
+    unreadNotificationCount: notifications.length,
+    notifications,
+  });
+
+  const stack = page.locator(".notification-stack");
+  await expect(
+    page.locator("[data-notification-id='reverse-middle']"),
+  ).toHaveClass(/notification-card-top/);
+
+  await page
+    .locator("[data-notification-id='reverse-middle'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(2);
+  await expect(
+    page.locator("[data-notification-id='reverse-oldest']"),
+  ).toHaveClass(/notification-card-top/);
+
+  await page
+    .locator("[data-notification-id='reverse-oldest'] .notification-dismiss")
+    .click();
+  await expect(page.locator(".notification-card")).toHaveCount(1);
+  const remaining = page.locator("[data-notification-id='reverse-newest']");
+  await expect(remaining).toHaveClass(/notification-card-bottom/);
+  await expect(stack).toHaveAttribute("data-notification-visible-count", "1");
+
+  await page.evaluate(() => {
+    document.documentElement.dataset.notificationPlacement = "below";
+  });
+  await expect
+    .poll(() => remaining.evaluate((element) => getComputedStyle(element).top))
+    .toBe("12px");
 });
 
 test("focusing a visible notification does not advance the carousel", async ({
@@ -925,47 +2154,35 @@ test("below-pet placement keeps the newest card at the top edge", async ({
     document.documentElement.dataset.notificationPlacement = "below";
   });
 
-  const cardTop = await page
-    .locator("[data-notification-id='below-pet']")
-    .evaluate((card) => card.getBoundingClientRect().top);
-  expect(cardTop).toBe(16);
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-notification-id='below-pet']")
+        .evaluate((card) => card.getBoundingClientRect().top),
+    )
+    .toBe(16);
 });
 
-test("notification surface reports a compact native window height", async ({
+test("notification surface keeps fixed two-slot geometry for one card", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    window.__LILI_INVOKES__ = [];
-    window.__TAURI_INTERNALS__ = {
-      invoke: async (name, args) => {
-        window.__LILI_INVOKES__.push({ name, args });
-        return true;
-      },
-    };
-  });
   await openNotifications(page);
   await replacePresentation(page, {
     unreadNotificationCount: 1,
     notifications: [
-      notification("compact-window", "completion", "Workspace", "Done", now),
+      notification("fixed-window", "completion", "Workspace", "Done", now),
     ],
   });
 
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.__LILI_INVOKES__
-          .filter((call) => call.name === "resize_notification_window")
-          .at(-1)?.args?.height,
-      ),
-    )
-    .toBeGreaterThanOrEqual(16);
-  const height = await page.evaluate(() =>
-    window.__LILI_INVOKES__
-      .filter((call) => call.name === "resize_notification_window")
-      .at(-1).args.height,
-  );
-  expect(height).toBeLessThan(158);
+  const geometry = await page.locator("[data-notification-id='fixed-window']").evaluate((card) => {
+    const stackBounds = card.closest(".notification-stack").getBoundingClientRect();
+    const cardBounds = card.getBoundingClientRect();
+    return {
+      stackHeight: stackBounds.height,
+      bottomGap: stackBounds.bottom - cardBounds.bottom,
+    };
+  });
+  expect(geometry).toEqual({ stackHeight: 148, bottomGap: 12 });
 });
 
 test("notification surface suppresses the browser context menu", async ({

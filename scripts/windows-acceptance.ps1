@@ -1,5 +1,15 @@
 $ErrorActionPreference = "Stop"
 
+cargo test --locked --package lili-storage new_directory_owner_matches_the_current_token
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+cargo test --locked --package lili-session new_directory_owner_matches_the_current_token
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 cargo test --locked --package lili-session owner_rights_named_pipe_is_private
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
