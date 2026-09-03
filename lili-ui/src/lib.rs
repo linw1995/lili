@@ -1110,8 +1110,11 @@ export function activateNativePet(trigger) {
   });
 }
 
-export function dismissNativeNotification(id) {
-  void fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+export async function dismissNativeNotification(id) {
+  const response = await fetch(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error('notification dismissal failed');
 }
 
 export function openNativePetContextMenu(screenX, screenY) {
@@ -1146,7 +1149,7 @@ extern "C" {
     fn activate_native_pet(trigger: &str);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = dismissNativeNotification)]
-    fn dismiss_native_notification(id: &str);
+    fn dismiss_native_notification(id: &str) -> js_sys::Promise;
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = openNativePetContextMenu)]
     fn open_native_pet_context_menu(screen_x: i32, screen_y: i32);

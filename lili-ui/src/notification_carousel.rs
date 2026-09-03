@@ -569,7 +569,7 @@ impl NotificationCarouselState {
         self.survivor_reflowing = false;
     }
 
-    #[cfg(feature = "hydrate")]
+    #[cfg(any(test, feature = "hydrate"))]
     fn prepare_exit(
         &mut self,
         id: &str,
@@ -587,6 +587,20 @@ impl NotificationCarouselState {
                 .ordered_ids
                 .first()
                 .is_some_and(|current| current == id);
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn cancel_pending_exit(&mut self, id: &str) {
+        self.pending_exit_visuals
+            .retain(|(candidate, _)| candidate != id);
+        if self.ordered_ids.len() == 1
+            && self
+                .ordered_ids
+                .first()
+                .is_some_and(|current| current == id)
+        {
+            self.return_focus_when_settled = false;
+        }
     }
 
     #[cfg(any(test, feature = "hydrate"))]
@@ -791,6 +805,11 @@ impl NotificationCarouselController {
     }
 
     #[cfg(feature = "hydrate")]
+    fn cancel_pending_exit(&self, id: &str) {
+        self.state.update(|state| state.cancel_pending_exit(id));
+    }
+
+    #[cfg(feature = "hydrate")]
     fn process_pending_at(&self, now_ms: u64) {
         if self.reduced_motion.get_untracked() {
             self.state
@@ -977,6 +996,7 @@ fn NotificationCard(
         let activate_carousel = carousel.clone();
         let dismiss_focus_carousel = carousel.clone();
         let dismiss_click_carousel = carousel.clone();
+        let dismiss_failure_carousel = carousel.clone();
         view! {
             <button
                 class="notification-activate"
@@ -998,7 +1018,14 @@ fn NotificationCard(
                 on:focus=move |_| dismiss_focus_carousel.focus_notification(&dismiss_focus_id)
                 on:click=move |event| {
                     dismiss_click_carousel.prepare_exit(&dismiss_id, &event);
-                    dismiss_native_notification(&dismiss_id);
+                    let request = dismiss_native_notification(&dismiss_id);
+                    let failure_carousel = dismiss_failure_carousel.clone();
+                    let failed_id = dismiss_id.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if wasm_bindgen_futures::JsFuture::from(request).await.is_err() {
+                            failure_carousel.cancel_pending_exit(&failed_id);
+                        }
+                    });
                 }
             >
                 <NotificationDismissIcon/>
@@ -1216,6 +1243,26 @@ mod tests {
         state.reconcile_exit_state();
 
         assert_eq!(state.take_pending_exit_visual("newer"), Some(visual));
+    }
+
+    #[test]
+    fn failed_dismissal_discards_its_pending_exit_intent() {
+        let mut state = NotificationCarouselState::new(vec!["only".to_owned()]);
+        state.prepare_exit(
+            "only",
+            Some(NotificationExitVisual {
+                top: 78.0,
+                opacity: "1".to_owned(),
+                transform: "matrix(1, 0, 0, 1, 0, 0)".to_owned(),
+                below_pet: false,
+            }),
+            true,
+        );
+
+        state.cancel_pending_exit("only");
+
+        assert!(state.take_pending_exit_visual("only").is_none());
+        assert!(!state.return_focus_when_settled);
     }
 
     #[test]

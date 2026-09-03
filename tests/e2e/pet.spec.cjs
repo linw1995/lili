@@ -35,7 +35,11 @@ async function openNotifications(page) {
   );
 }
 
-async function replacePresentation(page, overrides = {}) {
+async function replacePresentation(
+  page,
+  overrides = {},
+  { waitForExits = true } = {},
+) {
   const app = page.locator("#lili-app");
   const current = JSON.parse(await app.getAttribute("data-presentation"));
   const next = {
@@ -55,7 +59,9 @@ async function replacePresentation(page, overrides = {}) {
   expect(response.ok()).toBeTruthy();
   const applied = await response.json();
   await expect(app).toHaveAttribute("data-revision", String(applied.revision));
-  await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
+  if (waitForExits) {
+    await expect(page.locator(".notification-card-exiting")).toHaveCount(0);
+  }
   return applied;
 }
 
@@ -1348,6 +1354,50 @@ test("placement flips rebase a captured notification exit", async ({ page }) => 
 
   await expect(exiting).toHaveCSS("top", "12px");
   await expect(survivor).toHaveCSS("top", "78px");
+});
+
+test("failed dismissal discards its captured exit snapshot", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  await page.addStyleTag({
+    content: ".notification-card-exiting { animation-duration: 2s; }",
+  });
+  const id = "failed-dismissal";
+  const dismissUrl = `**/api/v1/notifications/${id}/dismiss`;
+  await page.route(dismissUrl, (route) => route.fulfill({ status: 500 }));
+  await replacePresentation(page, {
+    unreadNotificationCount: 1,
+    notifications: [
+      notification(id, "completion", "Workspace", "Still active", now),
+    ],
+  });
+
+  const response = page.waitForResponse(
+    (candidate) => candidate.url().endsWith(`/notifications/${id}/dismiss`),
+  );
+  await page.locator(`[data-notification-id='${id}'] .notification-dismiss`).click();
+  await response;
+  await page.waitForTimeout(50);
+  diagnostics = diagnostics.filter(
+    (entry) => !entry.includes("status of 500 (Internal Server Error)"),
+  );
+  await replacePresentation(
+    page,
+    { unreadNotificationCount: 0, notifications: [] },
+    { waitForExits: false },
+  );
+
+  const exiting = page.locator(
+    `.notification-card-exiting[data-notification-id='${id}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  await expect(exiting).not.toHaveAttribute("data-notification-exit-placement");
+  expect(
+    await exiting.evaluate((card) =>
+      card.style.getPropertyValue("--notification-exit-top"),
+    ),
+  ).toBe("");
+  await page.unroute(dismissUrl);
 });
 
 test("final dismissal returns focus only after a keyboard exit", async ({ page }) => {

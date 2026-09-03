@@ -2871,6 +2871,7 @@ dependencies = [
  "lili-pet",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 
