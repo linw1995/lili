@@ -76,7 +76,8 @@ class PluginHooksTests(unittest.TestCase):
             'run = client._completed_hook(thread_id, "sessionStart", turn_id)'
         )
         self.assertLess(start_turn, await_hook)
-        self.assertIn('runner.environment["SystemRoot"] = system_root', hook_trust)
+        self.assertIn('"SystemRoot": system_root', hook_trust)
+        self.assertIn('"LOCALAPPDATA": local_app_data', hook_trust)
 
     def test_hook_trust_failure_is_reported_on_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
