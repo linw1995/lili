@@ -740,6 +740,12 @@ fn sync_notification_window(app: &tauri::AppHandle, unread: usize) {
         return;
     };
     let window_state = app.state::<NotificationWindowState>().inner().clone();
+    #[cfg(target_os = "macos")]
+    let _ = macos_panel::update_notification_hit_region(
+        &notification,
+        unread,
+        window_state.get() == NotificationWindowPlacement::Below,
+    );
     match notification_window_sync_action(unread, pet.is_visible().unwrap_or(false)) {
         NotificationWindowSyncAction::Show => {
             window_state.cancel_scheduled_hide();
@@ -859,6 +865,12 @@ fn position_notification_window(app: &tauri::AppHandle) {
         let _ = notification.set_position(layout.position);
     }
     app.state::<NotificationWindowState>().set(layout.placement);
+    #[cfg(target_os = "macos")]
+    let _ = macos_panel::update_notification_hit_region(
+        &notification,
+        current_unread_notification_count(app),
+        layout.placement == NotificationWindowPlacement::Below,
+    );
     apply_notification_window_placement(&notification, layout.placement);
     if notification.is_visible().unwrap_or(false) {
         let _ = show_notification_window_without_focus(&notification);

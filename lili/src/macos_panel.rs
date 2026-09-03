@@ -15,7 +15,8 @@ use objc2::{
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
 };
 use objc2_app_kit::{
-    NSEvent, NSEventMask, NSEventType, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSEvent, NSEventMask, NSEventType, NSWindow, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint};
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
@@ -50,17 +51,37 @@ const PET_SPRITE_HEIGHT: f64 = 208.0;
 const PET_SPRITE_WIDTH: f64 = 192.0;
 const PET_WINDOW_HEIGHT: f64 = 360.0;
 const PET_WINDOW_WIDTH: f64 = 320.0;
+const NOTIFICATION_WINDOW_HEIGHT: f64 = 158.0;
+const NOTIFICATION_WINDOW_WIDTH: f64 = 320.0;
+const NOTIFICATION_STACK_HEIGHT: f64 = 148.0;
+const NOTIFICATION_STACK_HORIZONTAL_INSET: f64 = 12.0;
+const NOTIFICATION_CARD_HEIGHT: f64 = 58.0;
+const NOTIFICATION_CARD_TOP_OFFSET: f64 = 12.0;
+const NOTIFICATION_CARD_BOTTOM_OFFSET: f64 = 78.0;
+const NOTIFICATION_STACK_TOP_ABOVE: f64 = 6.0;
+const NOTIFICATION_STACK_TOP_BELOW: f64 = 4.0;
+
+#[derive(Clone, Copy, Debug)]
+struct NotificationHitRegion {
+    window_number: isize,
+    notification_count: usize,
+    below_pet: bool,
+}
 
 #[derive(Default)]
 struct ContextMenuState {
     pet: Option<(isize, ContextMenuHandler)>,
     suppressed_windows: HashSet<isize>,
+    notification_hit_region: Option<NotificationHitRegion>,
 }
 
 static CONTEXT_MENU_STATE: OnceLock<Mutex<ContextMenuState>> = OnceLock::new();
 thread_local! {
     static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
         const { std::cell::RefCell::new(None) };
+    static NOTIFICATION_GLOBAL_MONITOR: std::cell::RefCell<
+        Option<objc2::rc::Retained<AnyObject>>
+    > = const { std::cell::RefCell::new(None) };
 }
 
 pub fn configure(
@@ -82,7 +103,36 @@ pub fn configure(
 
 pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
-    register_context_menu_suppression(window_number)
+    register_context_menu_suppression(window_number)?;
+    register_notification_hit_region(window_number)
+}
+
+pub fn update_notification_hit_region(
+    window: &tauri::WebviewWindow,
+    notification_count: usize,
+    below_pet: bool,
+) -> tauri::Result<()> {
+    let raw_window = window.ns_window()?;
+    if raw_window.is_null() {
+        return Err(tauri::Error::InvalidWindowHandle);
+    }
+    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+    let window_number: isize = unsafe { msg_send![native_window, windowNumber] };
+    let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
+    state
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?
+        .notification_hit_region = Some(NotificationHitRegion {
+        window_number,
+        notification_count,
+        below_pet,
+    });
+    if MainThreadMarker::new().is_some() {
+        refresh_notification_mouse_passthrough();
+        Ok(())
+    } else {
+        window.run_on_main_thread(refresh_notification_mouse_passthrough)
+    }
 }
 
 pub fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -219,6 +269,107 @@ fn register_context_menu_suppression(window_number: isize) -> tauri::Result<()> 
     Ok(())
 }
 
+fn register_notification_hit_region(window_number: isize) -> tauri::Result<()> {
+    let state = CONTEXT_MENU_STATE.get_or_init(|| Mutex::new(ContextMenuState::default()));
+    state
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("notification hit region".to_owned()))?
+        .notification_hit_region = Some(NotificationHitRegion {
+        window_number,
+        notification_count: 0,
+        below_pet: false,
+    });
+    install_notification_global_monitor();
+    refresh_notification_mouse_passthrough();
+    Ok(())
+}
+
+fn install_notification_global_monitor() {
+    let already_installed = NOTIFICATION_GLOBAL_MONITOR.with(|monitor| monitor.borrow().is_some());
+    if already_installed {
+        return;
+    }
+    let mask = NSEventMask::MouseMoved
+        | NSEventMask::LeftMouseDragged
+        | NSEventMask::RightMouseDragged
+        | NSEventMask::OtherMouseDragged;
+    let global_block = RcBlock::new(move |_event: NonNull<NSEvent>| {
+        refresh_notification_mouse_passthrough();
+    });
+    if let Some(monitor) =
+        NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global_block)
+    {
+        NOTIFICATION_GLOBAL_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
+}
+
+fn refresh_notification_mouse_passthrough() {
+    let tracking_available = CONTEXT_MENU_MONITOR.with(|monitor| monitor.borrow().is_some())
+        && NOTIFICATION_GLOBAL_MONITOR.with(|monitor| monitor.borrow().is_some());
+    let hit_region = CONTEXT_MENU_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.notification_hit_region);
+    let (Some(hit_region), Some(mtm)) = (hit_region, MainThreadMarker::new()) else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(mtm);
+    let Some(window) = application.windowWithWindowNumber(hit_region.window_number) else {
+        return;
+    };
+    window.setAcceptsMouseMovedEvents(true);
+    if !tracking_available {
+        window.setIgnoresMouseEvents(false);
+        return;
+    }
+    let point = window.convertPointFromScreen(NSEvent::mouseLocation());
+    window.setIgnoresMouseEvents(!notification_hit_region_contains(
+        hit_region.notification_count,
+        hit_region.below_pet,
+        point.x,
+        point.y,
+    ));
+}
+
+fn notification_hit_region_contains(
+    notification_count: usize,
+    below_pet: bool,
+    x: f64,
+    y: f64,
+) -> bool {
+    let max_x = NOTIFICATION_WINDOW_WIDTH - NOTIFICATION_STACK_HORIZONTAL_INSET;
+    if !(NOTIFICATION_STACK_HORIZONTAL_INSET..=max_x).contains(&x) || notification_count == 0 {
+        return false;
+    }
+    let stack_top = if below_pet {
+        NOTIFICATION_STACK_TOP_BELOW
+    } else {
+        NOTIFICATION_STACK_TOP_ABOVE
+    };
+    if notification_count > 2 {
+        // Hidden cards make the whole stack a scroll surface, including its gaps.
+        let min_y = NOTIFICATION_WINDOW_HEIGHT - stack_top - NOTIFICATION_STACK_HEIGHT;
+        let max_y = NOTIFICATION_WINDOW_HEIGHT - stack_top;
+        return (min_y..=max_y).contains(&y);
+    }
+    let contains_card = |top_offset: f64| {
+        let max_y = NOTIFICATION_WINDOW_HEIGHT - stack_top - top_offset;
+        let min_y = max_y - NOTIFICATION_CARD_HEIGHT;
+        (min_y..=max_y).contains(&y)
+    };
+    if notification_count == 1 {
+        let offset = if below_pet {
+            NOTIFICATION_CARD_TOP_OFFSET
+        } else {
+            NOTIFICATION_CARD_BOTTOM_OFFSET
+        };
+        contains_card(offset)
+    } else {
+        contains_card(NOTIFICATION_CARD_TOP_OFFSET)
+            || contains_card(NOTIFICATION_CARD_BOTTOM_OFFSET)
+    }
+}
+
 pub fn hide_dock_icon() {
     let process_serial_number = ProcessSerialNumber {
         high_long_of_psn: 0,
@@ -334,6 +485,16 @@ fn install_context_menu_monitor() {
         let event = unsafe { event.as_ref() };
         let window_number = event.windowNumber();
         let event_type = event.r#type();
+        if matches!(
+            event_type,
+            NSEventType::MouseMoved
+                | NSEventType::LeftMouseDragged
+                | NSEventType::RightMouseDragged
+                | NSEventType::OtherMouseDragged
+        ) {
+            refresh_notification_mouse_passthrough();
+            return event as *const NSEvent as *mut NSEvent;
+        }
         let Some((suppressed, handler)) = CONTEXT_MENU_STATE.get().and_then(|state| {
             state.lock().ok().map(|state| {
                 let suppressed = state.suppressed_windows.contains(&window_number);
@@ -364,7 +525,12 @@ fn install_context_menu_monitor() {
         }
         std::ptr::null_mut()
     });
-    let mask = NSEventMask::RightMouseDown | NSEventMask::RightMouseUp;
+    let mask = NSEventMask::RightMouseDown
+        | NSEventMask::RightMouseUp
+        | NSEventMask::MouseMoved
+        | NSEventMask::LeftMouseDragged
+        | NSEventMask::RightMouseDragged
+        | NSEventMask::OtherMouseDragged;
     let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
     if let Some(monitor) = monitor {
         CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
@@ -437,8 +603,8 @@ mod tests {
     use objc2_app_kit::NSEventType;
 
     use super::{
-        native_top_left_point, pet_sprite_contains, screen_point_to_tauri_with_display_height,
-        should_open_pet_context_menu,
+        native_top_left_point, notification_hit_region_contains, pet_sprite_contains,
+        screen_point_to_tauri_with_display_height, should_open_pet_context_menu,
     };
 
     #[test]
@@ -448,6 +614,28 @@ mod tests {
         assert!(pet_sprite_contains(160.0, 180.0));
         assert!(!pet_sprite_contains(63.9, 180.0));
         assert!(!pet_sprite_contains(160.0, 284.1));
+    }
+
+    #[test]
+    fn notification_hit_region_matches_visible_cards_and_scroll_surface() {
+        assert!(!notification_hit_region_contains(0, false, 160.0, 45.0));
+
+        assert!(notification_hit_region_contains(1, false, 160.0, 45.0));
+        assert!(!notification_hit_region_contains(1, false, 160.0, 110.0));
+        assert!(notification_hit_region_contains(1, true, 160.0, 110.0));
+        assert!(!notification_hit_region_contains(1, true, 160.0, 45.0));
+
+        assert!(notification_hit_region_contains(2, false, 160.0, 45.0));
+        assert!(notification_hit_region_contains(2, false, 160.0, 110.0));
+        assert!(!notification_hit_region_contains(2, false, 160.0, 78.0));
+        assert!(notification_hit_region_contains(2, true, 160.0, 45.0));
+        assert!(notification_hit_region_contains(2, true, 160.0, 110.0));
+        assert!(!notification_hit_region_contains(2, true, 160.0, 77.0));
+
+        assert!(notification_hit_region_contains(3, false, 160.0, 78.0));
+        assert!(notification_hit_region_contains(3, true, 160.0, 78.0));
+        assert!(!notification_hit_region_contains(3, false, 8.0, 78.0));
+        assert!(!notification_hit_region_contains(3, false, 312.0, 78.0));
     }
 
     #[test]
