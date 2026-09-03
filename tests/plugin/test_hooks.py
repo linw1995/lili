@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -70,6 +73,27 @@ class PluginHooksTests(unittest.TestCase):
         self.assertIn('arg("--installed-plugin-root")', acceptance)
         self.assertIn('run = client._completed_hook(thread_id, "sessionStart")', hook_trust)
         self.assertIn('runner.environment["SystemRoot"] = system_root', hook_trust)
+
+    def test_hook_trust_failure_is_reported_on_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    HOOK_TRUST_SOURCE,
+                    "--workspace-root",
+                    Path(temporary_directory),
+                    "--archive",
+                    Path(temporary_directory) / "missing.zip",
+                    "--codex",
+                    sys.executable,
+                ],
+                check=False,
+                capture_output=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"hook trust round trip failed:", result.stderr)
 
 
 if __name__ == "__main__":

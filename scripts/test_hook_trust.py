@@ -7,6 +7,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -725,7 +726,7 @@ def main() -> int:
                 arguments.dispatch_cwd,
             )
     except (MarketplaceRoundTripError, OSError, KeyError, TypeError, ValueError) as error:
-        print(f"hook trust round trip failed: {error}")
+        print(f"hook trust round trip failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0
