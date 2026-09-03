@@ -1593,6 +1593,20 @@ test("dismissing a fading-in card preserves its rendered visual state", async ({
   await openNotifications(page);
   const ids = await setupFourNotificationFixture(page, "fading-in-dismissal");
   const stack = page.locator(".notification-stack");
+  const dismissUrl = `**/api/v1/notifications/${encodeURIComponent(ids.c)}/dismiss`;
+  let releaseDismiss;
+  const dismissGate = new Promise((resolve) => {
+    releaseDismiss = resolve;
+  });
+  let observeDismiss;
+  const dismissObserved = new Promise((resolve) => {
+    observeDismiss = resolve;
+  });
+  await page.route(dismissUrl, async (route) => {
+    observeDismiss();
+    await dismissGate;
+    await route.continue();
+  });
   await stack.hover();
   await page.mouse.wheel(0, -120);
 
@@ -1615,6 +1629,15 @@ test("dismissing a fading-in card preserves its rendered visual state", async ({
     button.click();
     return visual;
   });
+  await dismissObserved;
+  const presentation = JSON.parse(
+    await page.locator("#lili-app").getAttribute("data-presentation"),
+  );
+  await replacePresentation(page, {
+    unreadNotificationCount: presentation.unreadNotificationCount,
+    notifications: presentation.notifications,
+  });
+  releaseDismiss();
   expect(rendered.opacity).toBeGreaterThan(0);
   expect(rendered.opacity).toBeLessThan(1);
   expect(rendered.scale).toBeGreaterThan(0.96);
@@ -1641,6 +1664,7 @@ test("dismissing a fading-in card preserves its rendered visual state", async ({
   expect(exitStart.opacity).toBeCloseTo(rendered.opacity, 2);
   expect(exitStart.scale).toBeCloseTo(rendered.scale, 2);
   expect(exitStart.renderedOpacity).toBeLessThanOrEqual(rendered.opacity + 0.08);
+  await page.unroute(dismissUrl);
 });
 
 for (const scenario of fourNotificationConsecutiveDismissalCases) {

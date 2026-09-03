@@ -487,8 +487,8 @@ impl NotificationCarouselState {
         }
     }
 
-    #[cfg(feature = "hydrate")]
-    fn clear_exiting_for_active_notifications(&mut self) {
+    #[cfg(any(test, feature = "hydrate"))]
+    fn reconcile_exit_state(&mut self) {
         self.exiting.retain(|candidate| {
             !self
                 .ordered_ids
@@ -496,13 +496,12 @@ impl NotificationCarouselState {
                 .any(|id| id == &candidate.notification.activation_id)
         });
         self.pending_exit_visuals
-            .retain(|(id, _)| !self.ordered_ids.iter().any(|active_id| active_id == id));
+            .retain(|(id, _)| self.ordered_ids.iter().any(|active_id| active_id == id));
     }
 
     #[cfg(feature = "hydrate")]
     fn clear_exiting(&mut self) {
         self.exiting.clear();
-        self.pending_exit_visuals.clear();
     }
 
     #[cfg(feature = "hydrate")]
@@ -525,7 +524,7 @@ impl NotificationCarouselState {
                 .is_some_and(|current| current == id);
     }
 
-    #[cfg(feature = "hydrate")]
+    #[cfg(any(test, feature = "hydrate"))]
     fn take_pending_exit_visual(&mut self, id: &str) -> Option<NotificationExitVisual> {
         let index = self
             .pending_exit_visuals
@@ -666,7 +665,7 @@ impl NotificationCarouselController {
                 }
             }
             let changed = state.reconcile(ordered_ids);
-            state.clear_exiting_for_active_notifications();
+            state.reconcile_exit_state();
             if changed && should_animate {
                 state.queue_exiting(exiting);
             }
@@ -1104,6 +1103,25 @@ fn NotificationDismissIcon() -> AnyView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_exit_visual_survives_an_intermediate_active_revision() {
+        let ids = vec!["older".to_owned(), "newer".to_owned()];
+        let mut state = NotificationCarouselState::new(ids.clone());
+        let visual = NotificationExitVisual {
+            top: 42.0,
+            opacity: "0.5".to_owned(),
+            transform: "matrix(0.98, 0, 0, 0.98, 0, 0)".to_owned(),
+        };
+        state
+            .pending_exit_visuals
+            .push(("newer".to_owned(), visual.clone()));
+
+        assert!(!state.reconcile(ids));
+        state.reconcile_exit_state();
+
+        assert_eq!(state.take_pending_exit_visual("newer"), Some(visual));
+    }
 
     #[test]
     fn starts_with_the_newest_pair() {
