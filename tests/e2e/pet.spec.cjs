@@ -1581,6 +1581,58 @@ test("rapid dismissal during reflow fades from the rendered position", async ({
   expect(Math.abs(exitTop - renderedTop)).toBeLessThan(2);
 });
 
+test("dismissing a fading-in card preserves its rendered visual state", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await openNotifications(page);
+  const ids = await setupFourNotificationFixture(page, "fading-in-dismissal");
+  const stack = page.locator(".notification-stack");
+  await stack.hover();
+  await page.mouse.wheel(0, -120);
+
+  const incoming = stack.locator(
+    `.notification-card-current[data-notification-id='${ids.c}']`,
+  );
+  await expect(incoming).toHaveClass(/notification-card-top/);
+  await page.waitForTimeout(180);
+  const rendered = await incoming.evaluate((card) => {
+    const style = getComputedStyle(card);
+    return {
+      top: Number.parseFloat(style.top),
+      opacity: Number(style.opacity),
+      scale: new DOMMatrixReadOnly(style.transform).a,
+    };
+  });
+  expect(rendered.opacity).toBeGreaterThan(0);
+  expect(rendered.opacity).toBeLessThan(1);
+  expect(rendered.scale).toBeGreaterThan(0.96);
+  expect(rendered.scale).toBeLessThan(1);
+
+  await incoming.locator(".notification-dismiss").evaluate((button) => button.click());
+  const exiting = stack.locator(
+    `.notification-card-exiting[data-notification-id='${ids.c}']`,
+  );
+  await expect(exiting).toHaveCount(1);
+  const exitStart = await exiting.evaluate((card) => {
+    const style = getComputedStyle(card);
+    return {
+      top: Number.parseFloat(card.style.top),
+      opacity: Number.parseFloat(
+        card.style.getPropertyValue("--notification-exit-opacity"),
+      ),
+      scale: new DOMMatrixReadOnly(
+        card.style.getPropertyValue("--notification-exit-transform"),
+      ).a,
+      renderedOpacity: Number(style.opacity),
+    };
+  });
+  expect(exitStart.top).toBeCloseTo(rendered.top, 1);
+  expect(exitStart.opacity).toBeCloseTo(rendered.opacity, 2);
+  expect(exitStart.scale).toBeCloseTo(rendered.scale, 2);
+  expect(exitStart.renderedOpacity).toBeLessThanOrEqual(rendered.opacity + 0.08);
+});
+
 for (const scenario of fourNotificationConsecutiveDismissalCases) {
   test(`four notifications ${scenario.name}`, async ({ page }) => {
     await openNotifications(page);

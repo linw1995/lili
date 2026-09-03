@@ -283,8 +283,8 @@ html[data-notification-placement="below"] .notification-more-bottom {
 
 @keyframes notification-card-fadeout {
   from {
-    opacity: 1;
-    transform: scale(1);
+    opacity: var(--notification-exit-opacity, 1);
+    transform: var(--notification-exit-transform, scale(1));
   }
 
   to {

@@ -48,7 +48,7 @@ pub(super) fn NotificationCarousel(
                     wall_clock
                     carousel=cards_carousel.clone()
                     exit_role=None
-                    exit_top=None
+                    exit_visual=None
                 />
             }
         />
@@ -64,7 +64,7 @@ pub(super) fn NotificationCarousel(
                         wall_clock
                         carousel=cards_carousel.clone()
                         exit_role=None
-                        exit_top=None
+                        exit_visual=None
                     />
                 }
             })
@@ -82,7 +82,7 @@ pub(super) fn NotificationCarousel(
                     wall_clock
                     carousel=exiting_child_carousel.clone()
                     exit_role=Some(exiting.role)
-                    exit_top=exiting.top
+                    exit_visual=exiting.visual
                 />
             }
         />
@@ -101,7 +101,7 @@ pub(super) fn NotificationCarousel(
                             wall_clock
                             carousel=exiting_child_carousel.clone()
                             exit_role=Some(exiting.role)
-                            exit_top=exiting.top
+                            exit_visual=exiting.visual
                         />
                     }
                 />
@@ -189,7 +189,14 @@ struct ExitingNotification {
     notification: PetNotificationPresentation,
     role: NotificationCardRole,
     preserve_survivor_slot: bool,
-    top: Option<f64>,
+    visual: Option<NotificationExitVisual>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NotificationExitVisual {
+    top: f64,
+    opacity: String,
+    transform: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -205,7 +212,7 @@ struct NotificationCarouselState {
     last_wheel_direction: i32,
     transition_until_ms: u64,
     exiting: Vec<ExitingNotification>,
-    pending_exit_tops: Vec<(String, f64)>,
+    pending_exit_visuals: Vec<(String, NotificationExitVisual)>,
     return_focus_when_settled: bool,
 }
 
@@ -237,7 +244,7 @@ impl NotificationCarouselState {
             last_wheel_direction: 0,
             transition_until_ms: 0,
             exiting: Vec::new(),
-            pending_exit_tops: Vec::new(),
+            pending_exit_visuals: Vec::new(),
             return_focus_when_settled: false,
         }
     }
@@ -488,22 +495,27 @@ impl NotificationCarouselState {
                 .iter()
                 .any(|id| id == &candidate.notification.activation_id)
         });
-        self.pending_exit_tops
+        self.pending_exit_visuals
             .retain(|(id, _)| !self.ordered_ids.iter().any(|active_id| active_id == id));
     }
 
     #[cfg(feature = "hydrate")]
     fn clear_exiting(&mut self) {
         self.exiting.clear();
-        self.pending_exit_tops.clear();
+        self.pending_exit_visuals.clear();
     }
 
     #[cfg(feature = "hydrate")]
-    fn prepare_exit(&mut self, id: &str, top: Option<f64>, return_focus: bool) {
-        if let Some(top) = top {
-            self.pending_exit_tops
+    fn prepare_exit(
+        &mut self,
+        id: &str,
+        visual: Option<NotificationExitVisual>,
+        return_focus: bool,
+    ) {
+        if let Some(visual) = visual {
+            self.pending_exit_visuals
                 .retain(|(candidate, _)| candidate != id);
-            self.pending_exit_tops.push((id.to_owned(), top));
+            self.pending_exit_visuals.push((id.to_owned(), visual));
         }
         self.return_focus_when_settled = return_focus
             && self.ordered_ids.len() == 1
@@ -514,12 +526,12 @@ impl NotificationCarouselState {
     }
 
     #[cfg(feature = "hydrate")]
-    fn take_pending_exit_top(&mut self, id: &str) -> Option<f64> {
+    fn take_pending_exit_visual(&mut self, id: &str) -> Option<NotificationExitVisual> {
         let index = self
-            .pending_exit_tops
+            .pending_exit_visuals
             .iter()
             .position(|(candidate, _)| candidate == id)?;
-        Some(self.pending_exit_tops.swap_remove(index).1)
+        Some(self.pending_exit_visuals.swap_remove(index).1)
     }
 
     #[cfg(feature = "hydrate")]
@@ -643,13 +655,13 @@ impl NotificationCarouselController {
                     role,
                     NotificationCardRole::Top | NotificationCardRole::Bottom
                 ) {
-                    let top = state.take_pending_exit_top(&notification.activation_id);
+                    let visual = state.take_pending_exit_visual(&notification.activation_id);
                     exiting.push(ExitingNotification {
                         notification: notification.clone(),
                         role,
                         preserve_survivor_slot: had_two_visible_slots
                             && role == NotificationCardRole::Bottom,
-                        top,
+                        visual,
                     });
                 }
             }
@@ -686,10 +698,10 @@ impl NotificationCarouselController {
 
     #[cfg(feature = "hydrate")]
     fn prepare_exit(&self, id: &str, event: &web_sys::MouseEvent) {
-        let top = notification_top_from_click(event);
+        let visual = notification_exit_visual_from_click(event);
         let return_focus = event.detail() == 0;
         self.state
-            .update(|state| state.prepare_exit(id, top, return_focus));
+            .update(|state| state.prepare_exit(id, visual, return_focus));
     }
 
     #[cfg(feature = "hydrate")]
@@ -786,19 +798,32 @@ fn notification_window_is_below() -> bool {
 }
 
 #[cfg(feature = "hydrate")]
-fn notification_top_from_click(event: &web_sys::MouseEvent) -> Option<f64> {
+fn notification_exit_visual_from_click(
+    event: &web_sys::MouseEvent,
+) -> Option<NotificationExitVisual> {
     use wasm_bindgen::JsCast;
     let button = event.target()?.dyn_into::<web_sys::Element>().ok()?;
     let card = button.closest(".notification-card").ok()??;
-    let top = web_sys::window()?
-        .get_computed_style(&card)
-        .ok()??
+    let style = web_sys::window()?.get_computed_style(&card).ok()??;
+    let top = style
         .get_property_value("top")
         .ok()?
         .trim_end_matches("px")
         .parse::<f64>()
         .ok()?;
-    top.is_finite().then_some(top)
+    let opacity = style.get_property_value("opacity").ok()?.trim().to_owned();
+    let transform = style
+        .get_property_value("transform")
+        .ok()?
+        .trim()
+        .to_owned();
+    (top.is_finite() && !opacity.is_empty() && !transform.is_empty()).then_some(
+        NotificationExitVisual {
+            top,
+            opacity,
+            transform,
+        },
+    )
 }
 
 fn notifications_by_display_order(
@@ -826,7 +851,7 @@ fn NotificationCard(
     wall_clock: RwSignal<u64>,
     carousel: NotificationCarouselController,
     exit_role: Option<NotificationCardRole>,
-    exit_top: Option<f64>,
+    exit_visual: Option<NotificationExitVisual>,
 ) -> AnyView {
     let exiting = exit_role.is_some();
     let activation_id = notification.activation_id;
@@ -926,6 +951,12 @@ fn NotificationCard(
     let foreground_id = activation_id.clone();
     let is_exit_top = exit_role == Some(NotificationCardRole::Top);
     let is_exit_bottom = exit_role == Some(NotificationCardRole::Bottom);
+    let exit_style = exit_visual.map(|visual| {
+        format!(
+            "top: {}px; --notification-exit-opacity: {}; --notification-exit-transform: {};",
+            visual.top, visual.opacity, visual.transform
+        )
+    });
     view! {
         <article
             class="notification-card"
@@ -961,7 +992,7 @@ fn NotificationCard(
                 && !exiting
             class:notification-card-exiting=exiting
             aria-hidden=exiting.then_some("true")
-            style:top=exit_top.map(|top| format!("{top}px"))
+            style=exit_style
             data-notification-id=activation_id
             data-notification-kind=kind.as_str()
         >
@@ -1250,7 +1281,7 @@ mod tests {
             notification,
             role: NotificationCardRole::Bottom,
             preserve_survivor_slot: false,
-            top: None,
+            visual: None,
         });
 
         assert_eq!(state.visible_count(), 1);
@@ -1278,7 +1309,7 @@ mod tests {
             notification,
             role: NotificationCardRole::Bottom,
             preserve_survivor_slot: true,
-            top: None,
+            visual: None,
         });
         assert_eq!(state.visible_count(), 2);
         assert_eq!(state.visual_for("oldest").role, NotificationCardRole::Top);
