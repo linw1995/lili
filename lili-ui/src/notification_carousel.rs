@@ -2,10 +2,7 @@ use leptos::prelude::*;
 use lili_core::{PetNotificationKind, PetNotificationPresentation, PetPresentationState};
 
 #[cfg(feature = "hydrate")]
-use super::{
-    activate_native_notification, animation_clock_ms, dismiss_native_notification,
-    resize_notification_window,
-};
+use super::{activate_native_notification, animation_clock_ms, dismiss_native_notification};
 use super::{notification_kind_label, relative_time_label};
 
 #[component]
@@ -32,10 +29,7 @@ pub(super) fn NotificationCarousel(
         let motion_carousel = carousel.clone();
         Effect::new(move |_| {
             if reduced_motion.get() {
-                motion_carousel.state.update(|state| {
-                    state.jump_to_pending();
-                    state.clear_exiting();
-                });
+                motion_carousel.settle_motion();
             }
         });
     }
@@ -50,8 +44,8 @@ pub(super) fn NotificationCarousel(
                     notification
                     wall_clock
                     carousel=cards_carousel.clone()
-                    exiting=false
                     exit_role=None
+                    exit_top=None
                 />
             }
         />
@@ -66,8 +60,8 @@ pub(super) fn NotificationCarousel(
                         notification
                         wall_clock
                         carousel=cards_carousel.clone()
-                        exiting=false
                         exit_role=None
+                        exit_top=None
                     />
                 }
             })
@@ -84,8 +78,8 @@ pub(super) fn NotificationCarousel(
                     notification=exiting.notification
                     wall_clock
                     carousel=exiting_child_carousel.clone()
-                    exiting=true
                     exit_role=Some(exiting.role)
+                    exit_top=exiting.top
                 />
             }
         />
@@ -103,8 +97,8 @@ pub(super) fn NotificationCarousel(
                             notification=exiting.notification
                             wall_clock
                             carousel=exiting_child_carousel.clone()
-                            exiting=true
                             exit_role=Some(exiting.role)
+                            exit_top=exiting.top
                         />
                     }
                 />
@@ -187,10 +181,12 @@ pub(super) enum NotificationCardRole {
     BottomBehind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct ExitingNotification {
     notification: PetNotificationPresentation,
     role: NotificationCardRole,
+    preserve_survivor_slot: bool,
+    top: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,15 +202,10 @@ struct NotificationCarouselState {
     last_wheel_direction: i32,
     transition_until_ms: u64,
     exiting: Vec<ExitingNotification>,
+    pending_exit_tops: Vec<(String, f64)>,
 }
 
 impl NotificationCarouselState {
-    #[cfg(any(test, feature = "hydrate"))]
-    const CARD_HEIGHT: u32 = 58;
-    #[cfg(any(test, feature = "hydrate"))]
-    const CARD_GAP: u32 = 8;
-    #[cfg(any(test, feature = "hydrate"))]
-    const STACK_PADDING: u32 = 12;
     #[cfg(any(test, feature = "hydrate"))]
     const WHEEL_TRIGGER_DISTANCE: f64 = 24.0;
     #[cfg(feature = "hydrate")]
@@ -242,20 +233,15 @@ impl NotificationCarouselState {
             last_wheel_direction: 0,
             transition_until_ms: 0,
             exiting: Vec::new(),
+            pending_exit_tops: Vec::new(),
         }
     }
 
     fn visible_count(&self) -> usize {
-        self.ordered_ids.len().min(2)
-    }
-
-    #[cfg(any(test, feature = "hydrate"))]
-    fn stack_height(&self) -> u32 {
-        match self.visible_count() {
-            0 => 24,
-            1 => Self::STACK_PADDING * 2 + Self::CARD_HEIGHT,
-            _ => Self::STACK_PADDING * 2 + Self::CARD_HEIGHT * 2 + Self::CARD_GAP,
-        }
+        self.ordered_ids
+            .len()
+            .saturating_add(self.exiting.len())
+            .min(2)
     }
 
     fn maximum_window_start(&self) -> usize {
@@ -292,7 +278,16 @@ impl NotificationCarouselState {
         else {
             return NotificationCardVisual::HIDDEN;
         };
-        let role = self.role_for_index(index);
+        let role = if self.ordered_ids.len() == 1
+            && self
+                .exiting
+                .iter()
+                .any(|notification| notification.preserve_survivor_slot)
+        {
+            NotificationCardRole::Top
+        } else {
+            self.role_for_index(index)
+        };
         NotificationCardVisual {
             role,
             current: matches!(
@@ -485,11 +480,30 @@ impl NotificationCarouselState {
                 .iter()
                 .any(|id| id == &candidate.notification.activation_id)
         });
+        self.pending_exit_tops
+            .retain(|(id, _)| !self.ordered_ids.iter().any(|active_id| active_id == id));
     }
 
     #[cfg(feature = "hydrate")]
     fn clear_exiting(&mut self) {
         self.exiting.clear();
+        self.pending_exit_tops.clear();
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn prepare_exit(&mut self, id: &str, top: f64) {
+        self.pending_exit_tops
+            .retain(|(candidate, _)| candidate != id);
+        self.pending_exit_tops.push((id.to_owned(), top));
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn take_pending_exit_top(&mut self, id: &str) -> Option<f64> {
+        let index = self
+            .pending_exit_tops
+            .iter()
+            .position(|(candidate, _)| candidate == id)?;
+        Some(self.pending_exit_tops.swap_remove(index).1)
     }
 
     #[cfg(feature = "hydrate")]
@@ -546,11 +560,6 @@ impl NotificationCarouselController {
         reduced_motion: RwSignal<bool>,
     ) -> Self {
         let state = RwSignal::new(NotificationCarouselState::new(ordered_ids));
-        #[cfg(feature = "hydrate")]
-        resize_notification_window(
-            state.get_untracked().stack_height().saturating_add(8),
-            false,
-        );
         #[cfg(not(feature = "hydrate"))]
         let _ = (notifications, reduced_motion);
         Self {
@@ -590,47 +599,58 @@ impl NotificationCarouselController {
             .collect();
         let previous_notifications = self.notification_snapshot.get_untracked();
         let should_animate = !self.reduced_motion.get_untracked();
-        let mut exiting = Vec::new();
-        let mut changed = false;
         self.state.update(|state| {
-            exiting = previous_notifications
-                .iter()
-                .filter_map(|notification| {
-                    if ordered_ids
-                        .iter()
-                        .any(|id| id == &notification.activation_id)
-                    {
-                        return None;
-                    }
-                    match state.visual_for(&notification.activation_id).role {
-                        NotificationCardRole::Top | NotificationCardRole::Bottom => {
-                            Some(ExitingNotification {
-                                notification: notification.clone(),
-                                role: state.visual_for(&notification.activation_id).role,
-                            })
-                        }
-                        _ => None,
-                    }
-                })
-                .collect();
-            changed = state.reconcile(ordered_ids);
+            let mut exiting = Vec::new();
+            let had_two_visible_slots = state.visible_count() == 2;
+            for notification in &previous_notifications {
+                if ordered_ids
+                    .iter()
+                    .any(|id| id == &notification.activation_id)
+                {
+                    continue;
+                }
+                let role = state.visual_for(&notification.activation_id).role;
+                if matches!(
+                    role,
+                    NotificationCardRole::Top | NotificationCardRole::Bottom
+                ) {
+                    let top = state.take_pending_exit_top(&notification.activation_id);
+                    exiting.push(ExitingNotification {
+                        notification: notification.clone(),
+                        role,
+                        preserve_survivor_slot: had_two_visible_slots
+                            && role == NotificationCardRole::Bottom,
+                        top,
+                    });
+                }
+            }
+            let changed = state.reconcile(ordered_ids);
             state.clear_exiting_for_active_notifications();
             if changed && should_animate {
-                state.queue_exiting(exiting.clone());
+                state.queue_exiting(exiting);
             }
         });
         self.notification_snapshot.set(notifications);
-        if changed {
-            resize_notification_window(
-                self.state.get_untracked().stack_height().saturating_add(8),
-                !self.reduced_motion.get_untracked(),
-            );
-        }
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn settle_motion(&self) {
+        self.state.update(|state| {
+            state.jump_to_pending();
+            state.clear_exiting();
+        });
     }
 
     #[cfg(feature = "hydrate")]
     fn process_pending(&self) {
         self.process_pending_at(animation_clock_ms());
+    }
+
+    #[cfg(feature = "hydrate")]
+    fn prepare_exit(&self, id: &str, event: &web_sys::MouseEvent) {
+        if let Some(top) = notification_top_from_click(event) {
+            self.state.update(|state| state.prepare_exit(id, top));
+        }
     }
 
     #[cfg(feature = "hydrate")]
@@ -699,7 +719,9 @@ impl NotificationCarouselController {
         let Some(id) = target.get_attribute("data-notification-id") else {
             return;
         };
-        self.state.update(|state| state.finish_exit(&id));
+        self.state.update(|state| {
+            state.finish_exit(&id);
+        });
     }
 
     #[cfg(feature = "hydrate")]
@@ -719,6 +741,22 @@ fn notification_window_is_below() -> bool {
         .and_then(|document| document.document_element())
         .and_then(|root| root.get_attribute("data-notification-placement"))
         .is_some_and(|placement| placement == "below")
+}
+
+#[cfg(feature = "hydrate")]
+fn notification_top_from_click(event: &web_sys::MouseEvent) -> Option<f64> {
+    use wasm_bindgen::JsCast;
+    let button = event.target()?.dyn_into::<web_sys::Element>().ok()?;
+    let card = button.closest(".notification-card").ok()??;
+    let top = web_sys::window()?
+        .get_computed_style(&card)
+        .ok()??
+        .get_property_value("top")
+        .ok()?
+        .trim_end_matches("px")
+        .parse::<f64>()
+        .ok()?;
+    top.is_finite().then_some(top)
 }
 
 fn notifications_by_display_order(
@@ -745,9 +783,10 @@ fn NotificationCard(
     notification: PetNotificationPresentation,
     wall_clock: RwSignal<u64>,
     carousel: NotificationCarouselController,
-    exiting: bool,
     exit_role: Option<NotificationCardRole>,
+    exit_top: Option<f64>,
 ) -> AnyView {
+    let exiting = exit_role.is_some();
     let activation_id = notification.activation_id;
     let kind = notification.kind;
     let project_label = notification
@@ -780,7 +819,8 @@ fn NotificationCard(
         let activate_focus_id = activation_id.clone();
         let dismiss_focus_id = activation_id.clone();
         let activate_carousel = carousel.clone();
-        let dismiss_carousel = carousel.clone();
+        let dismiss_focus_carousel = carousel.clone();
+        let dismiss_click_carousel = carousel.clone();
         view! {
             <button
                 class="notification-activate"
@@ -799,8 +839,11 @@ fn NotificationCard(
                 aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
                 tabindex=if exiting { "-1" } else { "0" }
                 disabled=exiting
-                on:focus=move |_| dismiss_carousel.focus_notification(&dismiss_focus_id)
-                on:click=move |_| dismiss_native_notification(&dismiss_id)
+                on:focus=move |_| dismiss_focus_carousel.focus_notification(&dismiss_focus_id)
+                on:click=move |event| {
+                    dismiss_click_carousel.prepare_exit(&dismiss_id, &event);
+                    dismiss_native_notification(&dismiss_id);
+                }
             >
                 <NotificationDismissIcon/>
             </button>
@@ -839,8 +882,8 @@ fn NotificationCard(
     let current_id = activation_id.clone();
     let foreground_carousel = carousel.clone();
     let foreground_id = activation_id.clone();
-    let is_exit_top = exiting && exit_role == Some(NotificationCardRole::Top);
-    let is_exit_bottom = exiting && exit_role == Some(NotificationCardRole::Bottom);
+    let is_exit_top = exit_role == Some(NotificationCardRole::Top);
+    let is_exit_bottom = exit_role == Some(NotificationCardRole::Bottom);
     view! {
         <article
             class="notification-card"
@@ -875,6 +918,7 @@ fn NotificationCard(
                 .foreground
                 && !exiting
             class:notification-card-exiting=exiting
+            style:top=exit_top.map(|top| format!("{top}px"))
             data-notification-id=activation_id
             data-notification-kind=kind.as_str()
         >
@@ -998,7 +1042,6 @@ mod tests {
 
         assert_eq!(state.window_start, 2);
         assert_eq!(state.visible_count(), 2);
-        assert_eq!(state.stack_height(), 148);
         assert_eq!(state.visual_for("newest").role, NotificationCardRole::Top);
         assert_eq!(
             state.visual_for("latest").role,
@@ -1124,7 +1167,6 @@ mod tests {
             state.visual_for("oldest").role,
             NotificationCardRole::Bottom
         );
-        assert_eq!(state.stack_height(), 82);
     }
 
     #[test]
@@ -1144,7 +1186,66 @@ mod tests {
             state.visual_for("newest").role,
             NotificationCardRole::Bottom
         );
-        assert_eq!(state.stack_height(), 82);
+    }
+
+    #[test]
+    fn keeps_the_last_exiting_notification_in_the_single_card_layout() {
+        let mut state = NotificationCarouselState::new(vec!["last".to_owned()]);
+        let notification = PetNotificationPresentation {
+            activation_id: "last".to_owned(),
+            kind: PetNotificationKind::Completion,
+            project_label: Some("Project".to_owned()),
+            summary: "Done".to_owned(),
+            summary_truncated: false,
+            summary_redacted: false,
+            occurred_at_ms: 1,
+            unread: true,
+        };
+
+        assert!(state.reconcile(Vec::new()));
+        state.exiting.push(ExitingNotification {
+            notification,
+            role: NotificationCardRole::Bottom,
+            preserve_survivor_slot: false,
+            top: None,
+        });
+
+        assert_eq!(state.visible_count(), 1);
+        state.exiting.clear();
+        assert_eq!(state.visible_count(), 0);
+    }
+
+    #[test]
+    fn keeps_the_survivor_slot_until_exit_finishes() {
+        let mut state =
+            NotificationCarouselState::new(vec!["oldest".to_owned(), "newest".to_owned()]);
+        let notification = PetNotificationPresentation {
+            activation_id: "newest".to_owned(),
+            kind: PetNotificationKind::Completion,
+            project_label: Some("Project".to_owned()),
+            summary: "Done".to_owned(),
+            summary_truncated: false,
+            summary_redacted: false,
+            occurred_at_ms: 1,
+            unread: true,
+        };
+
+        assert!(state.reconcile(vec!["oldest".to_owned()]));
+        state.exiting.push(ExitingNotification {
+            notification,
+            role: NotificationCardRole::Bottom,
+            preserve_survivor_slot: true,
+            top: None,
+        });
+        assert_eq!(state.visible_count(), 2);
+        assert_eq!(state.visual_for("oldest").role, NotificationCardRole::Top);
+
+        state.exiting.clear();
+        assert_eq!(state.visible_count(), 1);
+        assert_eq!(
+            state.visual_for("oldest").role,
+            NotificationCardRole::Bottom
+        );
     }
 
     #[test]

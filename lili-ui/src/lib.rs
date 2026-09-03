@@ -1126,12 +1126,6 @@ export function focusNativeNotifications() {
   void invoke('focus_notification_window').catch(() => {});
 }
 
-export function resizeNotificationWindow(height, animate) {
-  const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (!invoke) return;
-  void invoke('resize_notification_window', { height, animate }).catch(() => {});
-}
-
 export function focusNativePetWindow() {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;
@@ -1153,9 +1147,6 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativeNotifications)]
     fn focus_native_notifications();
-
-    #[wasm_bindgen::prelude::wasm_bindgen(js_name = resizeNotificationWindow)]
-    fn resize_notification_window(height: u32, animate: bool);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = focusNativePetWindow)]
     fn focus_native_pet_window();

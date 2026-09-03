@@ -80,7 +80,7 @@ body {
   box-sizing: border-box;
   bottom: 4px;
   display: block;
-  height: 82px;
+  height: 148px;
   left: 12px;
   padding-block: 12px;
   background: transparent;
@@ -92,24 +92,12 @@ body {
   z-index: 2;
 }
 
-.notification-stack[data-notification-visible-count="0"] {
-  height: 24px;
-}
-
-.notification-stack[data-notification-visible-count="2"] {
-  height: 148px;
-}
-
 .notification-card.notification-card-top {
   top: 12px;
 }
 
 .notification-card.notification-card-bottom {
   top: 78px;
-}
-
-.notification-stack[data-notification-visible-count="1"] .notification-card.notification-card-bottom {
-  top: 12px;
 }
 
 .notification-card.notification-card-top-behind {
@@ -169,19 +157,19 @@ html[data-notification-placement="below"] .notification-stack {
   top: 4px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-top {
+html[data-notification-placement="below"] .notification-card.notification-card-top {
   top: 78px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-bottom {
+html[data-notification-placement="below"] .notification-card.notification-card-bottom {
   top: 12px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-top-behind {
+html[data-notification-placement="below"] .notification-card.notification-card-top-behind {
   top: 84px;
 }
 
-html[data-notification-placement="below"] .notification-stack[data-notification-visible-count="2"] .notification-card.notification-card-bottom-behind {
+html[data-notification-placement="below"] .notification-card.notification-card-bottom-behind {
   top: 4px;
 }
 
