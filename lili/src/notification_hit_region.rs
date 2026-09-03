@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+#[cfg(target_os = "macos")]
 pub(crate) const WINDOW_HEIGHT: f64 = 158.0;
 pub(crate) const WINDOW_WIDTH: f64 = 320.0;
 
@@ -66,6 +67,7 @@ pub(crate) struct NotificationHitRect {
 }
 
 impl NotificationHitRect {
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     fn contains(self, x: f64, y: f64) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
@@ -123,6 +125,7 @@ pub(crate) fn rectangles(
     }
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub(crate) fn contains(mode: NotificationHitRegionMode, below_pet: bool, x: f64, y: f64) -> bool {
     rectangles(mode, below_pet)
         .into_iter()
