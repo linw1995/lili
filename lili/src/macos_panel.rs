@@ -152,12 +152,14 @@ fn valid_scale_factor(scale_factor: f64) -> f64 {
 fn native_top_left_point(
     position: tauri::PhysicalPosition<i32>,
     scale_factor: f64,
-    display_height: f64,
+    display_height_points: f64,
 ) -> NSPoint {
     let scale_factor = valid_scale_factor(scale_factor);
+    // Match Tao's macOS conversion: the display height is already in AppKit's global
+    // coordinate space, while Tao's physical position still needs scale conversion.
     NSPoint::new(
         f64::from(position.x) / scale_factor,
-        display_height - f64::from(position.y) / scale_factor,
+        display_height_points - f64::from(position.y) / scale_factor,
     )
 }
 
@@ -384,7 +386,7 @@ fn screen_point_to_tauri_with_display_height(
     screen_x: f64,
     screen_y: f64,
     scale_factor: f64,
-    display_height: f64,
+    display_height_points: f64,
 ) -> tauri::PhysicalPosition<i32> {
     let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -392,7 +394,7 @@ fn screen_point_to_tauri_with_display_height(
         1.0
     };
     // Keep the conversion aligned with Tao's macOS cursor_position implementation.
-    let top_left_y = display_height - screen_y;
+    let top_left_y = display_height_points - screen_y;
     tauri::PhysicalPosition::new(
         (screen_x * scale_factor).round() as i32,
         (top_left_y * scale_factor).round() as i32,
@@ -477,9 +479,10 @@ mod tests {
     }
 
     #[test]
-    fn native_frame_position_matches_tao_screen_coordinates() {
-        let top_left = native_top_left_point(tauri::PhysicalPosition::new(100, 200), 2.0, 1800.0);
-        assert_eq!(top_left.x, 50.0);
-        assert_eq!(top_left.y, 1700.0);
+    fn native_frame_position_round_trips_tao_screen_coordinates() {
+        let position = screen_point_to_tauri_with_display_height(100.0, 450.0, 2.0, 900.0);
+        let top_left = native_top_left_point(position, 2.0, 900.0);
+        assert_eq!(top_left.x, 100.0);
+        assert_eq!(top_left.y, 450.0);
     }
 }
