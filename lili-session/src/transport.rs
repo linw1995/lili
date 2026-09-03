@@ -853,17 +853,12 @@ pub fn private_forwarding_endpoint_is_live(endpoint: &PlatformEndpoint) -> bool 
 #[cfg(all(test, windows))]
 #[tokio::test]
 async fn owner_rights_named_pipe_is_private() {
-    let runtime_dir = std::env::temp_dir().join(format!(
-        "lili-forwarding-windows-test-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&runtime_dir);
-    let endpoint = BoundForwardingEndpoint::bind(&runtime_dir).unwrap();
+    let credentials = ForwardingCredentials::generate().unwrap();
+    let listener = PlatformListener::bind(Path::new(""), credentials.instance_id()).unwrap();
 
-    assert!(private_forwarding_endpoint_is_live(endpoint.endpoint()));
+    assert!(private_forwarding_endpoint_is_live(listener.endpoint()));
 
-    drop(endpoint);
-    fs::remove_dir_all(runtime_dir).unwrap();
+    drop(listener);
 }
 
 #[cfg(not(windows))]
