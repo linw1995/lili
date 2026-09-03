@@ -106,15 +106,16 @@ pub fn show_without_activation(window: &tauri::WebviewWindow) -> tauri::Result<(
 pub fn set_position_sync(
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
+    destination_scale_factor: f64,
 ) -> tauri::Result<()> {
     if MainThreadMarker::new().is_some() {
-        return set_position_on_main_thread(window, position);
+        return set_position_on_main_thread(window, position, destination_scale_factor);
     }
 
     let target = window.clone();
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     window.run_on_main_thread(move || {
-        let result = set_position_on_main_thread(&target, position);
+        let result = set_position_on_main_thread(&target, position, destination_scale_factor);
         let _ = result_tx.send(result);
     })?;
     result_rx
@@ -125,6 +126,7 @@ pub fn set_position_sync(
 fn set_position_on_main_thread(
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
+    destination_scale_factor: f64,
 ) -> tauri::Result<()> {
     let raw_window = window.ns_window()?;
     if raw_window.is_null() {
@@ -133,10 +135,10 @@ fn set_position_on_main_thread(
     let native_window = unsafe { &*raw_window.cast::<NSWindow>() };
     let top_left = native_top_left_point(
         position,
-        native_window.backingScaleFactor(),
+        destination_scale_factor,
         CGDisplay::main().pixels_high() as f64,
     );
-    // Tao dispatches this frame update asynchronously; apply it synchronously before showing.
+    // The window still reports its source display scale until this move completes.
     native_window.setFrameTopLeftPoint(top_left);
     Ok(())
 }
@@ -484,5 +486,16 @@ mod tests {
         let top_left = native_top_left_point(position, 2.0, 900.0);
         assert_eq!(top_left.x, 100.0);
         assert_eq!(top_left.y, 450.0);
+    }
+
+    #[test]
+    fn native_frame_position_uses_the_destination_display_scale() {
+        let position = screen_point_to_tauri_with_display_height(100.0, 450.0, 1.0, 900.0);
+        let top_left = native_top_left_point(position, 1.0, 900.0);
+        assert_eq!(top_left.x, 100.0);
+        assert_eq!(top_left.y, 450.0);
+
+        let stale_source_scale = native_top_left_point(position, 2.0, 900.0);
+        assert_ne!(stale_source_scale, top_left);
     }
 }

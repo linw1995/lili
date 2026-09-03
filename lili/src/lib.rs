@@ -217,6 +217,7 @@ enum ContextMenuPointer {
 #[derive(Clone, Copy, Debug)]
 struct ContextMenuRequest {
     position: tauri::PhysicalPosition<i32>,
+    scale_factor: f64,
     native_event_time_us: Option<u64>,
 }
 
@@ -573,7 +574,12 @@ fn create_context_menu_window(
                     || timestamp_us >= latest_native_event_time_us.load(Ordering::Acquire)
             });
             if is_current {
-                let _ = position_context_menu(&state_app, &window, request.position);
+                let _ = position_context_menu(
+                    &state_app,
+                    &window,
+                    request.position,
+                    request.scale_factor,
+                );
             }
         }
     })
@@ -846,7 +852,7 @@ fn position_notification_window(app: &tauri::AppHandle) {
     });
     #[cfg(target_os = "macos")]
     let positioned_natively =
-        macos_panel::set_position_sync(&notification, layout.position).is_ok();
+        macos_panel::set_position_sync(&notification, layout.position, scale).is_ok();
     #[cfg(not(target_os = "macos"))]
     let positioned_natively = false;
     if !positioned_natively {
@@ -1493,8 +1499,14 @@ fn open_pet_context_menu_at(
         return Ok(());
     }
     let position = context_menu_position(source, &window, pointer);
+    let scale_factor = source
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
     let request = ContextMenuRequest {
         position,
+        scale_factor,
         native_event_time_us,
     };
     show_context_menu_request(app, &window, navigation, request)
@@ -1569,7 +1581,7 @@ fn show_context_menu_request(
     if queue_context_menu_until_ready(navigation, request)? {
         Ok(())
     } else {
-        position_context_menu(app, window, request.position)
+        position_context_menu(app, window, request.position, request.scale_factor)
     }
 }
 
@@ -1610,6 +1622,7 @@ fn position_context_menu(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
     position: tauri::PhysicalPosition<i32>,
+    destination_scale_factor: f64,
 ) -> Result<(), String> {
     let app = app.clone();
     let target = window.clone();
@@ -1619,12 +1632,15 @@ fn position_context_menu(
             let result = (|| {
                 sync_context_menu_state(&app, &target);
                 #[cfg(target_os = "macos")]
-                macos_panel::set_position_sync(&target, position)
+                macos_panel::set_position_sync(&target, position, destination_scale_factor)
                     .map_err(|error| format!("failed to position pet context menu: {error}"))?;
                 #[cfg(not(target_os = "macos"))]
-                target
-                    .set_position(position)
-                    .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+                {
+                    let _ = destination_scale_factor;
+                    target
+                        .set_position(position)
+                        .map_err(|error| format!("failed to position pet context menu: {error}"))?;
+                }
                 target
                     .show()
                     .map_err(|error| format!("failed to show pet context menu: {error}"))?;
