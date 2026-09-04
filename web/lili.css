@@ -484,12 +484,17 @@ html:not([data-notification-placement="below"])
 }
 
 .pet-sprite {
+  cursor: pointer;
   position: relative;
   width: 192px;
   height: 208px;
   overflow: hidden;
   pointer-events: auto;
   touch-action: none;
+}
+
+.pet-sprite:active {
+  cursor: grabbing;
 }
 
 .pet-atlas {
