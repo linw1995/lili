@@ -109,17 +109,17 @@ Following the same separation used by `linw1995/coco`, [CD](../.github/workflows
 
 [CI](../.github/workflows/CI.yaml) runs independently for pull requests, manual dispatches, and pushes to `master`. As in Coco, CI and CD do not wait on one another; CD reruns the production release assembly and its compatibility and manifest gates rather than reusing mutable CI binaries.
 
-The workflow builds independently on these GitHub-hosted runners:
+The GitHub CD workflow publishes the macOS desktop release only. It still uses Linux and Windows runners to build the native plugin forwarders required by the universal Marketplace plugin archive:
 
-| Runner | Release platform | Bundles |
+| Runner | CD role | Output |
 | --- | --- | --- |
-| `macos-14` | `arm64-apple-darwin` | macOS application and DMG |
-| `ubuntu-latest` | `x86_64-unknown-linux-gnu` | Debian package and AppImage |
-| `windows-latest` | `x86_64-pc-windows-msvc` | NSIS installer |
+| `macos-14` | Desktop release | macOS application and DMG |
+| `ubuntu-latest` | Plugin forwarder | `x86_64-unknown-linux-gnu/lili-hook` |
+| `windows-latest` | Plugin forwarder | `x86_64-pc-windows-msvc/lili-hook.exe` |
 
-The reusable workflow uses a native-runner matrix. macOS and Linux share the repository's composite Nix setup action and call the same `nix run .#build` release assembler used locally. Windows uses a separate composite setup action backed by `nix/windows-toolchain.json` and calls `scripts/build-release.ps1`, which applies the same Codex compatibility, archive-content, manifest, and checksum gates. CI uses those same setup actions rather than maintaining another toolchain installation path.
+The reusable workflow uses a native-runner matrix. The macOS job uses the repository's composite Nix setup action and calls the same `nix run .#build` release assembler used locally. Linux uses the Nix setup action to build only `lili-hook`; Windows uses a separate composite setup action backed by `nix/windows-toolchain.json` to build only `lili-hook.exe`. CI uses those same setup actions rather than maintaining another toolchain installation path.
 
-Each platform job uploads its `.tar.gz` archive and `.sha256` checksum plus a separate short-lived forwarder input. Only after all three native jobs succeed does the aggregation job build and upload the universal plugin ZIP, checksum, and manifest. The `publish` job then downloads the complete desktop and plugin set, rejects missing or unexpected files, verifies every checksum and ZIP structure, creates the GitHub Release for the existing tag, and attaches all release artifacts. Unlike Coco's intentionally partial multi-architecture container publication, Lili cannot publish a partial desktop or plugin release.
+The macOS job uploads its `.tar.gz` archive and `.sha256` checksum. The Linux and Windows jobs upload only their separate short-lived forwarder inputs. Only after the macOS archive and all three native forwarders succeed does the aggregation job build and upload the universal plugin ZIP, checksum, and manifest. The `publish` job then downloads the complete desktop and plugin set, rejects missing or unexpected files, verifies every checksum and ZIP structure, creates the GitHub Release for the existing tag, and attaches the macOS archive plus the plugin artifacts.
 
 CD does not rewrite lockfiles or application versions. Prepare a release by updating and reviewing the canonical version and repeated downstream metadata, run the local checks, commit those changes, and then push the matching version tag. The workflow generates release notes from the repository history.
 
