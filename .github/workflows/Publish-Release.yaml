@@ -63,14 +63,40 @@ jobs:
         uses: ./.github/actions/setup-windows
         with:
           cache-key-name: release-${{ matrix.platform }}
-      - name: Build Unix release archive
-        if: matrix.toolchain == 'nix'
+      - name: Build macOS release archive
+        if: matrix.platform == 'arm64-apple-darwin'
         run: nix run .#build
-      - name: Build Windows release archive
-        if: matrix.toolchain == 'windows'
+
+      - name: Build Linux plugin forwarder
+        if: matrix.platform == 'x86_64-unknown-linux-gnu'
+        run: |
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+          cargo build --locked --release --package lili --features release-tools --bin lili-hook
+          version="$(node -p "require('./package.json').version")"
+          root="release/forwarders/x86_64-unknown-linux-gnu"
+          mkdir -p "$root"
+          cp target/release/lili-hook "$root/lili-hook"
+          node scripts/write-forwarder-manifest.mjs \
+            "$root/lili-hook" "$root/manifest.json" "$version" \
+            x86_64-unknown-linux-gnu platform-standard
+          EOF
+
+      - name: Build Windows plugin forwarder
+        if: matrix.platform == 'x86_64-pc-windows-msvc'
         shell: pwsh
-        run: ./scripts/build-release.ps1
-      - name: Upload release archive
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          cargo build --locked --release --package lili --features release-tools --bin lili-hook
+          $root = "release/forwarders/x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          Copy-Item "target/release/lili-hook.exe" "$root/lili-hook.exe"
+          node scripts/write-forwarder-manifest.mjs `
+            "$root/lili-hook.exe" "$root/manifest.json" $version `
+            x86_64-pc-windows-msvc platform-standard
+
+      - name: Upload macOS release archive
+        if: matrix.platform == 'arm64-apple-darwin'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact-prefix }}-${{ matrix.platform }}
@@ -160,7 +186,7 @@ jobs:
       - uses: ./.github/actions/setup-nix
         with:
           cache-key-name: publish-verify
-      - name: Download release archives
+      - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: ${{ inputs.artifact-prefix }}-*
@@ -174,10 +200,8 @@ jobs:
           cd artifacts
           expected=(
             "lili-$VERSION-arm64-apple-darwin.tar.gz"
-            "lili-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
-            "lili-$VERSION-x86_64-pc-windows-msvc.tar.gz"
           )
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 10
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
           for archive in "${expected[@]}"; do
             test -f "$archive"
             test -f "$archive.sha256"
