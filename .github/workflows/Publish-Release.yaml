@@ -72,7 +72,11 @@ jobs:
         run: |
           nix develop --command bash <<'EOF'
           set -euo pipefail
-          cargo build --locked --release --package lili --features release-tools --bin lili-hook
+          cargo build --locked --release --package lili --features release-tools \
+            --bin lili-hook --bin lili-codex-matrix
+          target/release/lili-codex-matrix \
+            target/release/lili-hook \
+            "$PWD/lili-session/tests/fixtures/codex"
           version="$(node -p "require('./package.json').version")"
           root="release/forwarders/x86_64-unknown-linux-gnu"
           mkdir -p "$root"
@@ -87,13 +91,25 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          cargo build --locked --release --package lili --features release-tools --bin lili-hook
+          cargo build --locked --release --package lili --features release-tools `
+            --bin lili-hook --bin lili-codex-matrix
+          & "target/release/lili-codex-matrix.exe" `
+            "target/release/lili-hook.exe" `
+            "$PWD/lili-session/tests/fixtures/codex"
+          $forwarderSignatureKind = "platform-standard"
+          $forwarderSignature = Get-AuthenticodeSignature "target/release/lili-hook.exe"
+          if ($forwarderSignature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+              $forwarderSignatureKind = "signed"
+          }
+          if ($env:LILI_REQUIRE_SIGNED -eq "1" -and $forwarderSignatureKind -ne "signed") {
+              throw "release signing was required but the Windows forwarder is unsigned"
+          }
           $root = "release/forwarders/x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Force $root | Out-Null
           Copy-Item "target/release/lili-hook.exe" "$root/lili-hook.exe"
           node scripts/write-forwarder-manifest.mjs `
             "$root/lili-hook.exe" "$root/manifest.json" $version `
-            x86_64-pc-windows-msvc platform-standard
+            x86_64-pc-windows-msvc $forwarderSignatureKind
 
       - name: Upload macOS release archive
         if: matrix.platform == 'arm64-apple-darwin'
