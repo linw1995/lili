@@ -90,6 +90,8 @@ jobs:
         if: matrix.platform == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $version = (Get-Content package.json | ConvertFrom-Json).version
           cargo build --locked --release --package lili --features release-tools `
             --bin lili-hook --bin lili-codex-matrix
