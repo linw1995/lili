@@ -1,8 +1,14 @@
+mod appearance;
 mod diagnostics;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use appearance::{
+    AppearanceContractError, AppearanceErrorCode, AppearanceErrorResponse, AppearancePetView,
+    AppearanceSelectionRequest, AppearanceView, MAX_APPEARANCE_ASSET_ID_BYTES,
+    MAX_APPEARANCE_DISPLAY_NAME_BYTES, MAX_APPEARANCE_PETS,
+};
 pub use diagnostics::{DiagnosticPrivacy, Redacted, diagnostic_privacy};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
