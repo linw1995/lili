@@ -338,6 +338,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         .expect("failed to register loopback capability");
     register_notification_window_capability(&app, &origin)
         .expect("failed to register notification window capability");
+    register_appearance_window_capability(&app, &origin)
+        .expect("failed to register Appearance window capability");
     register_context_menu_capability(&app, &origin)
         .expect("failed to configure context menu capability");
     let context_menu_navigation = ContextMenuNavigation {
@@ -455,6 +457,18 @@ fn register_notification_window_capability(
         .permission("allow-sign-loopback-request")
         .permission("allow-focus-pet-window")
         .permission("allow-set-notification-hit-region");
+    app.add_capability(capability)
+}
+
+fn register_appearance_window_capability(
+    app: &tauri::App,
+    origin: &tauri::Url,
+) -> tauri::Result<()> {
+    let capability = CapabilityBuilder::new("appearance-window")
+        .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
+        .local(false)
+        .window("appearance")
+        .permission("allow-sign-loopback-request");
     app.add_capability(capability)
 }
 

@@ -47,6 +47,7 @@ pub struct LoopbackServer {
     bootstrap_url: tauri::Url,
     certificate_sha256: [u8; 32],
     listener: TcpListener,
+    appearance_bootstrap_url: tauri::Url,
     notification_bootstrap_url: tauri::Url,
     origin: tauri::Url,
     router: Router,
@@ -75,6 +76,9 @@ impl LoopbackServer {
         let bootstrap_url = format!("{origin}{}", security.bootstrap_path)
             .parse()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let appearance_bootstrap_url = format!("{origin}{}", security.appearance_bootstrap_path)
+            .parse()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let notification_bootstrap_url =
             format!("{origin}{}", security.notification_bootstrap_path)
                 .parse()
@@ -87,6 +91,7 @@ impl LoopbackServer {
             bootstrap_url,
             certificate_sha256,
             listener,
+            appearance_bootstrap_url,
             notification_bootstrap_url,
             origin,
             router: protect(router, security),
@@ -105,6 +110,10 @@ impl LoopbackServer {
 
     pub fn notification_bootstrap_url(&self) -> tauri::Url {
         self.notification_bootstrap_url.clone()
+    }
+
+    pub fn appearance_bootstrap_url(&self) -> tauri::Url {
+        self.appearance_bootstrap_url.clone()
     }
 
     pub fn origin(&self) -> tauri::Url {
@@ -287,6 +296,8 @@ struct LoopbackSecurity {
     authority: Arc<str>,
     bootstrap_available: Arc<AtomicBool>,
     bootstrap_path: Arc<str>,
+    appearance_bootstrap_available: Arc<AtomicBool>,
+    appearance_bootstrap_path: Arc<str>,
     cookie_name: Arc<str>,
     csp: HeaderValue,
     origin: Arc<str>,
@@ -307,6 +318,8 @@ impl LoopbackSecurity {
             authority: authority.into(),
             bootstrap_available: Arc::new(AtomicBool::new(true)),
             bootstrap_path: format!("/_lili/bootstrap/{secret}").into(),
+            appearance_bootstrap_available: Arc::new(AtomicBool::new(true)),
+            appearance_bootstrap_path: format!("/_lili/bootstrap/{secret}/appearance").into(),
             cookie_name: cookie_name.into(),
             csp,
             origin: origin.into(),
@@ -346,6 +359,8 @@ async fn authorize(
     }
     let bootstrap = if request.uri().path() == security.bootstrap_path.as_ref() {
         Some((&security.bootstrap_available, "/"))
+    } else if request.uri().path() == security.appearance_bootstrap_path.as_ref() {
+        Some((&security.appearance_bootstrap_available, "/appearance"))
     } else if request.uri().path() == security.notification_bootstrap_path.as_ref() {
         Some((&security.notification_bootstrap_available, "/notifications"))
     } else {
@@ -546,6 +561,10 @@ mod tests {
         assert_eq!(server.certificate_sha256().len(), 32);
         assert_eq!(server.bootstrap_url().origin(), server.origin().origin());
         assert_eq!(
+            server.appearance_bootstrap_url().origin(),
+            server.origin().origin()
+        );
+        assert_eq!(
             server.notification_bootstrap_url().origin(),
             server.origin().origin()
         );
@@ -631,6 +650,27 @@ mod tests {
             .unwrap()
             .status(),
             StatusCode::SEE_OTHER
+        );
+    }
+
+    #[tokio::test]
+    async fn appearance_bootstrap_is_independent_and_redirects_to_its_surface() {
+        let (app, security) = app();
+        let request = || {
+            Request::get(security.appearance_bootstrap_path.as_ref())
+                .header(HOST, AUTHORITY)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()[axum::http::header::LOCATION],
+            "/appearance"
+        );
+        assert_eq!(
+            app.oneshot(request()).await.unwrap().status(),
+            StatusCode::GONE
         );
     }
 
