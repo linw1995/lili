@@ -1143,6 +1143,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn appearance_data_excludes_paths_credentials_and_action_configuration() {
+        let response = build_router(AppState::default(), None)
+            .oneshot(
+                Request::get("/api/v1/appearance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        for private_field in [
+            "applicationRoot",
+            "petsRoot",
+            "spritesheetPath",
+            "credentials",
+            "rawPayload",
+            "command",
+        ] {
+            assert!(
+                !body.contains(private_field),
+                "unexpected private field {private_field}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn appearance_selection_does_not_mutate_session_notifications_or_action_audit() {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-appearance-isolation".to_owned()),
+            session_id: Some("session-appearance-isolation".to_owned()),
+            turn_id: Some("turn-appearance-isolation".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: Some("Finished".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let before = state.snapshot().await;
+        let router = build_router(state.clone(), None);
+
+        let response = router
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"lili"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let after = state.snapshot().await;
+        assert_eq!(after.session_state, before.session_state);
+        assert_eq!(after.actions, before.actions);
+        assert_eq!(state.action_audit().await, Vec::new());
+        assert_eq!(
+            state.pet_presentation().await.unread_notification_count,
+            before.session_state.notifications.len()
+        );
+    }
+
+    #[tokio::test]
     async fn fixture_router_replaces_only_bounded_presentation_state() {
         let router = build_fixture_router(None);
         let presentation = PetPresentationState {
