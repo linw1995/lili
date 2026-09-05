@@ -13,7 +13,7 @@
 ## 3. Loopback and server integration
 
 - [x] 3.1 Add the authenticated `/appearance` SSR route and the read-only Appearance data endpoint without changing the existing Pet, notification, or live snapshot contracts; verify SSR and server tests render the focused surface
-- [ ] 3.2 Add the signed Pet-selection mutation endpoint with bounded request validation and the existing origin/signature checks; verify unknown identifiers, absolute paths, traversal values, stale signatures, and replayed signatures are rejected without state mutation
+- [x] 3.2 Add the signed Pet-selection mutation endpoint with bounded request validation and the existing origin/signature checks; verify unknown identifiers, absolute paths, traversal values, stale signatures, and replayed signatures are rejected without state mutation
 - [ ] 3.3 Extend the loopback bootstrap and Tauri capability setup for the Appearance WebView; verify the page receives the session cookie and narrow signer capability but no drag, notification-control, action, or acceptance capability
 - [ ] 3.4 Add server tests proving Appearance preview operations do not acknowledge notifications, execute actions, change the Session reducer, or expose credentials, provider payloads, or application paths
 

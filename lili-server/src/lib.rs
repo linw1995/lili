@@ -12,9 +12,13 @@ use axum::{
 use leptos::prelude::*;
 use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
 use lili_app_state::{
-    AppState, AppStateStore, IngestionDiagnostics, NativeIngestionHandle, UserSettings,
+    AppState, AppStateStore, IngestionDiagnostics, NativeIngestionHandle, PetSelectionError,
+    UserSettings,
 };
-use lili_core::{AppearanceView, DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
+use lili_core::{
+    AppearanceErrorCode, AppearanceErrorResponse, AppearanceSelectionRequest, AppearanceView,
+    DiagnosticPrivacy, PetPresentationState, diagnostic_privacy,
+};
 use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
 use lili_ui::{App, AppSurface};
 use serde::{Deserialize, Serialize};
@@ -147,6 +151,7 @@ struct ServerState {
     fixture: Option<FixturePresentationStore>,
     diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
     persistence_store: Option<AppStateStore>,
+    pets_root: PathBuf,
 }
 
 type CodexDiagnosticsInspector = Arc<dyn Fn() -> CodexAdapterDiagnostics + Send + Sync>;
@@ -251,19 +256,21 @@ impl FixturePresentationStore {
 
 impl ServerState {
     fn native(app: AppState, diagnostics_refresh: Option<NativeDiagnosticsRefresh>) -> Self {
-        Self::native_with_persistence(app, diagnostics_refresh, None)
+        Self::native_with_persistence(app, diagnostics_refresh, None, PathBuf::from("/"))
     }
 
     fn native_with_persistence(
         app: AppState,
         diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
         persistence_store: Option<AppStateStore>,
+        pets_root: PathBuf,
     ) -> Self {
         Self {
             app,
             fixture: None,
             diagnostics_refresh,
             persistence_store,
+            pets_root,
         }
     }
 
@@ -274,6 +281,7 @@ impl ServerState {
             fixture: Some(FixturePresentationStore::new(initial)),
             diagnostics_refresh: None,
             persistence_store: None,
+            pets_root: PathBuf::from("/"),
         }
     }
 
@@ -355,8 +363,29 @@ pub fn build_native_router_with_diagnostics_and_persistence(
     diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
     persistence_store: Option<AppStateStore>,
 ) -> Router {
+    build_native_router_with_diagnostics_and_persistence_at(
+        state,
+        assets,
+        diagnostics_refresh,
+        persistence_store,
+        PathBuf::from("/"),
+    )
+}
+
+pub fn build_native_router_with_diagnostics_and_persistence_at(
+    state: AppState,
+    assets: Option<StaticAssets>,
+    diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+    persistence_store: Option<AppStateStore>,
+    pets_root: PathBuf,
+) -> Router {
     build_server_router(
-        ServerState::native_with_persistence(state, diagnostics_refresh, persistence_store),
+        ServerState::native_with_persistence(
+            state,
+            diagnostics_refresh,
+            persistence_store,
+            pets_root,
+        ),
         assets,
         false,
     )
@@ -388,6 +417,7 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
         .route("/events", get(events))
         .route("/settings", get(settings).merge(put(update_settings)))
         .route("/appearance", get(appearance))
+        .route("/appearance/pet", put(select_appearance_pet))
         .route("/interactions", post(interaction))
         .route(
             "/notifications/{notification_id}/dismiss",
@@ -467,6 +497,43 @@ fn format_document(app: String) -> String {
 
 async fn appearance(State(state): State<ServerState>) -> Json<AppearanceView> {
     Json(state.app.appearance_view().await)
+}
+
+async fn select_appearance_pet(
+    State(state): State<ServerState>,
+    Json(request): Json<AppearanceSelectionRequest>,
+) -> Result<Json<AppearanceView>, (StatusCode, Json<AppearanceErrorResponse>)> {
+    request.validate().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(AppearanceErrorResponse {
+                code: AppearanceErrorCode::InvalidPetId,
+            }),
+        )
+    })?;
+    state
+        .app
+        .select_pet(
+            &state.pets_root,
+            &request.pet_id,
+            state.persistence_store.as_ref(),
+        )
+        .await
+        .map_err(|error| match error {
+            PetSelectionError::Unavailable => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(AppearanceErrorResponse {
+                    code: AppearanceErrorCode::PetUnavailable,
+                }),
+            ),
+            PetSelectionError::Persistence(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AppearanceErrorResponse {
+                    code: AppearanceErrorCode::PersistenceUnavailable,
+                }),
+            ),
+        })?;
+    Ok(Json(state.app.appearance_view().await))
 }
 
 async fn snapshot(State(state): State<ServerState>) -> Json<lili_app_state::ViewSnapshot> {
@@ -1017,6 +1084,62 @@ mod tests {
             Some("lili")
         );
         assert!(appearance.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn appearance_selection_rejects_invalid_ids_and_updates_the_selected_pet() {
+        let state = AppState::default();
+        let router = build_router(state.clone(), None);
+        let before = state.snapshot().await;
+
+        let invalid = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"../escape"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(invalid.into_body(), usize::MAX).await.unwrap();
+        let error: AppearanceErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, AppearanceErrorCode::InvalidPetId);
+        assert_eq!(state.snapshot().await, before);
+
+        let unavailable = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"missing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(unavailable.into_body(), usize::MAX).await.unwrap();
+        let error: AppearanceErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, AppearanceErrorCode::PetUnavailable);
+        assert_eq!(state.snapshot().await, before);
+
+        let selected = router
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"lili"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(selected.status(), StatusCode::OK);
+        let body = to_bytes(selected.into_body(), usize::MAX).await.unwrap();
+        let selected: AppearanceView = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            selected.selected_pet_id.as_ref().map(|id| id.as_str()),
+            Some("lili")
+        );
     }
 
     #[tokio::test]

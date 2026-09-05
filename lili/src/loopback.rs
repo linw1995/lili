@@ -570,7 +570,11 @@ mod tests {
                 "/pet-assets/opaque-id",
                 any(|| async { StatusCode::NO_CONTENT }),
             )
-            .route("/api/v1/snapshot", any(|| async { StatusCode::NO_CONTENT }));
+            .route("/api/v1/snapshot", any(|| async { StatusCode::NO_CONTENT }))
+            .route(
+                "/api/v1/appearance/pet",
+                any(|| async { StatusCode::NO_CONTENT }),
+            );
         (protect(router, security.clone()), security)
     }
 
@@ -670,6 +674,24 @@ mod tests {
                     .header(HOST, AUTHORITY)
                     .header(COOKIE, cookie())
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn appearance_selection_without_signature_is_rejected() {
+        let (app, _) = app();
+        let response = app
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(HOST, AUTHORITY)
+                    .header(ORIGIN, ORIGIN_VALUE)
+                    .header(COOKIE, cookie())
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"lili"}"#))
                     .unwrap(),
             )
             .await
