@@ -660,4 +660,34 @@ mod tests {
         }
         assert_eq!(notification_token(PetNotificationKind::Failure), "failure");
     }
+
+    #[test]
+    fn appearance_preview_markup_has_no_live_notification_or_action_hooks() {
+        let pet_id = PetId::parse("lili").unwrap();
+        let html = view! {
+            <AppearancePage appearance=AppearanceView {
+                pets: vec![AppearancePetView {
+                    id: pet_id.clone(),
+                    display_name: "Lili".to_owned(),
+                    asset_id: "asset-id".to_owned(),
+                }],
+                selected_pet_id: Some(pet_id),
+            }/>
+        }
+        .to_html();
+
+        for live_hook in [
+            "/interactions",
+            "/dismiss",
+            "data-notification-id",
+            "activateNative",
+            "dismissNative",
+            "openNativePetContextMenu",
+        ] {
+            assert!(
+                !html.contains(live_hook),
+                "unexpected live hook {live_hook}"
+            );
+        }
+    }
 }

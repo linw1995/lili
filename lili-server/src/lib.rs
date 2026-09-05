@@ -1204,6 +1204,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn appearance_selection_isolated_during_concurrent_session_ingestion() {
+        let state = AppState::default();
+        let selection_router = build_router(state.clone(), None);
+        let ingestion_state = state.clone();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-concurrent-appearance".to_owned()),
+            session_id: Some("session-concurrent-appearance".to_owned()),
+            turn_id: Some("turn-concurrent-appearance".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: Some("Finished while preview was open".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+
+        let selection = tokio::spawn(async move {
+            selection_router
+                .oneshot(
+                    Request::put("/api/v1/appearance/pet")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"petId":"lili"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        let ingestion = tokio::spawn(async move {
+            ingestion_state.apply_session_event(event).await;
+        });
+
+        let (selection, ingestion) = tokio::join!(selection, ingestion);
+        let response = selection.unwrap();
+        ingestion.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.session_state.notifications.len(), 1);
+        assert_eq!(
+            snapshot.session_state.notifications[0].state,
+            lili_session::NotificationState::Unread
+        );
+        assert_eq!(
+            snapshot.session_state.notifications[0]
+                .summary
+                .as_ref()
+                .map(|summary| summary.text()),
+            Some("Finished while preview was open")
+        );
+        assert_eq!(state.action_audit().await, Vec::new());
+        assert_eq!(
+            snapshot.session_state.notifications.len(),
+            snapshot
+                .session_state
+                .notifications
+                .iter()
+                .map(|notification| &notification.id)
+                .collect::<HashSet<_>>()
+                .len()
+        );
+    }
+
+    #[tokio::test]
     async fn fixture_router_replaces_only_bounded_presentation_state() {
         let router = build_fixture_router(None);
         let presentation = PetPresentationState {
