@@ -1,15 +1,35 @@
+#[cfg(any(test, feature = "hydrate"))]
+use std::time::Duration;
+
 use leptos::prelude::*;
 #[cfg(feature = "hydrate")]
 use lili_core::AppearanceSelectionRequest;
-use lili_core::AppearanceView;
 #[cfg(feature = "hydrate")]
 use lili_core::PetId;
-use lili_pet::PreviewScene;
+use lili_core::{AppearanceView, PetNotificationKind};
+use lili_pet::{AnimationScheduler, FrameDescriptor, PreviewScene};
+
+#[cfg(feature = "hydrate")]
+struct AppearanceClock {
+    window: web_sys::Window,
+    interval_id: i32,
+    _callback: wasm_bindgen::closure::Closure<dyn FnMut()>,
+}
+
+#[cfg(feature = "hydrate")]
+thread_local! {
+    static APPEARANCE_CLOCK: std::cell::RefCell<Option<AppearanceClock>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[component]
 pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let appearance = RwSignal::new(appearance);
     let selection_error = RwSignal::new(None::<String>);
+    let preview = RwSignal::new(AppearancePreviewController::new(PreviewScene::Idle));
+    let preview_frame = RwSignal::new(preview.get_untracked().frame());
+    #[cfg(feature = "hydrate")]
+    start_appearance_preview_clock(preview, preview_frame);
     let initial_appearance = appearance.get_untracked();
     let serialized_appearance = serde_json::to_string(&initial_appearance).unwrap_or_default();
     let selected_asset_url = move || {
@@ -79,7 +99,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let scene_items = PreviewScene::all()
         .iter()
         .copied()
-        .map(appearance_scene_button)
+        .map(|scene| appearance_scene_button(scene, preview, preview_frame))
         .collect_view();
 
     view! {
@@ -131,7 +151,9 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             <div class="appearance-scene-picker">
                                 <div class="appearance-scene-heading">
                                     <strong>"Scene"</strong>
-                                    <span id="appearance-scene-caption">"Idle · no pending notification"</span>
+                                    <span id="appearance-scene-caption">
+                                        {move || scene_caption(preview.get().scene())}
+                                    </span>
                                 </div>
                                 <div class="appearance-scene-buttons" role="group" aria-label="Preview scenes">
                                     {scene_items}
@@ -144,9 +166,39 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                     <span class="appearance-desktop-copy">"Desktop surface"</span>
                                     <div class="appearance-desktop-lines"></div>
                                 </div>
-                                <div class="appearance-scene" id="appearance-scene" data-placement="above">
+                                <div
+                                    class="appearance-scene"
+                                    id="appearance-scene"
+                                    data-placement=move || scene_placement(preview.get().scene())
+                                    data-scene=move || scene_token(preview.get().scene())
+                                    data-animation=move || animation_token(preview.get().scene().spec().animation())
+                                >
                                     <div class="appearance-notifications" id="appearance-notifications">
-                                        <div class="appearance-preview-empty">"No pending notifications"</div>
+                                        <Show
+                                            when=move || preview.get().scene().spec().notification().is_some()
+                                            fallback=|| view! {
+                                                <div class="appearance-preview-empty">"No pending notifications"</div>
+                                            }
+                                        >
+                                            <div
+                                                class="appearance-notification appearance-preview-notification"
+                                                data-kind=move || preview.get().scene().spec().notification().map(notification_token).unwrap_or_default()
+                                                aria-label="Read-only notification preview"
+                                            >
+                                                <span class="appearance-notification-mark" aria-hidden="true">
+                                                    {move || notification_glyph(preview.get().scene().spec().notification())}
+                                                </span>
+                                                <span class="appearance-notification-copy">
+                                                    <strong>
+                                                        {move || notification_title(preview.get().scene().spec().notification())}
+                                                    </strong>
+                                                    <span>
+                                                        {move || notification_body(preview.get().scene().spec().notification())}
+                                                    </span>
+                                                </span>
+                                                <span class="appearance-notification-action" aria-hidden="true">"↗"</span>
+                                            </div>
+                                        </Show>
                                     </div>
                                     <div class="appearance-pet" id="appearance-pet">
                                         <img
@@ -154,15 +206,23 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                             src=selected_asset_url
                                             alt=""
                                             aria-hidden="true"
+                                            data-frame-row=move || preview_frame.get().row()
+                                            data-frame-column=move || preview_frame.get().column()
+                                            style:animation="none"
+                                            style:transform=move || frame_transform(preview_frame.get())
                                         />
-                                        <span class="appearance-pet-tag">"Idle"</span>
+                                        <span class="appearance-pet-tag">
+                                            {move || scene_label(preview.get().scene())}
+                                        </span>
                                     </div>
                                 </div>
                                 <span class="appearance-scene-badge">"Preview only"</span>
                             </div>
 
                             <div class="appearance-preview-footer">
-                                <span id="appearance-preview-footer-copy">"No notification window is shown in this state."</span>
+                                <span id="appearance-preview-footer-copy">
+                                    {move || scene_footer(preview.get().scene())}
+                                </span>
                                 <span>"Single scene"</span>
                             </div>
                         </section>
@@ -222,19 +282,143 @@ fn appearance_pet_item_static(pet: lili_core::AppearancePetView, selected: bool)
     }
 }
 
-fn appearance_scene_button(scene: PreviewScene) -> impl IntoView {
-    let selected = scene == PreviewScene::Idle;
+fn appearance_scene_button(
+    scene: PreviewScene,
+    preview: RwSignal<AppearancePreviewController>,
+    preview_frame: RwSignal<FrameDescriptor>,
+) -> impl IntoView {
     view! {
         <button
             class="appearance-scene-button"
-            class:appearance-scene-selected=selected
+            class:appearance-scene-selected=move || preview.get().scene() == scene
             type="button"
-            aria-pressed=selected.to_string()
+            aria-pressed=move || (preview.get().scene() == scene).to_string()
             data-scene=scene_token(scene)
+            on:click=move |_| {
+                let mut frame = preview.get_untracked().frame();
+                preview.update(|preview| frame = preview.select(scene));
+                preview_frame.set(frame);
+            }
         >
             <span class="appearance-scene-glyph" aria-hidden="true">{scene_glyph(scene)}</span>
             <span>{scene_label(scene)}</span>
         </button>
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AppearancePreviewController {
+    scene: PreviewScene,
+    scheduler: AnimationScheduler,
+}
+
+impl AppearancePreviewController {
+    fn new(scene: PreviewScene) -> Self {
+        Self {
+            scene,
+            scheduler: AnimationScheduler::new(scene.spec().animation()),
+        }
+    }
+
+    const fn scene(self) -> PreviewScene {
+        self.scene
+    }
+
+    fn frame(self) -> FrameDescriptor {
+        self.scheduler.current_frame()
+    }
+
+    fn select(&mut self, scene: PreviewScene) -> FrameDescriptor {
+        self.scene = scene;
+        self.scheduler = AnimationScheduler::new(scene.spec().animation());
+        self.frame()
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn advance(&mut self, delta: Duration) -> FrameDescriptor {
+        self.scheduler.advance(delta)
+    }
+}
+
+fn frame_transform(frame: FrameDescriptor) -> String {
+    format!(
+        "translate(-{}px,-{}px)",
+        u32::from(frame.column()) * lili_pet::CELL_WIDTH,
+        u32::from(frame.row()) * lili_pet::CELL_HEIGHT,
+    )
+}
+
+const fn animation_token(animation: lili_pet::AnimationState) -> &'static str {
+    match animation {
+        lili_pet::AnimationState::Idle => "idle",
+        lili_pet::AnimationState::RunningRight => "running-right",
+        lili_pet::AnimationState::RunningLeft => "running-left",
+        lili_pet::AnimationState::Waving => "waving",
+        lili_pet::AnimationState::Jumping => "jumping",
+        lili_pet::AnimationState::Failed => "failed",
+        lili_pet::AnimationState::Waiting => "waiting",
+        lili_pet::AnimationState::Running => "running",
+        lili_pet::AnimationState::Review => "review",
+    }
+}
+
+const fn scene_caption(scene: PreviewScene) -> &'static str {
+    match scene {
+        PreviewScene::Idle => "Idle · no pending notification",
+        PreviewScene::Running => "Running · activity animation",
+        PreviewScene::Review => "Review · completion notification",
+        PreviewScene::Attention => "Attention · attention notification",
+        PreviewScene::Failed => "Failed · failure notification",
+        PreviewScene::Waiting => "Waiting · attention notification",
+        PreviewScene::Click => "Click · waving animation",
+    }
+}
+
+const fn scene_footer(scene: PreviewScene) -> &'static str {
+    match scene {
+        PreviewScene::Idle | PreviewScene::Running | PreviewScene::Click => {
+            "No notification window is shown in this state."
+        }
+        PreviewScene::Review => "Read-only completion card is shown above the Pet.",
+        PreviewScene::Attention | PreviewScene::Waiting => {
+            "Read-only attention card is shown above the Pet."
+        }
+        PreviewScene::Failed => "Read-only failure card is shown above the Pet.",
+    }
+}
+
+const fn scene_placement(_scene: PreviewScene) -> &'static str {
+    "above"
+}
+
+const fn notification_token(notification: PetNotificationKind) -> &'static str {
+    notification.as_str()
+}
+
+const fn notification_glyph(notification: Option<PetNotificationKind>) -> &'static str {
+    match notification {
+        Some(PetNotificationKind::Attention) => "!",
+        Some(PetNotificationKind::Completion) => "✓",
+        Some(PetNotificationKind::Failure) => "×",
+        None => "",
+    }
+}
+
+const fn notification_title(notification: Option<PetNotificationKind>) -> &'static str {
+    match notification {
+        Some(PetNotificationKind::Attention) => "Needs attention",
+        Some(PetNotificationKind::Completion) => "Review ready",
+        Some(PetNotificationKind::Failure) => "Run failed",
+        None => "No notification",
+    }
+}
+
+const fn notification_body(notification: Option<PetNotificationKind>) -> &'static str {
+    match notification {
+        Some(PetNotificationKind::Attention) => "A read-only attention card for this preview.",
+        Some(PetNotificationKind::Completion) => "A read-only completion card for this preview.",
+        Some(PetNotificationKind::Failure) => "A read-only failure card for this preview.",
+        None => "No notification is shown in this preview.",
     }
 }
 
@@ -272,6 +456,45 @@ const fn scene_glyph(scene: PreviewScene) -> &'static str {
         PreviewScene::Waiting => "◷",
         PreviewScene::Click => "✦",
     }
+}
+
+#[cfg(feature = "hydrate")]
+fn start_appearance_preview_clock(
+    preview: RwSignal<AppearancePreviewController>,
+    preview_frame: RwSignal<FrameDescriptor>,
+) {
+    use std::cell::Cell;
+
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let last_tick = Cell::new(super::animation_clock_ms());
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        let now = super::animation_clock_ms();
+        let elapsed_ms = now.saturating_sub(last_tick.replace(now));
+        let mut frame = preview.get_untracked().frame();
+        preview.update(|preview| frame = preview.advance(Duration::from_millis(elapsed_ms)));
+        preview_frame.set(frame);
+    });
+    let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        16,
+    ) else {
+        return;
+    };
+    APPEARANCE_CLOCK.with(|clock| {
+        if let Some(previous) = clock.borrow_mut().replace(AppearanceClock {
+            window,
+            interval_id,
+            _callback: callback,
+        }) {
+            previous
+                .window
+                .clear_interval_with_handle(previous.interval_id);
+        }
+    });
 }
 
 #[cfg(feature = "hydrate")]
@@ -390,10 +613,51 @@ mod tests {
         assert!(html.contains(">Pet</span>"));
         assert!(html.contains("id=\"appearance-heading\""));
         assert!(html.contains("/pet-assets/asset-id"));
-        assert_eq!(html.matches("data-scene=").count(), 7);
+        assert_eq!(html.matches("aria-pressed=").count(), 7);
+        assert_eq!(html.matches("data-scene=").count(), 8);
         assert!(!html.contains("Active pet"));
         assert!(!html.contains(">Notifications</span>"));
         assert!(!html.contains(">Interactions</span>"));
         assert!(!html.contains(">Connection</span>"));
+    }
+
+    #[test]
+    fn appearance_preview_controller_resets_and_advances_shared_atlas_scheduler() {
+        let mut controller = AppearancePreviewController::new(PreviewScene::Idle);
+        assert_eq!(controller.scene(), PreviewScene::Idle);
+        assert_eq!(controller.frame().row(), 0);
+        assert_eq!(controller.frame().column(), 0);
+
+        let first_running_frame = controller.select(PreviewScene::Running);
+        assert_eq!(controller.scene(), PreviewScene::Running);
+        let expected_running_row =
+            AnimationScheduler::new(PreviewScene::Running.spec().animation())
+                .current_frame()
+                .row();
+        assert_eq!(first_running_frame.row(), expected_running_row);
+
+        let next_running_frame = controller.advance(Duration::from_millis(400));
+        assert_ne!(next_running_frame, first_running_frame);
+
+        let first_click_frame = controller.select(PreviewScene::Click);
+        assert_eq!(controller.scene(), PreviewScene::Click);
+        assert_eq!(first_click_frame, controller.frame());
+        assert_eq!(
+            controller.scene().spec().notification(),
+            None,
+            "scene previews must not carry a live notification"
+        );
+    }
+
+    #[test]
+    fn notification_scenes_are_bounded_read_only_preview_cards() {
+        for scene in PreviewScene::all() {
+            let notification = scene.spec().notification();
+            if notification.is_some() {
+                assert!(!notification_body(notification).is_empty());
+                assert!(!notification_title(notification).is_empty());
+            }
+        }
+        assert_eq!(notification_token(PetNotificationKind::Failure), "failure");
     }
 }
