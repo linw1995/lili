@@ -15,8 +15,8 @@ use lili_actions::{
     PetLifecycleSnapshotV1, PetSnapshotV1,
 };
 use lili_core::{
-    PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
-    PetNotificationPresentation, PetPresentationState,
+    AppearancePetView, AppearanceView, PetActionFeedbackKind, PetActionFeedbackPresentation,
+    PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
 };
 use lili_pet::{AtlasFormat, AvailablePet, PetCatalog, PetSummary};
 use lili_session::{
@@ -185,7 +185,7 @@ impl ApprovedPetAssetCatalog {
             let Ok(asset) = approved_asset(&pet) else {
                 continue;
             };
-            let asset_id = format!("{}-{}", generation.simple(), Uuid::new_v4().simple());
+            let asset_id = Uuid::new_v4().simple().to_string();
             by_pet.insert(pet_id, asset_id.clone());
             assets.insert(
                 asset_id.clone(),
@@ -258,6 +258,31 @@ impl AppState {
 
     pub async fn approved_pet_assets(&self) -> ApprovedPetAssetCatalog {
         self.approved_pet_assets.read().await.clone()
+    }
+
+    pub async fn appearance_view(&self) -> AppearanceView {
+        let catalog = self.pet_catalog.read().await.clone();
+        let assets = self.approved_pet_assets.read().await.clone();
+        let pets = catalog
+            .available_summaries()
+            .into_iter()
+            .filter_map(|pet| {
+                assets
+                    .asset_id_for_pet(&pet.id)
+                    .map(|asset_id| AppearancePetView {
+                        id: pet.id,
+                        display_name: pet.display_name,
+                        asset_id: asset_id.to_owned(),
+                    })
+            })
+            .collect();
+        let selected_pet_id = lili_core::PetId::parse(catalog.active().definition().id().as_str());
+        let view = AppearanceView {
+            pets,
+            selected_pet_id,
+        };
+        debug_assert!(view.validate().is_ok());
+        view
     }
 
     pub async fn replace_pet_catalog(&self, pet_catalog: PetCatalog) -> PetSummary {
@@ -903,6 +928,19 @@ mod tests {
         assert_eq!(state.snapshot().await, before);
         assert!(store.load().unwrap().is_none());
         std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn appearance_view_lists_the_selected_pet_with_its_approved_asset() {
+        let state = AppState::default();
+        let view = state.appearance_view().await;
+        let selected = lili_core::PetId::parse("lili").unwrap();
+
+        assert_eq!(view.pets.len(), 1);
+        assert_eq!(view.pets[0].id, selected);
+        assert_eq!(view.pets[0].display_name, "Lili");
+        assert_eq!(view.selected_pet_id, Some(selected));
+        assert!(view.validate().is_ok());
     }
 
     #[tokio::test]

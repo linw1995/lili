@@ -14,7 +14,7 @@ use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
 use lili_app_state::{
     AppState, AppStateStore, IngestionDiagnostics, NativeIngestionHandle, UserSettings,
 };
-use lili_core::{DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
+use lili_core::{AppearanceView, DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
 use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
 use lili_ui::{App, AppSurface};
 use serde::{Deserialize, Serialize};
@@ -387,6 +387,7 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/settings", get(settings).merge(put(update_settings)))
+        .route("/appearance", get(appearance))
         .route("/interactions", post(interaction))
         .route(
             "/notifications/{notification_id}/dismiss",
@@ -397,6 +398,7 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/context-menu", get(context_menu))
+        .route("/appearance", get(appearance_shell))
         .route("/pet-assets/{asset_id}", get(pet_asset))
         .route("/presentation-events", get(events))
         .nest("/api/v1", api)
@@ -438,6 +440,33 @@ async fn health() -> Json<Health> {
 
 async fn context_menu() -> Html<&'static str> {
     Html(CONTEXT_MENU_HTML)
+}
+
+async fn appearance_shell(State(state): State<ServerState>) -> Html<String> {
+    let appearance = state.app.appearance_view().await;
+    let app = view! {
+        <main
+            id="lili-appearance"
+            data-appearance-view=move || serde_json::to_string(&appearance).unwrap_or_default()
+        >
+            <nav aria-label="Settings sections">
+                <button type="button" aria-current="page">Pet</button>
+            </nav>
+            <h1>Appearance</h1>
+        </main>
+    }
+    .to_html();
+    Html(format_document(app))
+}
+
+fn format_document(app: String) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"/assets/lili.css\"><script type=\"module\" src=\"/assets/lili-bootstrap.js\"></script><title>Lili</title></head><body>{app}</body></html>"
+    )
+}
+
+async fn appearance(State(state): State<ServerState>) -> Json<AppearanceView> {
+    Json(state.app.appearance_view().await)
 }
 
 async fn snapshot(State(state): State<ServerState>) -> Json<lili_app_state::ViewSnapshot> {
@@ -950,6 +979,44 @@ mod tests {
         assert!(body.contains("data-surface=\"notifications\""));
         assert!(body.contains("class=\"notification-stack\""));
         assert!(!body.contains("class=\"pet-sprite\""));
+    }
+
+    #[tokio::test]
+    async fn appearance_surface_and_snapshot_expose_the_focused_pet_contract() {
+        let router = build_router(AppState::default(), None);
+        let response = router
+            .clone()
+            .oneshot(Request::get("/appearance").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("id=\"lili-appearance\""));
+        assert!(body.contains("data-appearance-view="));
+        assert!(body.contains("aria-current=\"page\""));
+        assert!(body.contains(">Pet</button>"));
+        assert!(body.contains("<h1>Appearance</h1>"));
+        assert!(!body.contains(">Notifications</button>"));
+
+        let response = router
+            .oneshot(
+                Request::get("/api/v1/appearance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let appearance: AppearanceView = serde_json::from_slice(&body).unwrap();
+        assert_eq!(appearance.pets.len(), 1);
+        assert_eq!(appearance.pets[0].id.as_str(), "lili");
+        assert_eq!(
+            appearance.selected_pet_id.as_ref().map(|id| id.as_str()),
+            Some("lili")
+        );
+        assert!(appearance.validate().is_ok());
     }
 
     #[tokio::test]
