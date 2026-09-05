@@ -64,7 +64,7 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   await openAppearance(page);
 
   await expect(page.locator(".appearance-nav-button")).toHaveCount(1);
-  await expect(page.locator(".appearance-nav-button")).toHaveText("Pet");
+  await expect(page.locator(".appearance-nav-button span").last()).toHaveText("Pet");
   await expect(page.locator(".appearance-nav-button")).toHaveAttribute(
     "aria-current",
     "page",
@@ -95,6 +95,107 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   );
 
   await expectNoHorizontalClipping(page);
+});
+
+test("Appearance renders every preview scene with bounded read-only state", async ({
+  page,
+}) => {
+  await openAppearance(page);
+  const sceneExpectations = {
+    idle: { animation: "idle", notification: false },
+    running: { animation: "running", notification: false },
+    review: { animation: "review", notification: true },
+    attention: { animation: "waiting", notification: true },
+    failed: { animation: "failed", notification: true },
+    waiting: { animation: "waiting", notification: true },
+    click: { animation: "waving", notification: false },
+  };
+
+  for (const [scene, expected] of Object.entries(sceneExpectations)) {
+    const button = page.locator(`.appearance-scene-button[data-scene='${scene}']`);
+    await button.click();
+    await expect(page.locator("#appearance-scene")).toHaveAttribute(
+      "data-scene",
+      scene,
+    );
+    await expect(page.locator("#appearance-scene")).toHaveAttribute(
+      "data-animation",
+      expected.animation,
+    );
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      page.locator(".appearance-preview-notification"),
+    ).toHaveCount(expected.notification ? 1 : 0);
+    await expect(page.locator(".appearance-notification button")).toHaveCount(0);
+  }
+});
+
+test("Appearance keeps fallback asset delivery, Pet selection, and preview isolation", async ({
+  page,
+}) => {
+  const requests = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/")) {
+      requests.push({ method: request.method(), path: new URL(request.url()).pathname });
+    }
+  });
+  await openAppearance(page);
+
+  const before = await page.request.get("/api/v1/snapshot").then((response) => response.json());
+  const petOptions = page.locator("[role=option]");
+  const optionCount = await petOptions.count();
+  expect(optionCount).toBeGreaterThan(0);
+  for (let index = 0; index < optionCount; index += 1) {
+    const option = petOptions.nth(index);
+    await option.focus();
+    const selectionResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/v1/appearance/pet") &&
+        response.request().method() === "PUT",
+    );
+    await page.keyboard.press("Enter");
+    const selectionResponse = await selectionResponsePromise;
+    expect(selectionResponse.ok()).toBeTruthy();
+    const selectedAppearance = await selectionResponse.json();
+    const selectedPetId = await option.getAttribute("data-pet-id");
+    const selectedPet = selectedAppearance.pets.find(
+      ({ id }) => id === selectedPetId,
+    );
+    expect(selectedPet).toBeDefined();
+    await expect(page.locator(".appearance-pet-atlas")).toHaveAttribute(
+      "src",
+      `/pet-assets/${selectedPet.assetId}`,
+    );
+    await expect(option).toHaveAttribute("aria-selected", "true");
+  }
+
+  const atlas = page.locator(".appearance-pet-atlas");
+  await expect(atlas).toHaveAttribute("src", /\/pet-assets\/.+/);
+  const assetUrl = await atlas.getAttribute("src");
+  expect(assetUrl).not.toBeNull();
+  const fallbackAsset = await page.request.get(new URL(assetUrl, page.url()).toString());
+  expect(fallbackAsset.ok()).toBeTruthy();
+  expect(fallbackAsset.headers()["content-type"]).toBe("image/webp");
+
+  for (const scene of ["idle", "review", "attention", "failed", "waiting", "click"]) {
+    await page.locator(`.appearance-scene-button[data-scene='${scene}']`).click();
+  }
+  const after = await page.request.get("/api/v1/snapshot").then((response) => response.json());
+  expect(after.sessionState).toEqual(before.sessionState);
+  expect(after.actions).toEqual(before.actions);
+  expect(
+    requests.filter(({ path }) =>
+      path === "/api/v1/interactions" || path.includes("/notifications/"),
+    ),
+  ).toEqual([]);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__LILI_HYDRATED__ === true);
+  await expect(page.locator("[role=option][aria-selected=true]")).toHaveCount(1);
+  await expect(page.locator(".appearance-pet-atlas")).toHaveAttribute(
+    "src",
+    /\/pet-assets\/.+/,
+  );
 });
 
 for (const [width, height] of [
