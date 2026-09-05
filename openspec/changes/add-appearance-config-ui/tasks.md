@@ -1,7 +1,7 @@
 ## 1. Contract and design assets
 
 - [x] 1.1 Add the Appearance view-model contract for validated Pet summaries, selected Pet identifier, opaque asset identities, and bounded error responses; verify serialization and unknown-field rejection with focused Rust tests
-- [ ] 1.2 Add the seven-scene preview contract and map `Idle`, `Running`, `Review`, `Attention`, `Failed`, `Waiting`, and `Click` to existing Pet lifecycle or transient animation semantics; verify every scene has one deterministic mapping and no native side effect
+- [x] 1.2 Add the seven-scene preview contract and map `Idle`, `Running`, `Review`, `Attention`, `Failed`, `Waiting`, and `Click` to existing Pet lifecycle or transient animation semantics; verify every scene has one deterministic mapping and no native side effect
 - [ ] 1.3 Keep `docs/design/lili-appearance.png`, `docs/design/lili-appearance.html`, and `docs/design/lili-appearance.md` aligned with the approved scope; verify the image and interactive prototype show one `Pet` navigation entry, no Active pet summary, a Pet list, and scene switching
 
 ## 2. Pet catalog and native selection
