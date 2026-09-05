@@ -1,22 +1,79 @@
 use leptos::prelude::*;
+#[cfg(feature = "hydrate")]
+use lili_core::AppearanceSelectionRequest;
 use lili_core::AppearanceView;
+#[cfg(feature = "hydrate")]
+use lili_core::PetId;
 use lili_pet::PreviewScene;
 
 #[component]
 pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
-    let selected_pet_id = appearance.selected_pet_id.clone();
-    let selected_asset_id = selected_pet_id
-        .as_ref()
-        .and_then(|selected| appearance.pets.iter().find(|pet| &pet.id == selected))
-        .map(|pet| pet.asset_id.clone());
-    let serialized_appearance = serde_json::to_string(&appearance).unwrap_or_default();
-    let pet_items = appearance
+    let appearance = RwSignal::new(appearance);
+    let selection_error = RwSignal::new(None::<String>);
+    let initial_appearance = appearance.get_untracked();
+    let serialized_appearance = serde_json::to_string(&initial_appearance).unwrap_or_default();
+    let selected_asset_url = move || {
+        let current = appearance.get();
+        current
+            .selected_pet_id
+            .as_ref()
+            .and_then(|selected| current.pets.iter().find(|pet| &pet.id == selected))
+            .map(|pet| format!("/pet-assets/{}", pet.asset_id))
+            .unwrap_or_default()
+    };
+    #[cfg(feature = "hydrate")]
+    let pet_items = view! {
+        <For
+            each=move || appearance.get().pets.clone()
+            key=|pet| pet.asset_id.clone()
+            children=move |pet| {
+                let pet_id = pet.id.clone();
+                let pet_id_value = pet.id.as_str().to_owned();
+                let asset_url = format!("/pet-assets/{}", pet.asset_id);
+                let selected_pet_id = pet_id.clone();
+                let selected = Memo::new(move |_| {
+                    appearance.get().selected_pet_id.as_ref() == Some(&selected_pet_id)
+                });
+                let select_id = pet_id.clone();
+                view! {
+                    <button
+                        class="appearance-pet-item"
+                        class:appearance-pet-selected=move || selected.get()
+                        type="button"
+                        role="option"
+                        aria-selected=move || selected.get().to_string()
+                        data-pet-id=pet_id_value
+                        on:click=move |_| {
+                            request_pet_selection(
+                                appearance,
+                                selection_error,
+                                select_id.clone(),
+                            );
+                        }
+                    >
+                        <span class="appearance-pet-thumb">
+                            <img src=asset_url.clone() alt="" aria-hidden="true" />
+                        </span>
+                        <span class="appearance-pet-item-copy">
+                            <strong>{pet.display_name}</strong>
+                            <span>{move || if selected.get() { "Selected" } else { "Installed package" }}</span>
+                        </span>
+                        <span class="appearance-pet-item-check" aria-hidden="true">
+                            {move || if selected.get() { "✓" } else { "" }}
+                        </span>
+                    </button>
+                }
+            }
+        />
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let pet_items = initial_appearance
         .pets
         .iter()
         .cloned()
         .map(|pet| {
-            let selected = selected_pet_id.as_ref() == Some(&pet.id);
-            appearance_pet_item(pet, selected)
+            let selected = initial_appearance.selected_pet_id.as_ref() == Some(&pet.id);
+            appearance_pet_item_static(pet, selected)
         })
         .collect_view();
     let scene_items = PreviewScene::all()
@@ -92,14 +149,12 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                         <div class="appearance-preview-empty">"No pending notifications"</div>
                                     </div>
                                     <div class="appearance-pet" id="appearance-pet">
-                                        {selected_asset_id.map(|asset_id| view! {
-                                            <img
-                                                class="appearance-pet-atlas"
-                                                src=format!("/pet-assets/{asset_id}")
-                                                alt=""
-                                                aria-hidden="true"
-                                            />
-                                        })}
+                                        <img
+                                            class="appearance-pet-atlas"
+                                            src=selected_asset_url
+                                            alt=""
+                                            aria-hidden="true"
+                                        />
                                         <span class="appearance-pet-tag">"Idle"</span>
                                     </div>
                                 </div>
@@ -117,14 +172,21 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             <p>"Choose which Pet appears in Lili Pet Studio."</p>
                             <div class="appearance-pet-list-heading">
                                 <span>"Installed pets"</span>
-                                <span>{appearance.pets.len()} " available"</span>
+                                <span>{move || format!("{} available", appearance.get().pets.len())}</span>
                             </div>
                             <div class="appearance-pet-list" role="listbox" aria-label="Installed pets">
                                 {pet_items}
                             </div>
                             <div class="appearance-status-line">
                                 <span class="appearance-status-dot" aria-hidden="true"></span>
-                                <small>"All Pets run locally on your device."</small>
+                                <Show
+                                    when=move || selection_error.get().is_some()
+                                    fallback=|| view! { <small>"All Pets run locally on your device."</small> }
+                                >
+                                    <small role="alert" class="appearance-selection-error">
+                                        {move || selection_error.get().unwrap_or_else(|| "Pet selection failed".to_owned())}
+                                    </small>
+                                </Show>
                             </div>
                         </aside>
                     </div>
@@ -134,9 +196,9 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     }
 }
 
-fn appearance_pet_item(pet: lili_core::AppearancePetView, selected: bool) -> impl IntoView {
-    let pet_id = pet.id.as_str().to_owned();
-    let asset_id = pet.asset_id;
+#[cfg(not(feature = "hydrate"))]
+fn appearance_pet_item_static(pet: lili_core::AppearancePetView, selected: bool) -> impl IntoView {
+    let asset_url = format!("/pet-assets/{}", pet.asset_id);
     view! {
         <button
             class="appearance-pet-item"
@@ -144,16 +206,18 @@ fn appearance_pet_item(pet: lili_core::AppearancePetView, selected: bool) -> imp
             type="button"
             role="option"
             aria-selected=selected.to_string()
-            data-pet-id=pet_id
+            data-pet-id=pet.id.as_str().to_owned()
         >
             <span class="appearance-pet-thumb">
-                <img src=format!("/pet-assets/{asset_id}") alt="" aria-hidden="true" />
+                <img src=asset_url alt="" aria-hidden="true" />
             </span>
             <span class="appearance-pet-item-copy">
                 <strong>{pet.display_name}</strong>
                 <span>{if selected { "Selected" } else { "Installed package" }}</span>
             </span>
-            <span class="appearance-pet-item-check" aria-hidden="true">{if selected { "✓" } else { "" }}</span>
+            <span class="appearance-pet-item-check" aria-hidden="true">
+                {if selected { "✓" } else { "" }}
+            </span>
         </button>
     }
 }
@@ -208,6 +272,95 @@ const fn scene_glyph(scene: PreviewScene) -> &'static str {
         PreviewScene::Waiting => "◷",
         PreviewScene::Click => "✦",
     }
+}
+
+#[cfg(feature = "hydrate")]
+fn request_pet_selection(
+    appearance: RwSignal<AppearanceView>,
+    selection_error: RwSignal<Option<String>>,
+    pet_id: PetId,
+) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestInit};
+
+    let body = match serde_json::to_string(&AppearanceSelectionRequest { pet_id }) {
+        Ok(body) => body,
+        Err(_) => {
+            selection_error.set(Some("Pet selection could not be encoded".to_owned()));
+            return;
+        }
+    };
+    let request_init = RequestInit::new();
+    request_init.set_method("PUT");
+    request_init.set_body(&JsValue::from_str(&body));
+    let request = match Request::new_with_str_and_init("/api/v1/appearance/pet", &request_init) {
+        Ok(request) => request,
+        Err(_) => {
+            selection_error.set(Some(
+                "Pet selection request could not be created".to_owned(),
+            ));
+            return;
+        }
+    };
+    if request
+        .headers()
+        .set("Content-Type", "application/json")
+        .is_err()
+    {
+        selection_error.set(Some(
+            "Pet selection request could not be prepared".to_owned(),
+        ));
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        selection_error.set(Some("Pet selection is unavailable".to_owned()));
+        return;
+    };
+
+    selection_error.set(None);
+    wasm_bindgen_futures::spawn_local(async move {
+        let response = match JsFuture::from(window.fetch_with_request(&request)).await {
+            Ok(value) => match value.dyn_into::<web_sys::Response>() {
+                Ok(response) => response,
+                Err(_) => {
+                    selection_error.set(Some("Pet selection response was invalid".to_owned()));
+                    return;
+                }
+            },
+            Err(_) => {
+                selection_error.set(Some("Pet selection request failed".to_owned()));
+                return;
+            }
+        };
+        if !response.ok() {
+            selection_error.set(Some("Pet selection was rejected".to_owned()));
+            return;
+        }
+        let body = match response.text() {
+            Ok(body) => match JsFuture::from(body).await {
+                Ok(value) => value.as_string().unwrap_or_default(),
+                Err(_) => {
+                    selection_error
+                        .set(Some("Pet selection response could not be read".to_owned()));
+                    return;
+                }
+            },
+            Err(_) => {
+                selection_error.set(Some("Pet selection response could not be read".to_owned()));
+                return;
+            }
+        };
+        let next = match serde_json::from_str::<AppearanceView>(&body) {
+            Ok(next) if next.validate().is_ok() => next,
+            _ => {
+                selection_error.set(Some("Pet selection response was invalid".to_owned()));
+                return;
+            }
+        };
+        appearance.set(next);
+    });
 }
 
 #[cfg(all(test, feature = "ssr"))]
