@@ -5,6 +5,7 @@ use std::sync::{
 
 use lili_actions::ActionExecutionOutcome;
 use lili_app_state::AppState;
+use lili_core::PetId;
 use lili_storage::ApplicationPaths;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -112,6 +113,7 @@ pub async fn complete_desktop_acceptance(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopAcceptanceState>,
     drag_state: tauri::State<'_, crate::WindowDragState>,
+    actions: tauri::State<'_, crate::PetContextActions>,
     report: BrowserAcceptanceReport,
 ) -> Result<(), String> {
     if state.completed.swap(true, Ordering::AcqRel) {
@@ -123,7 +125,7 @@ pub async fn complete_desktop_acceptance(
         .ok()
         .and_then(|paths| paths.clone());
     let app_state = state.app_state.lock().ok().and_then(|state| state.clone());
-    let action_audit = match app_state {
+    let action_audit = match app_state.as_ref() {
         Some(state) => state.action_audit().await,
         None => Vec::new(),
     };
@@ -167,8 +169,21 @@ pub async fn complete_desktop_acceptance(
         .as_ref()
         .is_some_and(private_transport_is_live);
     let absolute_position_contract = absolute_position_contract(&window, &drag_state);
+    let context_menu_settings_contract =
+        crate::run_pet_context_action(app.clone(), actions, "settings".to_owned()).is_ok();
+    crate::handle_application_tray_action(&app, crate::TrayAction::Settings);
+    let tray_settings_contract = app
+        .get_webview_window(crate::APPEARANCE_WINDOW_LABEL)
+        .is_some_and(|appearance| appearance.is_visible().is_ok_and(|visible| visible));
+    let appearance_window_contract = appearance_window_contract(&app);
+    let selected_pet_contract = match (app_state.as_ref(), application_paths.as_ref()) {
+        (Some(state), Some(application_paths)) => {
+            selected_pet_persistence_contract(state, application_paths).await
+        }
+        _ => false,
+    };
     eprintln!(
-        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract}"
+        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} selectedPet={selected_pet_contract}"
     );
     let passed = cfg!(any(
         target_os = "macos",
@@ -186,7 +201,11 @@ pub async fn complete_desktop_acceptance(
         && tray_contract
         && visibility_contract
         && transport_contract
-        && absolute_position_contract;
+        && absolute_position_contract
+        && context_menu_settings_contract
+        && tray_settings_contract
+        && appearance_window_contract
+        && selected_pet_contract;
     let result_recorded = match application_paths {
         Some(application_paths) => std::fs::write(
             application_paths.root().join("desktop-acceptance-result"),
@@ -203,6 +222,60 @@ pub async fn complete_desktop_acceptance(
     };
     app.exit(if passed && result_recorded { 0 } else { 1 });
     Ok(())
+}
+
+fn appearance_window_contract(app: &AppHandle) -> bool {
+    let Some(window) = app.get_webview_window(crate::APPEARANCE_WINDOW_LABEL) else {
+        return false;
+    };
+    let route_contract = window.url().is_ok_and(|url| url.path() == "/appearance");
+    let decorated_contract = window.is_decorated().is_ok_and(|decorated| decorated);
+    let size_contract = window
+        .inner_size()
+        .is_ok_and(|size| size.width > 0 && size.height > 0);
+    let opened = crate::open_appearance_window(app).unwrap_or(false);
+    let focused = opened && window.set_focus().is_ok();
+    let closed = focused && window.close().is_ok();
+    let hidden_after_close = closed && window.is_visible().is_ok_and(|visible| !visible);
+    let reopened = hidden_after_close
+        && crate::open_appearance_window(app).unwrap_or(false)
+        && window.is_visible().is_ok_and(|visible| visible);
+    let cleaned_up = window.hide().is_ok() && window.is_visible().is_ok_and(|visible| !visible);
+    route_contract
+        && decorated_contract
+        && size_contract
+        && opened
+        && focused
+        && closed
+        && hidden_after_close
+        && reopened
+        && cleaned_up
+}
+
+async fn selected_pet_persistence_contract(
+    state: &AppState,
+    application_paths: &ApplicationPaths,
+) -> bool {
+    let Some(selected) = state.appearance_view().await.selected_pet_id else {
+        return false;
+    };
+    let before_session = state.snapshot().await.session_state;
+    let store = lili_app_state::AppStateStore::for_application(application_paths.clone());
+    if state
+        .select_pet(&application_paths.pets_root(), &selected, Some(&store))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let persisted = store
+        .load()
+        .ok()
+        .flatten()
+        .and_then(|state| state.selected_pet_id().cloned())
+        == Some(selected.clone());
+    let after_session = state.snapshot().await.session_state;
+    persisted && before_session == after_session && PetId::parse(selected.as_str()).is_some()
 }
 
 fn expected_action_id() -> &'static str {

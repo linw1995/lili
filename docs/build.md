@@ -18,6 +18,10 @@ On Linux, install the distribution's native Tauri development packages first. De
 
 `nix run .#dev` starts the native Tauri application. `nix run .#dev-web` starts a fixture-only browser build; it cannot read local forwarding credentials, load arbitrary pet paths, mutate Codex configuration, execute actions, or access native process APIs.
 
+### Packaged macOS acceptance
+
+Run `nix run .#macos-acceptance` on a graphical macOS host to build the signed-path `.app` acceptance target. The packaged check exercises loopback certificate pinning, the decorated Appearance settings window, Settings launch through both native menu paths, focus/close/reopen behavior, selected-Pet persistence, clean shutdown, and the existing non-activating transparent Pet and notification windows. Set `CODEX_BIN` when the Codex executable is not on `PATH`.
+
 Build a complete release for the current macOS or Linux host with:
 
 ```text
