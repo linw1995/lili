@@ -2305,19 +2305,9 @@ fn select_pet(
     pet_id: &PetId,
     store: Option<&AppStateStore>,
 ) -> Result<(), String> {
-    let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
-    if catalog.active().definition().id() != pet_id {
-        return Err("selected pet is unavailable".to_owned());
-    }
-    if let Some(store) = store {
-        let persistent = tauri::async_runtime::block_on(state.persistent_state(None))
-            .with_selected_pet_id(Some(pet_id.clone()));
-        store
-            .save_selected_pet(&persistent)
-            .map_err(|error| format!("selected pet could not be saved: {error}"))?;
-    }
-    tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));
-    Ok(())
+    tauri::async_runtime::block_on(state.select_pet(pets_root, pet_id, store))
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn desktop_assets(

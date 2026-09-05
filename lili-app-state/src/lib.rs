@@ -3,6 +3,7 @@ mod persistence;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -23,6 +24,7 @@ use lili_session::{
     PresentationState, ReductionOutcome, SessionEventKind, SessionReducer, SessionViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, watch};
 use uuid::Uuid;
 
@@ -69,6 +71,7 @@ pub struct AppState {
     pet_catalog: Arc<RwLock<PetCatalog>>,
     approved_pet_assets: Arc<RwLock<ApprovedPetAssetCatalog>>,
     pet_asset: Arc<RwLock<ApprovedPetAsset>>,
+    pet_selection_lock: Arc<Mutex<()>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
     action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
@@ -81,6 +84,14 @@ pub struct AppState {
 pub struct InteractionDispatchReceipt {
     pub accepted: bool,
     pub action_count: usize,
+}
+
+#[derive(Debug, Error)]
+pub enum PetSelectionError {
+    #[error("selected pet is unavailable")]
+    Unavailable,
+    #[error("selected pet could not be saved: {0}")]
+    Persistence(#[source] PersistenceError),
 }
 
 #[derive(Clone, Default)]
@@ -227,6 +238,7 @@ impl AppState {
             pet_catalog: Arc::new(RwLock::new(pet_catalog)),
             approved_pet_assets: Arc::new(RwLock::new(approved_pet_assets)),
             pet_asset: Arc::new(RwLock::new(pet_asset)),
+            pet_selection_lock: Arc::new(Mutex::new(())),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
             action_feedback: Arc::new(RwLock::new(None)),
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
@@ -262,6 +274,33 @@ impl AppState {
         }
         self.publish_presentation().await;
         selected_pet
+    }
+
+    pub async fn select_pet(
+        &self,
+        pets_root: &Path,
+        pet_id: &lili_core::PetId,
+        store: Option<&AppStateStore>,
+    ) -> Result<PetSummary, PetSelectionError> {
+        let _selection_guard = self.pet_selection_lock.lock().await;
+        let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
+        if catalog.active().definition().id() != pet_id {
+            return Err(PetSelectionError::Unavailable);
+        }
+        let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&catalog);
+        if approved_pet_assets.asset_id_for_pet(pet_id).is_none() {
+            return Err(PetSelectionError::Unavailable);
+        }
+        if let Some(store) = store {
+            let persistent = self
+                .persistent_state(None)
+                .await
+                .with_selected_pet_id(Some(pet_id.clone()));
+            store
+                .save_selected_pet(&persistent)
+                .map_err(PetSelectionError::Persistence)?;
+        }
+        Ok(self.replace_pet_catalog(catalog).await)
     }
 
     pub async fn snapshot(&self) -> ViewSnapshot {
@@ -821,6 +860,49 @@ mod tests {
         assert_ne!(first.generation(), second.generation());
         assert!(second.asset(&first_asset_id).is_none());
         assert!(second.asset_id_for_pet(&selected).is_some());
+    }
+
+    #[tokio::test]
+    async fn pet_selection_revalidates_persists_and_replaces_the_active_asset() {
+        let root = std::env::temp_dir().join(format!("lili-pet-selection-{}", Uuid::new_v4()));
+        let paths = ApplicationPaths::from_root(root.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let selected = lili_core::PetId::parse("lili").unwrap();
+
+        let summary = state
+            .select_pet(&root.join("pets"), &selected, Some(&store))
+            .await
+            .unwrap();
+
+        assert_eq!(summary.id, selected);
+        assert_eq!(
+            store.load().unwrap().unwrap().selected_pet_id(),
+            Some(&selected)
+        );
+        assert_eq!(state.snapshot().await.selected_pet.unwrap().id, selected);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_pet_selection_does_not_change_state_or_persistence() {
+        let root =
+            std::env::temp_dir().join(format!("lili-pet-selection-invalid-{}", Uuid::new_v4()));
+        let paths = ApplicationPaths::from_root(root.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let before = state.snapshot().await;
+        let missing = lili_core::PetId::parse("missing").unwrap();
+
+        assert!(matches!(
+            state
+                .select_pet(&root.join("pets"), &missing, Some(&store))
+                .await,
+            Err(PetSelectionError::Unavailable)
+        ));
+        assert_eq!(state.snapshot().await, before);
+        assert!(store.load().unwrap().is_none());
+        std::fs::remove_dir_all(paths.root()).unwrap();
     }
 
     #[tokio::test]
