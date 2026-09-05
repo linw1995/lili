@@ -36,4 +36,10 @@
 - [x] 6.1 Add browser fixture scenarios for the initial Idle preview, all seven scene controls, every available Pet selection, fallback behavior, keyboard access, and preview isolation; verify the fixture suite passes with strict console diagnostics
 - [x] 6.2 Add packaged macOS acceptance for the Appearance window, loopback certificate pinning, tray/context-menu launch, window focus, selected-Pet persistence, and clean shutdown; verify existing non-activating Pet behavior remains intact
 - [x] 6.3 Add packaged Windows and supported Linux acceptance for Appearance navigation, signed selection, asset delivery, window lifecycle, and documented compositor/DPI behavior; verify platform-specific failures remain bounded and diagnosable
-- [ ] 6.4 Run formatting, Clippy with warnings denied, workspace tests, browser E2E, OpenSpec strict validation, and release packaging; verify the saved design assets are included in the intended source tree and no unrelated lockfile or dependency changes are introduced
+- [x] 6.4 Run formatting, Clippy with warnings denied, workspace tests, browser E2E, OpenSpec strict validation, and release packaging; verify the saved design assets are included in the intended source tree and no unrelated lockfile or dependency changes are introduced
+
+### Verification record
+
+- `nix run .#format-check`, `nix run .#lint`, `nix run .#test`, `nix flake check --no-build`, `nix run .#spec-validate`, and `nix run .#build` passed.
+- The Appearance Playwright fixture passed all 6 tests, including the seven scenes, fallback asset, Pet selection, reload persistence, preview isolation, keyboard semantics, and 320/736/1024px layouts.
+- The full Playwright suite and packaged macOS acceptance remain environment-gated on this host: the former repeatedly stalled while building the pinned Playwright npm derivation, and the latter stopped before app launch because the installed Codex version did not match the reviewed contract.
