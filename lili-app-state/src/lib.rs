@@ -910,6 +910,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pet_selection_publishes_the_same_identity_used_by_all_windows() {
+        let root = std::env::temp_dir().join(format!("lili-pet-presentation-{}", Uuid::new_v4()));
+        let paths = ApplicationPaths::from_root(root.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let selected = lili_core::PetId::parse("lili").unwrap();
+        let mut presentations = state.subscribe_pet_presentation();
+
+        state
+            .select_pet(&root.join("pets"), &selected, Some(&store))
+            .await
+            .unwrap();
+        presentations.changed().await.unwrap();
+
+        let appearance = state.appearance_view().await;
+        let published = presentations.borrow_and_update().clone();
+        assert_eq!(appearance.selected_pet_id, Some(selected.clone()));
+        assert_eq!(
+            published.pet_asset_id,
+            appearance
+                .pets
+                .iter()
+                .find(|pet| pet.id == selected)
+                .map(|pet| pet.asset_id.clone())
+        );
+        assert_eq!(
+            store.load().unwrap().unwrap().selected_pet_id(),
+            Some(&selected)
+        );
+        assert_eq!(state.snapshot().await.session_state.revision, 0);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
     async fn unavailable_pet_selection_does_not_change_state_or_persistence() {
         let root =
             std::env::temp_dir().join(format!("lili-pet-selection-invalid-{}", Uuid::new_v4()));

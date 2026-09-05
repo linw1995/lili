@@ -17,8 +17,17 @@ struct AppearanceClock {
 }
 
 #[cfg(feature = "hydrate")]
+struct AppearanceRefreshClock {
+    window: web_sys::Window,
+    interval_id: i32,
+    _callback: wasm_bindgen::closure::Closure<dyn FnMut()>,
+}
+
+#[cfg(feature = "hydrate")]
 thread_local! {
     static APPEARANCE_CLOCK: std::cell::RefCell<Option<AppearanceClock>> =
+        const { std::cell::RefCell::new(None) };
+    static APPEARANCE_REFRESH_CLOCK: std::cell::RefCell<Option<AppearanceRefreshClock>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -26,8 +35,12 @@ thread_local! {
 pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let appearance = RwSignal::new(appearance);
     let selection_error = RwSignal::new(None::<String>);
+    #[cfg(feature = "hydrate")]
+    let selection_in_flight = RwSignal::new(false);
     let preview = RwSignal::new(AppearancePreviewController::new(PreviewScene::Idle));
     let preview_frame = RwSignal::new(preview.get_untracked().frame());
+    #[cfg(feature = "hydrate")]
+    start_appearance_selection_refresh(appearance, selection_in_flight);
     #[cfg(feature = "hydrate")]
     start_appearance_preview_clock(preview, preview_frame);
     let initial_appearance = appearance.get_untracked();
@@ -64,9 +77,13 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                         aria-selected=move || selected.get().to_string()
                         data-pet-id=pet_id_value
                         on:click=move |_| {
+                            if selection_in_flight.get_untracked() {
+                                return;
+                            }
                             request_pet_selection(
                                 appearance,
                                 selection_error,
+                                selection_in_flight,
                                 select_id.clone(),
                             );
                         }
@@ -498,9 +515,89 @@ fn start_appearance_preview_clock(
 }
 
 #[cfg(feature = "hydrate")]
+fn start_appearance_selection_refresh(
+    appearance: RwSignal<AppearanceView>,
+    selection_in_flight: RwSignal<bool>,
+) {
+    use std::{cell::Cell, rc::Rc};
+
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let request_in_flight = Rc::new(Cell::new(false));
+    let refresh_window = window.clone();
+    let callback = Closure::<dyn FnMut()>::new({
+        let request_in_flight = Rc::clone(&request_in_flight);
+        move || {
+            if selection_in_flight.get_untracked() || request_in_flight.replace(true) {
+                return;
+            }
+            let window = refresh_window.clone();
+            let request_in_flight = Rc::clone(&request_in_flight);
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(next) = fetch_appearance_view(&window).await {
+                    appearance.set(next);
+                }
+                request_in_flight.set(false);
+            });
+        }
+    });
+    let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        500,
+    ) else {
+        return;
+    };
+    APPEARANCE_REFRESH_CLOCK.with(|clock| {
+        if let Some(previous) = clock.borrow_mut().replace(AppearanceRefreshClock {
+            window,
+            interval_id,
+            _callback: callback,
+        }) {
+            previous
+                .window
+                .clear_interval_with_handle(previous.interval_id);
+        }
+    });
+}
+
+#[cfg(feature = "hydrate")]
+async fn fetch_appearance_view(window: &web_sys::Window) -> Result<AppearanceView, String> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let value = JsFuture::from(window.fetch_with_str("/api/v1/appearance"))
+        .await
+        .map_err(|_| "Appearance state request failed".to_owned())?;
+    let response = value
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| "Appearance state response was invalid".to_owned())?;
+    if !response.ok() {
+        return Err("Appearance state request was rejected".to_owned());
+    }
+    let body = response
+        .text()
+        .map_err(|_| "Appearance state response could not be read".to_owned())?;
+    let body = JsFuture::from(body)
+        .await
+        .map_err(|_| "Appearance state response could not be read".to_owned())?
+        .as_string()
+        .ok_or_else(|| "Appearance state response was invalid".to_owned())?;
+    let appearance = serde_json::from_str::<AppearanceView>(&body)
+        .map_err(|_| "Appearance state response was invalid".to_owned())?;
+    appearance
+        .validate()
+        .map_err(|_| "Appearance state response was invalid".to_owned())?;
+    Ok(appearance)
+}
+
+#[cfg(feature = "hydrate")]
 fn request_pet_selection(
     appearance: RwSignal<AppearanceView>,
     selection_error: RwSignal<Option<String>>,
+    selection_in_flight: RwSignal<bool>,
     pet_id: PetId,
 ) {
     use wasm_bindgen::JsCast;
@@ -508,6 +605,9 @@ fn request_pet_selection(
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestInit};
 
+    if selection_in_flight.get_untracked() {
+        return;
+    }
     let body = match serde_json::to_string(&AppearanceSelectionRequest { pet_id }) {
         Ok(body) => body,
         Err(_) => {
@@ -543,46 +643,38 @@ fn request_pet_selection(
     };
 
     selection_error.set(None);
+    selection_in_flight.set(true);
     wasm_bindgen_futures::spawn_local(async move {
-        let response = match JsFuture::from(window.fetch_with_request(&request)).await {
-            Ok(value) => match value.dyn_into::<web_sys::Response>() {
-                Ok(response) => response,
-                Err(_) => {
-                    selection_error.set(Some("Pet selection response was invalid".to_owned()));
-                    return;
-                }
-            },
-            Err(_) => {
-                selection_error.set(Some("Pet selection request failed".to_owned()));
-                return;
+        let result: Result<AppearanceView, String> = async {
+            let value = JsFuture::from(window.fetch_with_request(&request))
+                .await
+                .map_err(|_| "Pet selection request failed".to_owned())?;
+            let response = value
+                .dyn_into::<web_sys::Response>()
+                .map_err(|_| "Pet selection response was invalid".to_owned())?;
+            if !response.ok() {
+                return Err("Pet selection was rejected".to_owned());
             }
-        };
-        if !response.ok() {
-            selection_error.set(Some("Pet selection was rejected".to_owned()));
-            return;
+            let body = response
+                .text()
+                .map_err(|_| "Pet selection response could not be read".to_owned())?;
+            let body = JsFuture::from(body)
+                .await
+                .map_err(|_| "Pet selection response could not be read".to_owned())?
+                .as_string()
+                .ok_or_else(|| "Pet selection response was invalid".to_owned())?;
+            let next = serde_json::from_str::<AppearanceView>(&body)
+                .map_err(|_| "Pet selection response was invalid".to_owned())?;
+            next.validate()
+                .map_err(|_| "Pet selection response was invalid".to_owned())?;
+            Ok(next)
         }
-        let body = match response.text() {
-            Ok(body) => match JsFuture::from(body).await {
-                Ok(value) => value.as_string().unwrap_or_default(),
-                Err(_) => {
-                    selection_error
-                        .set(Some("Pet selection response could not be read".to_owned()));
-                    return;
-                }
-            },
-            Err(_) => {
-                selection_error.set(Some("Pet selection response could not be read".to_owned()));
-                return;
-            }
-        };
-        let next = match serde_json::from_str::<AppearanceView>(&body) {
-            Ok(next) if next.validate().is_ok() => next,
-            _ => {
-                selection_error.set(Some("Pet selection response was invalid".to_owned()));
-                return;
-            }
-        };
-        appearance.set(next);
+        .await;
+        match result {
+            Ok(next) => appearance.set(next),
+            Err(error) => selection_error.set(Some(error)),
+        }
+        selection_in_flight.set(false);
     });
 }
 

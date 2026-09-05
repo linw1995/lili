@@ -386,7 +386,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     window.show().expect("failed to show pet window");
     register_pet_window_events(&window, app.handle().clone());
     register_notification_window_events(&notification_window, app.handle().clone());
-    register_notification_updates(&app, state.clone());
+    register_notification_updates(&app, state.clone(), tray_menu.pet_items.clone());
     run_desktop_event_loop(app, smoke, state, state_store, shutdown_tx);
 }
 
@@ -818,17 +818,34 @@ fn register_notification_window_events(window: &tauri::WebviewWindow, app: tauri
     });
 }
 
-fn register_notification_updates(app: &tauri::App, state: AppState) {
+fn register_notification_updates(
+    app: &tauri::App,
+    state: AppState,
+    pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
+) {
     let app = app.handle().clone();
     let mut presentations = state.subscribe_pet_presentation();
     let unread = presentations.borrow().unread_notification_count;
     sync_notification_window(&app, unread);
+    let selected_pet_id = tauri::async_runtime::block_on(state.appearance_view()).selected_pet_id;
+    sync_tray_pet_selection(&pet_items, selected_pet_id.as_ref());
     tauri::async_runtime::spawn(async move {
         while presentations.changed().await.is_ok() {
             let unread = presentations.borrow_and_update().unread_notification_count;
             sync_notification_window(&app, unread);
+            let selected_pet_id = state.appearance_view().await.selected_pet_id;
+            sync_tray_pet_selection(&pet_items, selected_pet_id.as_ref());
         }
     });
+}
+
+fn sync_tray_pet_selection(
+    pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
+    selected_pet_id: Option<&PetId>,
+) {
+    for (pet_id, item) in pet_items {
+        let _ = item.set_checked(selected_pet_id == Some(pet_id));
+    }
 }
 
 fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
