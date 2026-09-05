@@ -69,6 +69,9 @@ const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
 const NOTIFICATION_WINDOW_HIDE_DELAY: Duration = Duration::from_secs(5);
 const NOTIFICATION_SHADOW_INSET: i32 = 12;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
+const APPEARANCE_WINDOW_LABEL: &str = "appearance";
+const APPEARANCE_WINDOW_WIDTH: f64 = 1_040.0;
+const APPEARANCE_WINDOW_HEIGHT: f64 = 760.0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 const DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 document.addEventListener('contextmenu', (event) => {
@@ -326,6 +329,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     ))
     .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
+    let appearance_bootstrap_url = loopback.appearance_bootstrap_url();
     let notification_bootstrap_url = loopback.notification_bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();
     let origin = loopback.origin();
@@ -358,6 +362,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     app.manage(context_menu_navigation.clone());
     let _context_menu_window = create_context_menu_window(app.handle(), &context_menu_navigation)
         .expect("failed to preload pet context menu window");
+    let appearance_window = create_appearance_window(&app, &origin)
+        .expect("failed to create Appearance settings window");
     let window = create_pet_window(&app, &state, &origin, smoke, acceptance)
         .expect("failed to create pet window");
     let notification_window = create_notification_window(&app, &state, &origin, acceptance)
@@ -365,6 +371,12 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     restore_window_placement(&window, saved_window_placement.as_ref());
     platform_pinning::install_and_navigate(&window, bootstrap_url, certificate_sha256)
         .expect("failed to install loopback certificate pinning");
+    platform_pinning::install_and_navigate(
+        &appearance_window,
+        appearance_bootstrap_url,
+        certificate_sha256,
+    )
+    .expect("failed to install Appearance loopback certificate pinning");
     platform_pinning::install_and_navigate(
         &notification_window,
         notification_bootstrap_url,
@@ -558,6 +570,42 @@ fn create_notification_window(
         builder.build()
     }?;
     configure_notification_window(&window)?;
+    Ok(window)
+}
+
+fn create_appearance_window(
+    app: &tauri::App,
+    origin: &tauri::Url,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let allowed_origin = origin.origin();
+    let app_handle = app.handle().clone();
+    let window = WebviewWindowBuilder::new(
+        app.handle(),
+        APPEARANCE_WINDOW_LABEL,
+        WebviewUrl::External("about:blank".parse().expect("valid bootstrap URL")),
+    )
+    .initialization_script(FETCH_SIGNER_SCRIPT)
+    .devtools(false)
+    .title("Lili Appearance")
+    .inner_size(APPEARANCE_WINDOW_WIDTH, APPEARANCE_WINDOW_HEIGHT)
+    .decorations(true)
+    .transparent(false)
+    .always_on_top(false)
+    .resizable(true)
+    .shadow(true)
+    .skip_taskbar(false)
+    .visible(false)
+    .focused(false)
+    .on_navigation(move |url| url.origin() == allowed_origin)
+    .build()?;
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            if let Some(window) = app_handle.get_webview_window(APPEARANCE_WINDOW_LABEL) {
+                let _ = window.hide();
+            }
+        }
+    });
     Ok(window)
 }
 
@@ -2461,6 +2509,13 @@ mod tests {
         );
         assert_eq!(TrayAction::parse("pet:bad\nvalue"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("unknown"), TrayAction::Unknown);
+    }
+
+    #[test]
+    fn appearance_window_uses_the_dedicated_normal_settings_contract() {
+        assert_eq!(APPEARANCE_WINDOW_LABEL, "appearance");
+        assert_eq!(APPEARANCE_WINDOW_WIDTH, 1_040.0);
+        assert_eq!(APPEARANCE_WINDOW_HEIGHT, 760.0);
     }
 
     #[test]
