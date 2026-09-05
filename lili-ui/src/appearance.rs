@@ -690,4 +690,47 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn appearance_markup_exposes_keyboard_and_selected_state_semantics() {
+        let selected_id = PetId::parse("lili").unwrap();
+        let alternate_id = PetId::parse("alternate").unwrap();
+        let html = view! {
+            <AppearancePage appearance=AppearanceView {
+                pets: vec![
+                    AppearancePetView {
+                        id: selected_id.clone(),
+                        display_name: "Lili".to_owned(),
+                        asset_id: "asset-id".to_owned(),
+                    },
+                    AppearancePetView {
+                        id: alternate_id,
+                        display_name: "Alternate".to_owned(),
+                        asset_id: "alternate-asset".to_owned(),
+                    },
+                ],
+                selected_pet_id: Some(selected_id),
+            }/>
+        }
+        .to_html();
+
+        assert!(html.contains("role=\"listbox\""));
+        assert_eq!(html.matches("role=\"option\"").count(), 2);
+        assert_eq!(html.matches("aria-selected=\"true\"").count(), 1);
+        assert_eq!(html.matches("aria-selected=\"false\"").count(), 1);
+        assert_eq!(html.matches("aria-pressed=").count(), 7);
+        assert!(html.contains("aria-live=\"polite\""));
+        assert!(html.contains("data-pet-id=\"alternate\""));
+    }
+
+    #[test]
+    fn appearance_css_has_wide_and_narrow_layout_guards() {
+        let css = include_str!("../../web/lili.css");
+        assert!(css.contains("grid-template-columns: 190px minmax(0, 1fr);"));
+        assert!(css.contains("grid-template-columns: minmax(0, 1fr) 300px;"));
+        assert!(css.contains("@media (max-width: 900px)"));
+        assert!(css.contains("@media (max-width: 560px)"));
+        assert!(css.contains(".appearance-scene-buttons {\n  display: flex;\n  flex-wrap: wrap;"));
+        assert!(css.contains("#lili-appearance.appearance-surface {\n    padding: 0;"));
+    }
 }
