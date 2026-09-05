@@ -94,6 +94,9 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
     <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="always-on-top">
       <span class="menu-mark" aria-hidden="true"></span><span>Always on Top</span>
     </button>
+    <button type="button" role="menuitem" data-action="settings">
+      <span class="menu-mark" aria-hidden="true"></span><span>Settings</span>
+    </button>
     <button type="button" role="menuitem" data-action="quit">
       <span class="menu-mark" aria-hidden="true"></span><span>Quit</span>
     </button>
@@ -878,13 +881,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        for action in ["show", "always-on-top", "quit"] {
+        for action in ["show", "always-on-top", "settings", "quit"] {
             assert!(body.contains(&format!("data-action=\"{action}\"")));
         }
-        for action in ["toggle-visibility", "hide", "settings", "diagnostics"] {
+        for action in ["toggle-visibility", "hide", "diagnostics"] {
             assert!(!body.contains(&format!("data-action=\"{action}\"")));
         }
-        assert_eq!(body.matches("data-action=").count(), 3);
+        assert_eq!(body.matches("data-action=").count(), 4);
         assert!(body.contains("height: 100%;"));
         assert!(body.contains("height: calc(100% - 48px);"));
         assert!(body.contains("overflow: hidden;"));

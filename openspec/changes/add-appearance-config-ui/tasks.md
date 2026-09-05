@@ -28,7 +28,7 @@
 ## 5. Desktop window and navigation lifecycle
 
 - [x] 5.1 Create the normal decorated Appearance settings WebView, navigate it through the pinned loopback bootstrap, and focus an existing window instead of creating duplicates; verify open, focus, close, and relaunch behavior on the desktop smoke path
-- [ ] 5.2 Add the `settings` action to the tray and Pet context menu while preserving existing Show, Always on Top, Pet selection, and Quit behavior; verify the settings action does not change transparent Pet or notification-window lifecycle semantics
+- [x] 5.2 Add the `settings` action to the tray and Pet context menu while preserving existing Show, Always on Top, Pet selection, and Quit behavior; verify the settings action does not change transparent Pet or notification-window lifecycle semantics
 - [ ] 5.3 Reconcile selected-Pet updates across the settings window, transparent Pet window, notification window, tray state, and persisted state; verify a selection made from either tray or Appearance produces one consistent active Pet after restart
 
 ## 6. Cross-platform acceptance and delivery

@@ -58,7 +58,7 @@ use tokio::sync::oneshot;
 const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 const CONTEXT_MENU_WINDOW_LABEL: &str = "pet-context-menu";
 const CONTEXT_MENU_WIDTH: u32 = 244;
-const CONTEXT_MENU_HEIGHT: u32 = 160;
+const CONTEXT_MENU_HEIGHT: u32 = 192;
 // Reserve transparent space around the WebView content so its CSS shadow remains visible.
 const CONTEXT_MENU_SHADOW_MARGIN: i32 = 24;
 #[cfg(any(test, target_os = "macos"))]
@@ -607,6 +607,15 @@ fn create_appearance_window(
         }
     });
     Ok(window)
+}
+
+fn open_appearance_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window(APPEARANCE_WINDOW_LABEL) else {
+        return Ok(false);
+    };
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 fn create_context_menu_window(
@@ -1903,6 +1912,9 @@ fn run_pet_context_action(
             let enabled = !actions.always_on_top.is_checked().unwrap_or(true);
             set_always_on_top(&app, &actions.state, &actions.always_on_top, enabled);
         }
+        TrayAction::Settings => {
+            open_appearance_window(&app)?;
+        }
         TrayAction::Quit => handle_application_tray_action(&app, TrayAction::Quit),
         TrayAction::SelectPet(_) | TrayAction::Unknown => {}
     }
@@ -2100,6 +2112,7 @@ fn build_tray_menu(
             &parts.window.always_on_top,
             &parts.pet.menu,
             &parts.utility.separator,
+            &parts.utility.settings,
             &parts.utility.quit,
         ],
     )?;
@@ -2178,13 +2191,19 @@ fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<Tra
 
 struct TrayUtilityItems {
     separator: PredefinedMenuItem<tauri::Wry>,
+    settings: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
 }
 
 fn build_tray_utility_items(app: &tauri::App) -> tauri::Result<TrayUtilityItems> {
     let separator = PredefinedMenuItem::separator(app)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    Ok(TrayUtilityItems { separator, quit })
+    Ok(TrayUtilityItems {
+        separator,
+        settings,
+        quit,
+    })
 }
 
 fn handle_tray_icon_event(
@@ -2226,7 +2245,7 @@ fn handle_tray_menu_event(
         TrayAction::SelectPet(pet_id) => {
             handle_pet_selection(app, state, pets_root, pet_items, visibility, &pet_id);
         }
-        TrayAction::Quit | TrayAction::Unknown => {
+        TrayAction::Settings | TrayAction::Quit | TrayAction::Unknown => {
             handle_application_tray_action(app, action);
         }
     }
@@ -2334,8 +2353,12 @@ fn handle_pet_selection(
 }
 
 fn handle_application_tray_action(app: &tauri::AppHandle, action: TrayAction) {
-    if action == TrayAction::Quit {
-        app.exit(0);
+    match action {
+        TrayAction::Settings => {
+            let _ = open_appearance_window(app);
+        }
+        TrayAction::Quit => app.exit(0),
+        _ => {}
     }
 }
 
@@ -2344,6 +2367,7 @@ enum TrayAction {
     Show,
     AlwaysOnTop,
     SelectPet(PetId),
+    Settings,
     Quit,
     Unknown,
 }
@@ -2353,6 +2377,7 @@ impl TrayAction {
         match id {
             "show" => Self::Show,
             "always-on-top" => Self::AlwaysOnTop,
+            "settings" => Self::Settings,
             "quit" => Self::Quit,
             _ => id
                 .strip_prefix("pet:")
@@ -2501,7 +2526,7 @@ mod tests {
         assert_eq!(TrayAction::parse("always-on-top"), TrayAction::AlwaysOnTop);
         assert_eq!(TrayAction::parse("toggle-visibility"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("hide"), TrayAction::Unknown);
-        assert_eq!(TrayAction::parse("settings"), TrayAction::Unknown);
+        assert_eq!(TrayAction::parse("settings"), TrayAction::Settings);
         assert_eq!(TrayAction::parse("diagnostics"), TrayAction::Unknown);
         assert_eq!(
             TrayAction::parse("pet:lili"),
