@@ -5,6 +5,7 @@ use std::{
 };
 
 use image::{ImageFormat, Rgba, RgbaImage};
+use lili_core::PetId;
 use lili_pet::{ATLAS_HEIGHT, ATLAS_WIDTH, PetCatalog};
 use serde::Deserialize;
 
@@ -120,6 +121,96 @@ fn run_fixture(fixture: &CompatibilityFixture) {
             catalog.diagnostics()
         );
     }
+}
+
+#[test]
+fn malformed_selected_package_falls_back_and_keeps_diagnostic() {
+    let temp = TempDir::new();
+    let package = temp.path().join("pets").join("broken");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("pet.json"),
+        r#"{"id":"broken","displayName":"Broken","description":"Fixture","spriteVersionNumber":1,"spritesheetPath":"spritesheet.webp"}"#,
+    )
+    .unwrap();
+    fs::write(package.join("spritesheet.webp"), b"not-an-image").unwrap();
+
+    let selected = PetId::parse("broken").unwrap();
+    let catalog = PetCatalog::load_with_selection(&temp.path().join("pets"), Some(&selected));
+
+    assert_eq!(catalog.active().definition().id().as_str(), "lili");
+    assert!(catalog.diagnostics().iter().any(|diagnostic| {
+        diagnostic
+            .package_dir()
+            .is_some_and(|path| path.ends_with("broken"))
+            && diagnostic.message().contains("spriteVersionNumber")
+    }));
+}
+
+#[test]
+fn duplicate_package_identifier_keeps_one_package_and_reports_the_other() {
+    let temp = TempDir::new();
+    let manifest = serde_json::json!({
+        "id": "duplicate",
+        "displayName": "Duplicate",
+        "description": "Fixture",
+        "spriteVersionNumber": 2,
+        "spritesheetPath": "spritesheet.webp"
+    });
+    for directory in ["duplicate-a", "duplicate-b"] {
+        let package = temp.path().join("pets").join(directory);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("pet.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        write_atlas(&package.join("spritesheet.webp"), AtlasKind::EmbeddedValid);
+    }
+
+    let catalog = PetCatalog::load(&temp.path().join("pets"));
+
+    assert_eq!(
+        catalog
+            .packages()
+            .iter()
+            .filter(|pet| pet.definition().id().as_str() == "duplicate")
+            .count(),
+        1
+    );
+    assert!(
+        catalog
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| { diagnostic.message().contains("duplicate pet identifier") })
+    );
+}
+
+#[test]
+fn removed_selected_package_falls_back_after_revalidation() {
+    let temp = TempDir::new();
+    let package = temp.path().join("pets").join("removed");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("pet.json"),
+        r#"{"id":"removed","displayName":"Removed","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+    )
+    .unwrap();
+    write_atlas(&package.join("spritesheet.webp"), AtlasKind::EmbeddedValid);
+
+    let selected = PetId::parse("removed").unwrap();
+    let initial = PetCatalog::load_with_selection(&temp.path().join("pets"), Some(&selected));
+    assert_eq!(initial.active().definition().id().as_str(), "removed");
+
+    fs::remove_file(package.join("spritesheet.webp")).unwrap();
+    let reloaded = PetCatalog::load_with_selection(&temp.path().join("pets"), Some(&selected));
+
+    assert_eq!(reloaded.active().definition().id().as_str(), "lili");
+    assert!(reloaded.diagnostics().iter().any(|diagnostic| {
+        diagnostic
+            .package_dir()
+            .is_some_and(|path| path.ends_with("removed"))
+    }));
 }
 
 fn write_atlas(path: &Path, kind: AtlasKind) {

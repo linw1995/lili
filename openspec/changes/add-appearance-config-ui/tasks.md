@@ -8,7 +8,7 @@
 
 - [x] 2.1 Implement a generation-scoped approved asset registry for every validated Pet package needed by Appearance; verify opaque identities resolve only to validated assets and never to renderer-supplied paths
 - [x] 2.2 Extract a shared native Pet-selection service used by the tray and Appearance mutation; verify it revalidates the package, persists only the Pet identifier, replaces the active approved asset, and publishes the updated presentation
-- [ ] 2.3 Cover missing, malformed, removed, and duplicate Pet packages at the selection boundary; verify the embedded fallback remains usable and package-specific diagnostics are retained
+- [x] 2.3 Cover missing, malformed, removed, and duplicate Pet packages at the selection boundary; verify the embedded fallback remains usable and package-specific diagnostics are retained
 
 ## 3. Loopback and server integration
 
