@@ -20,7 +20,7 @@ use lili_core::{
     DiagnosticPrivacy, PetPresentationState, diagnostic_privacy,
 };
 use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
-use lili_ui::{App, AppSurface};
+use lili_ui::{App, AppSurface, AppearancePage};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -474,18 +474,7 @@ async fn context_menu() -> Html<&'static str> {
 
 async fn appearance_shell(State(state): State<ServerState>) -> Html<String> {
     let appearance = state.app.appearance_view().await;
-    let app = view! {
-        <main
-            id="lili-appearance"
-            data-appearance-view=move || serde_json::to_string(&appearance).unwrap_or_default()
-        >
-            <nav aria-label="Settings sections">
-                <button type="button" aria-current="page">Pet</button>
-            </nav>
-            <h1>Appearance</h1>
-        </main>
-    }
-    .to_html();
+    let app = view! { <AppearancePage appearance/> }.to_html();
     Html(format_document(app))
 }
 
@@ -1062,8 +1051,10 @@ mod tests {
         assert!(body.contains("id=\"lili-appearance\""));
         assert!(body.contains("data-appearance-view="));
         assert!(body.contains("aria-current=\"page\""));
-        assert!(body.contains(">Pet</button>"));
-        assert!(body.contains("<h1>Appearance</h1>"));
+        assert!(body.contains("class=\"appearance-nav-button\""));
+        assert!(body.contains("Pet"));
+        assert!(body.contains("id=\"appearance-heading\""));
+        assert!(body.contains("Appearance"));
         assert!(!body.contains(">Notifications</button>"));
 
         let response = router

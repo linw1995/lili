@@ -1,4 +1,6 @@
 use leptos::prelude::*;
+#[cfg(feature = "hydrate")]
+use lili_core::AppearanceView;
 use lili_core::{
     PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
     PetPresentationState,
@@ -7,7 +9,9 @@ use lili_core::{
 use lili_pet::LookDirectionSelector;
 use lili_pet::{AnimationScheduler, AnimationState, FrameDescriptor, LookFrame};
 
+mod appearance;
 mod notification_carousel;
+pub use appearance::AppearancePage;
 use notification_carousel::NotificationCarousel;
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -1217,9 +1221,31 @@ thread_local! {
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn hydrate() {
-    let surface = web_sys::window()
+    let path = web_sys::window()
         .and_then(|window| window.location().pathname().ok())
-        .map_or(AppSurface::Pet, |path| AppSurface::from_path(&path));
+        .unwrap_or_default();
+    if path == "/appearance" {
+        let appearance = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id("lili-appearance"))
+            .and_then(|element| element.get_attribute("data-appearance-view"))
+            .and_then(|serialized| serde_json::from_str::<AppearanceView>(&serialized).ok())
+            .unwrap_or(AppearanceView {
+                pets: Vec::new(),
+                selected_pet_id: None,
+            });
+        leptos::mount::hydrate_body(move || {
+            view! { <AppearancePage appearance=appearance.clone()/> }
+        });
+        if let Some(app) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id("lili-appearance"))
+        {
+            let _ = app.set_attribute("data-hydrated", "true");
+        }
+        return;
+    }
+    let surface = AppSurface::from_path(&path);
     let presentation = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id("lili-app"))
