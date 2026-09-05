@@ -2,7 +2,7 @@ mod ingestion;
 mod persistence;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -17,7 +17,7 @@ use lili_core::{
     PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
     PetNotificationPresentation, PetPresentationState,
 };
-use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
+use lili_pet::{AtlasFormat, AvailablePet, PetCatalog, PetSummary};
 use lili_session::{
     NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
     PresentationState, ReductionOutcome, SessionEventKind, SessionReducer, SessionViewSnapshot,
@@ -67,6 +67,7 @@ pub struct AppState {
     settings: Arc<RwLock<UserSettings>>,
     session_reducer: Arc<Mutex<SessionReducer>>,
     pet_catalog: Arc<RwLock<PetCatalog>>,
+    approved_pet_assets: Arc<RwLock<ApprovedPetAssetCatalog>>,
     pet_asset: Arc<RwLock<ApprovedPetAsset>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
     action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
@@ -130,6 +131,68 @@ impl ApprovedPetAsset {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovedPetAssetCatalog {
+    generation: Uuid,
+    by_pet: Arc<HashMap<lili_core::PetId, String>>,
+    assets: Arc<HashMap<String, ApprovedPetAsset>>,
+}
+
+impl ApprovedPetAssetCatalog {
+    pub fn generation(&self) -> Uuid {
+        self.generation
+    }
+
+    pub fn asset_id_for_pet(&self, pet_id: &lili_core::PetId) -> Option<&str> {
+        self.by_pet.get(pet_id).map(String::as_str)
+    }
+
+    pub fn asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
+        self.assets.get(asset_id).cloned()
+    }
+
+    pub fn asset_count(&self) -> usize {
+        self.assets.len()
+    }
+
+    fn from_catalog(pet_catalog: &PetCatalog) -> Self {
+        let mut candidates = HashMap::new();
+        let fallback = PetCatalog::default().active().clone();
+        candidates.insert(fallback.definition().id().clone(), fallback);
+        for pet in pet_catalog.packages() {
+            candidates.insert(pet.definition().id().clone(), pet.clone());
+        }
+        candidates.insert(
+            pet_catalog.active().definition().id().clone(),
+            pet_catalog.active().clone(),
+        );
+
+        let generation = Uuid::new_v4();
+        let mut by_pet = HashMap::with_capacity(candidates.len());
+        let mut assets = HashMap::with_capacity(candidates.len());
+        for (pet_id, pet) in candidates {
+            let Ok(asset) = approved_asset(&pet) else {
+                continue;
+            };
+            let asset_id = format!("{}-{}", generation.simple(), Uuid::new_v4().simple());
+            by_pet.insert(pet_id, asset_id.clone());
+            assets.insert(
+                asset_id.clone(),
+                ApprovedPetAsset {
+                    id: asset_id,
+                    ..asset
+                },
+            );
+        }
+
+        Self {
+            generation,
+            by_pet: Arc::new(by_pet),
+            assets: Arc::new(assets),
+        }
+    }
+}
+
 impl AppState {
     pub fn with_pet_catalog(pet_catalog: PetCatalog) -> Self {
         Self::with_reducer(pet_catalog, SessionReducer::default())
@@ -144,7 +207,7 @@ impl AppState {
     }
 
     fn with_reducer(pet_catalog: PetCatalog, reducer: SessionReducer) -> Self {
-        let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
+        let (pet_catalog, approved_pet_assets, pet_asset) = load_active_asset(pet_catalog);
         let selected_pet = Some(PetSummary::from(pet_catalog.active().definition()));
         let pet_asset_id = Some(pet_asset.id().to_owned());
         let session_state = reducer.snapshot();
@@ -162,6 +225,7 @@ impl AppState {
             settings: Arc::new(RwLock::new(UserSettings::default())),
             session_reducer: Arc::new(Mutex::new(reducer)),
             pet_catalog: Arc::new(RwLock::new(pet_catalog)),
+            approved_pet_assets: Arc::new(RwLock::new(approved_pet_assets)),
             pet_asset: Arc::new(RwLock::new(pet_asset)),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
             action_feedback: Arc::new(RwLock::new(None)),
@@ -177,15 +241,19 @@ impl AppState {
     }
 
     pub async fn approved_pet_asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
-        let asset = self.pet_asset.read().await;
-        (asset.id() == asset_id).then(|| asset.clone())
+        self.approved_pet_assets.read().await.asset(asset_id)
+    }
+
+    pub async fn approved_pet_assets(&self) -> ApprovedPetAssetCatalog {
+        self.approved_pet_assets.read().await.clone()
     }
 
     pub async fn replace_pet_catalog(&self, pet_catalog: PetCatalog) -> PetSummary {
-        let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
+        let (pet_catalog, approved_pet_assets, pet_asset) = load_active_asset(pet_catalog);
         let selected_pet = PetSummary::from(pet_catalog.active().definition());
         let pet_asset_id = pet_asset.id().to_owned();
         *self.pet_catalog.write().await = pet_catalog;
+        *self.approved_pet_assets.write().await = approved_pet_assets;
         *self.pet_asset.write().await = pet_asset;
         {
             let mut snapshot = self.snapshot.write().await;
@@ -661,20 +729,30 @@ fn presentation_from_view(
     }
 }
 
-fn load_active_asset(pet_catalog: PetCatalog) -> (PetCatalog, ApprovedPetAsset) {
-    if let Ok(asset) = approved_asset(&pet_catalog) {
-        return (pet_catalog, asset);
+fn load_active_asset(
+    pet_catalog: PetCatalog,
+) -> (PetCatalog, ApprovedPetAssetCatalog, ApprovedPetAsset) {
+    let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&pet_catalog);
+    if let Some(asset_id) =
+        approved_pet_assets.asset_id_for_pet(pet_catalog.active().definition().id())
+        && let Some(asset) = approved_pet_assets.asset(asset_id)
+    {
+        return (pet_catalog, approved_pet_assets, asset);
     }
 
     let fallback = PetCatalog::default();
-    let asset = approved_asset(&fallback).expect("embedded fallback asset must remain valid");
-    (fallback, asset)
+    let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&fallback);
+    let asset_id = approved_pet_assets
+        .asset_id_for_pet(fallback.active().definition().id())
+        .expect("embedded fallback asset must remain approved");
+    let asset = approved_pet_assets
+        .asset(asset_id)
+        .expect("embedded fallback asset must resolve");
+    (fallback, approved_pet_assets, asset)
 }
 
-fn approved_asset(
-    pet_catalog: &PetCatalog,
-) -> Result<ApprovedPetAsset, lili_pet::AtlasValidationError> {
-    let loaded = pet_catalog.active().load_asset()?;
+fn approved_asset(pet: &AvailablePet) -> Result<ApprovedPetAsset, lili_pet::AtlasValidationError> {
+    let loaded = pet.load_asset()?;
     let content_type = match loaded.atlas().format() {
         AtlasFormat::Png => "image/png",
         AtlasFormat::WebP => "image/webp",
@@ -720,6 +798,29 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("action audit did not reach the expected length");
+    }
+
+    #[tokio::test]
+    async fn approved_pet_asset_registry_is_generation_scoped_and_path_opaque() {
+        let state = AppState::default();
+        let selected = lili_core::PetId::parse("lili").unwrap();
+        let first = state.approved_pet_assets().await;
+        let first_asset_id = first.asset_id_for_pet(&selected).unwrap().to_owned();
+
+        assert_eq!(first.asset_count(), 1);
+        assert!(first.asset(&first_asset_id).is_some());
+        assert!(
+            first
+                .asset("../../application-data/spritesheet.webp")
+                .is_none()
+        );
+
+        state.replace_pet_catalog(PetCatalog::default()).await;
+        let second = state.approved_pet_assets().await;
+
+        assert_ne!(first.generation(), second.generation());
+        assert!(second.asset(&first_asset_id).is_none());
+        assert!(second.asset_id_for_pet(&selected).is_some());
     }
 
     #[tokio::test]
