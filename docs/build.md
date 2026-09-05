@@ -34,7 +34,13 @@ The command runs the supported Codex matrix gate, creates the platform-standard 
 
 The Web application and Tauri desktop are supported on X11 and on Wayland compositors that implement the layer, activation, tray, transparency, and pointer behavior used by GTK/WebKit. Run `nix run .#linux-acceptance` inside a graphical session to validate the installed compositor and desktop environment.
 
+The Linux packaged acceptance also checks the decorated Appearance window, loopback-signed Pet selection, approved asset delivery, window focus/close/reopen behavior, persistence, and clean shutdown. It records compositor limitations and the observed physical DPI scale instead of bypassing them.
+
 Linux window managers remain authoritative. A compositor may ignore always-on-top hints, omit the legacy tray protocol, restrict programmatic window positioning, or render transparent windows differently. Lili treats these as compositor capabilities: session ingestion and the Web application remain available, while unavailable desktop affordances are reported by acceptance instead of bypassing compositor policy. Headless CI must provide a virtual X11 session and a tray host.
+
+### Windows desktop support
+
+Run `nix run .#windows-acceptance` on a graphical Windows host to validate the packaged Appearance window, loopback-signed Pet selection, approved atlas delivery, focus/close/reopen behavior, selected-Pet persistence, and clean shutdown. The acceptance runner records the observed DPI-scaled placement and keeps process-tree and window-contract failures bounded through the persisted acceptance result.
 
 ### Toolchain and version ownership
 

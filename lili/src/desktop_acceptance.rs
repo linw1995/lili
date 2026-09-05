@@ -2,6 +2,7 @@ use std::sync::{
     Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use lili_actions::ActionExecutionOutcome;
 use lili_app_state::AppState;
@@ -176,6 +177,12 @@ pub async fn complete_desktop_acceptance(
         .get_webview_window(crate::APPEARANCE_WINDOW_LABEL)
         .is_some_and(|appearance| appearance.is_visible().is_ok_and(|visible| visible));
     let appearance_window_contract = appearance_window_contract(&app);
+    let appearance_selection_contract = match (app_state.as_ref(), application_paths.as_ref()) {
+        (Some(state), Some(application_paths)) => {
+            appearance_selection_contract(&app, state, application_paths).await
+        }
+        _ => false,
+    };
     let selected_pet_contract = match (app_state.as_ref(), application_paths.as_ref()) {
         (Some(state), Some(application_paths)) => {
             selected_pet_persistence_contract(state, application_paths).await
@@ -183,7 +190,7 @@ pub async fn complete_desktop_acceptance(
         _ => false,
     };
     eprintln!(
-        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} selectedPet={selected_pet_contract}"
+        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} appearanceSelection={appearance_selection_contract} selectedPet={selected_pet_contract}"
     );
     let passed = cfg!(any(
         target_os = "macos",
@@ -205,6 +212,7 @@ pub async fn complete_desktop_acceptance(
         && context_menu_settings_contract
         && tray_settings_contract
         && appearance_window_contract
+        && appearance_selection_contract
         && selected_pet_contract;
     let result_recorded = match application_paths {
         Some(application_paths) => std::fs::write(
@@ -276,6 +284,53 @@ async fn selected_pet_persistence_contract(
         == Some(selected.clone());
     let after_session = state.snapshot().await.session_state;
     persisted && before_session == after_session && PetId::parse(selected.as_str()).is_some()
+}
+
+async fn appearance_selection_contract(
+    app: &AppHandle,
+    state: &AppState,
+    application_paths: &ApplicationPaths,
+) -> bool {
+    let Some(window) = app.get_webview_window(crate::APPEARANCE_WINDOW_LABEL) else {
+        return false;
+    };
+    if crate::open_appearance_window(app) != Ok(true) {
+        return false;
+    }
+    let before = state.snapshot().await;
+    if window
+        .eval(
+            r#"(() => {
+                const option = document.querySelector('#lili-appearance [role="option"]');
+                if (option instanceof HTMLButtonElement) option.click();
+            })();"#,
+        )
+        .is_err()
+    {
+        let _ = window.hide();
+        return false;
+    }
+
+    let store = lili_app_state::AppStateStore::for_application(application_paths.clone());
+    let selected = state.appearance_view().await.selected_pet_id;
+    let mut published_new_asset = false;
+    for _ in 0..40 {
+        let current = state.snapshot().await;
+        if current.pet_asset_id.as_ref() != before.pet_asset_id.as_ref() {
+            published_new_asset = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let persisted = store
+        .load()
+        .ok()
+        .flatten()
+        .and_then(|state| state.selected_pet_id().cloned())
+        == selected;
+    let after = state.snapshot().await;
+    let _ = window.hide();
+    published_new_asset && persisted && after.session_state == before.session_state
 }
 
 fn expected_action_id() -> &'static str {

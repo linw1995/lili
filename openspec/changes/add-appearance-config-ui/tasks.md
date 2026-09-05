@@ -35,5 +35,5 @@
 
 - [x] 6.1 Add browser fixture scenarios for the initial Idle preview, all seven scene controls, every available Pet selection, fallback behavior, keyboard access, and preview isolation; verify the fixture suite passes with strict console diagnostics
 - [x] 6.2 Add packaged macOS acceptance for the Appearance window, loopback certificate pinning, tray/context-menu launch, window focus, selected-Pet persistence, and clean shutdown; verify existing non-activating Pet behavior remains intact
-- [ ] 6.3 Add packaged Windows and supported Linux acceptance for Appearance navigation, signed selection, asset delivery, window lifecycle, and documented compositor/DPI behavior; verify platform-specific failures remain bounded and diagnosable
+- [x] 6.3 Add packaged Windows and supported Linux acceptance for Appearance navigation, signed selection, asset delivery, window lifecycle, and documented compositor/DPI behavior; verify platform-specific failures remain bounded and diagnosable
 - [ ] 6.4 Run formatting, Clippy with warnings denied, workspace tests, browser E2E, OpenSpec strict validation, and release packaging; verify the saved design assets are included in the intended source tree and no unrelated lockfile or dependency changes are introduced
