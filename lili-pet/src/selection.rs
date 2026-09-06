@@ -176,6 +176,12 @@ impl PetCatalog {
         &self.active
     }
 
+    pub fn with_active(mut self, active: AvailablePet) -> Self {
+        self.requested_identifier = active.definition().id().as_str().to_owned();
+        self.active = active;
+        self
+    }
+
     pub fn packages(&self) -> &[AvailablePet] {
         &self.packages
     }
