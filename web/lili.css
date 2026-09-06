@@ -355,7 +355,7 @@ html:not([data-notification-placement="below"])
   display: block;
   min-height: 100vh;
   overflow: auto;
-  padding: 12px;
+  padding: 32px 48px 64px;
   background: transparent;
   color: var(--appearance-text);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
@@ -377,7 +377,7 @@ html:not([data-notification-placement="below"])
 
 .appearance-window-frame {
   display: flex;
-  min-height: calc(100vh - 24px);
+  min-height: calc(100vh - 96px);
   flex-direction: column;
   overflow: visible;
   border: 1px solid var(--appearance-line-strong);
@@ -960,7 +960,7 @@ html:not([data-notification-placement="below"])
 
 @media (max-width: 900px) {
   #lili-appearance.appearance-surface {
-    padding: 14px;
+    padding: 32px 48px 64px;
   }
 
   .appearance-body {
@@ -1000,6 +1000,7 @@ html:not([data-notification-placement="below"])
   }
 
   .appearance-window-frame {
+    min-height: 100vh;
     border-right: 0;
     border-left: 0;
     border-radius: 0;

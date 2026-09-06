@@ -850,7 +850,8 @@ mod tests {
         assert!(css.contains(".appearance-topbar-leading {"));
         assert!(css.contains("overflow: visible;"));
         assert!(css.contains("border-radius: 0 0 19px 19px;"));
-        assert!(css.contains("min-height: calc(100vh - 24px);"));
+        assert!(css.contains("min-height: calc(100vh - 96px);"));
+        assert!(css.contains("padding: 32px 48px 64px;"));
         assert!(css.contains("@keyframes appearance-idle-preview"));
         assert!(css.contains(".notification-card {"));
         assert!(css.contains(".notification-card-preview"));
