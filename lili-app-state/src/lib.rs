@@ -348,28 +348,41 @@ impl AppState {
         store: Option<&AppStateStore>,
     ) -> Result<PetSummary, PetSelectionError> {
         let _selection_guard = self.pet_selection_lock.lock().await;
-        let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
-        if catalog.active().definition().id() != pet_id {
-            return Err(PetSelectionError::Unavailable);
-        }
-        let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&catalog);
-        let asset_id = approved_pet_assets
-            .asset_id_for_pet(pet_id)
-            .map(str::to_owned)
-            .ok_or(PetSelectionError::Unavailable)?;
-        let pet_asset = approved_pet_assets
-            .asset(&asset_id)
-            .and_then(|asset| asset.load().ok())
-            .ok_or(PetSelectionError::Unavailable)?;
-        if let Some(store) = store {
-            let persistent = self
-                .persistent_state(None)
-                .await
-                .with_selected_pet_id(Some(pet_id.clone()));
-            store
-                .save_selected_pet(&persistent)
-                .map_err(PetSelectionError::Persistence)?;
-        }
+        let selected_pet_id = pet_id.clone();
+        let persistent = if store.is_some() {
+            Some(
+                self.persistent_state(None)
+                    .await
+                    .with_selected_pet_id(Some(selected_pet_id.clone())),
+            )
+        } else {
+            None
+        };
+        let pets_root = pets_root.to_owned();
+        let store = store.cloned();
+        let (catalog, approved_pet_assets, pet_asset) = tokio::task::spawn_blocking(move || {
+            let catalog = PetCatalog::load_with_selection(&pets_root, Some(&selected_pet_id));
+            if catalog.active().definition().id() != &selected_pet_id {
+                return Err(PetSelectionError::Unavailable);
+            }
+            let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&catalog);
+            let asset_id = approved_pet_assets
+                .asset_id_for_pet(&selected_pet_id)
+                .map(str::to_owned)
+                .ok_or(PetSelectionError::Unavailable)?;
+            let pet_asset = approved_pet_assets
+                .asset(&asset_id)
+                .and_then(|asset| asset.load().ok())
+                .ok_or(PetSelectionError::Unavailable)?;
+            if let (Some(store), Some(persistent)) = (store.as_ref(), persistent.as_ref()) {
+                store
+                    .save_selected_pet(persistent)
+                    .map_err(PetSelectionError::Persistence)?;
+            }
+            Ok((catalog, approved_pet_assets, pet_asset))
+        })
+        .await
+        .map_err(|_| PetSelectionError::Unavailable)??;
         Ok(self
             .replace_pet_catalog_with_assets(catalog, approved_pet_assets, pet_asset)
             .await)
