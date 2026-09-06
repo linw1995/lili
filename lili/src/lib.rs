@@ -72,6 +72,14 @@ const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const APPEARANCE_WINDOW_LABEL: &str = "appearance";
 const APPEARANCE_WINDOW_WIDTH: f64 = 1_180.0;
 const APPEARANCE_WINDOW_HEIGHT: f64 = 860.0;
+const APPEARANCE_WINDOW_SHOWN_SCRIPT: &str = r#"
+window.__LILI_APPEARANCE_VISIBLE__ = true;
+window.dispatchEvent(new Event('lili-appearance-shown'));
+"#;
+const APPEARANCE_WINDOW_HIDDEN_SCRIPT: &str = r#"
+window.__LILI_APPEARANCE_VISIBLE__ = false;
+window.dispatchEvent(new Event('lili-appearance-hidden'));
+"#;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 const DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 document.addEventListener('contextmenu', (event) => {
@@ -601,6 +609,14 @@ fn create_appearance_window(
     .skip_taskbar(false)
     .visible(false)
     .focused(false)
+    .on_page_load(move |window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            && payload.url().path() == "/appearance"
+            && window.is_visible().unwrap_or(false)
+        {
+            let _ = window.eval(APPEARANCE_WINDOW_SHOWN_SCRIPT);
+        }
+    })
     .on_navigation(move |url| url.origin() == allowed_origin)
     .build()?;
     configure_appearance_window(&window)?;
@@ -608,6 +624,7 @@ fn create_appearance_window(
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             if let Some(window) = app_handle.get_webview_window(APPEARANCE_WINDOW_LABEL) {
+                let _ = window.eval(APPEARANCE_WINDOW_HIDDEN_SCRIPT);
                 let _ = window.hide();
             }
         }
@@ -621,6 +638,7 @@ fn open_appearance_window(app: &tauri::AppHandle) -> Result<bool, String> {
     };
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
+    let _ = window.eval(APPEARANCE_WINDOW_SHOWN_SCRIPT);
     Ok(true)
 }
 
@@ -2574,6 +2592,8 @@ mod tests {
         assert_eq!(APPEARANCE_WINDOW_LABEL, "appearance");
         assert_eq!(APPEARANCE_WINDOW_WIDTH, 1_180.0);
         assert_eq!(APPEARANCE_WINDOW_HEIGHT, 860.0);
+        assert!(APPEARANCE_WINDOW_SHOWN_SCRIPT.contains("lili-appearance-shown"));
+        assert!(APPEARANCE_WINDOW_HIDDEN_SCRIPT.contains("lili-appearance-hidden"));
     }
 
     #[test]

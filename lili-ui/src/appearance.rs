@@ -24,6 +24,14 @@ export function closeAppearanceWindow() {
   appearanceWindowInvoke('close');
 }
 
+export function appearanceWindowIsNative() {
+  return Boolean(window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label);
+}
+
+export function appearanceWindowIsVisible() {
+  return window.__LILI_APPEARANCE_VISIBLE__ === true;
+}
+
 export function installAppearanceSelectionBoundary() {
   const root = document.getElementById('lili-appearance');
   if (!root || root.dataset.appearanceSelectionBoundary === 'true') return;
@@ -86,6 +94,12 @@ extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = closeAppearanceWindow)]
     fn close_appearance_window();
 
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = appearanceWindowIsNative)]
+    fn appearance_window_is_native() -> bool;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = appearanceWindowIsVisible)]
+    fn appearance_window_is_visible() -> bool;
+
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = installAppearanceSelectionBoundary)]
     fn install_appearance_selection_boundary_js();
 }
@@ -113,10 +127,19 @@ struct AppearanceRefreshClock {
 }
 
 #[cfg(feature = "hydrate")]
+struct AppearanceLifecycle {
+    _visibility_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    _shown_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    _hidden_callback: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+}
+
+#[cfg(feature = "hydrate")]
 thread_local! {
     static APPEARANCE_CLOCK: std::cell::RefCell<Option<AppearanceClock>> =
         const { std::cell::RefCell::new(None) };
     static APPEARANCE_REFRESH_CLOCK: std::cell::RefCell<Option<AppearanceRefreshClock>> =
+        const { std::cell::RefCell::new(None) };
+    static APPEARANCE_LIFECYCLE: std::cell::RefCell<Option<AppearanceLifecycle>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -131,9 +154,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let preview_wall_clock = RwSignal::new(0_u64);
     let preview_reduced_motion = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
-    start_appearance_selection_refresh(appearance, selection_in_flight);
-    #[cfg(feature = "hydrate")]
-    start_appearance_preview_clock(preview, preview_frame);
+    start_appearance_lifecycle(appearance, selection_in_flight, preview, preview_frame);
     let initial_appearance = appearance.get_untracked();
     let serialized_appearance = serde_json::to_string(&initial_appearance).unwrap_or_default();
     let selected_asset_url = move || {
@@ -532,6 +553,99 @@ const fn scene_glyph(scene: PreviewScene) -> &'static str {
         PreviewScene::Waiting => "◷",
         PreviewScene::Click => "✦",
     }
+}
+
+#[cfg(feature = "hydrate")]
+fn start_appearance_lifecycle(
+    appearance: RwSignal<AppearanceView>,
+    selection_in_flight: RwSignal<bool>,
+    preview: RwSignal<AppearancePreviewController>,
+    preview_frame: RwSignal<FrameDescriptor>,
+) {
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    if APPEARANCE_LIFECYCLE.with(|lifecycle| lifecycle.borrow().is_some()) {
+        return;
+    }
+
+    let mut lifecycle = AppearanceLifecycle {
+        _visibility_callback: None,
+        _shown_callback: None,
+        _hidden_callback: None,
+    };
+    if appearance_window_is_native() {
+        let shown_callback = Closure::<dyn FnMut()>::new(move || {
+            start_appearance_preview_clock(preview, preview_frame);
+            start_appearance_selection_refresh(appearance, selection_in_flight);
+        });
+        let hidden_callback = Closure::<dyn FnMut()>::new(move || {
+            stop_appearance_preview_clock();
+            stop_appearance_selection_refresh();
+        });
+        let _ = window.add_event_listener_with_callback(
+            "lili-appearance-shown",
+            shown_callback.as_ref().unchecked_ref(),
+        );
+        let _ = window.add_event_listener_with_callback(
+            "lili-appearance-hidden",
+            hidden_callback.as_ref().unchecked_ref(),
+        );
+        lifecycle._shown_callback = Some(shown_callback);
+        lifecycle._hidden_callback = Some(hidden_callback);
+        if appearance_window_is_visible() {
+            start_appearance_preview_clock(preview, preview_frame);
+            start_appearance_selection_refresh(appearance, selection_in_flight);
+        }
+    } else {
+        let visibility_callback = Closure::<dyn FnMut()>::new({
+            let document = document.clone();
+            move || {
+                if document.hidden() {
+                    stop_appearance_preview_clock();
+                    stop_appearance_selection_refresh();
+                } else {
+                    start_appearance_preview_clock(preview, preview_frame);
+                    start_appearance_selection_refresh(appearance, selection_in_flight);
+                }
+            }
+        });
+        let _ = document.add_event_listener_with_callback(
+            "visibilitychange",
+            visibility_callback.as_ref().unchecked_ref(),
+        );
+        lifecycle._visibility_callback = Some(visibility_callback);
+        if !document.hidden() {
+            start_appearance_preview_clock(preview, preview_frame);
+            start_appearance_selection_refresh(appearance, selection_in_flight);
+        }
+    }
+    APPEARANCE_LIFECYCLE.with(|stored| {
+        stored.borrow_mut().replace(lifecycle);
+    });
+}
+
+#[cfg(feature = "hydrate")]
+fn stop_appearance_preview_clock() {
+    APPEARANCE_CLOCK.with(|clock| {
+        if let Some(clock) = clock.borrow_mut().take() {
+            clock.window.clear_interval_with_handle(clock.interval_id);
+        }
+    });
+}
+
+#[cfg(feature = "hydrate")]
+fn stop_appearance_selection_refresh() {
+    APPEARANCE_REFRESH_CLOCK.with(|clock| {
+        if let Some(clock) = clock.borrow_mut().take() {
+            clock.window.clear_interval_with_handle(clock.interval_id);
+        }
+    });
 }
 
 #[cfg(feature = "hydrate")]
