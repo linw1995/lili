@@ -180,7 +180,10 @@ pub fn parse_pet_manifest(payload: &[u8]) -> Result<PetManifest, PetManifestErro
 
 fn validate_manifest(manifest: &PetManifest) -> Result<(), PetManifestError> {
     PetId::parse(manifest.id()).ok_or(PetManifestError::InvalidIdentifier)?;
-    if manifest.display_name().trim().is_empty() || manifest.display_name().len() > 128 {
+    if manifest.display_name().trim().is_empty()
+        || manifest.display_name().len() > 128
+        || manifest.display_name().chars().any(char::is_control)
+    {
         return Err(PetManifestError::InvalidDisplayName);
     }
     if manifest.description().len() > 512 {
@@ -200,7 +203,7 @@ pub enum PetManifestError {
     Malformed,
     #[error("pet identifier is invalid")]
     InvalidIdentifier,
-    #[error("display name is empty or exceeds 128 bytes")]
+    #[error("display name is empty, contains control characters, or exceeds 128 bytes")]
     InvalidDisplayName,
     #[error("description exceeds 512 bytes")]
     InvalidDescription,
@@ -316,6 +319,16 @@ mod tests {
         assert_eq!(report.packages().len(), 1);
         assert!(report.issues().is_empty());
         assert_eq!(report.packages()[0].manifest().id(), "valid");
+    }
+
+    #[test]
+    fn rejects_control_characters_in_display_name() {
+        let payload = br#"{"id":"valid","displayName":"Work\nPet","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#;
+
+        assert_eq!(
+            parse_pet_manifest(payload),
+            Err(PetManifestError::InvalidDisplayName)
+        );
     }
 
     #[test]
