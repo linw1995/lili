@@ -271,8 +271,17 @@ impl AppState {
     }
 
     pub async fn approved_pet_asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
+        let active_asset = self.pet_asset.read().await;
+        if active_asset.id() == asset_id {
+            return Some(active_asset.clone());
+        }
+        drop(active_asset);
+
         let asset = self.approved_pet_assets.read().await.asset(asset_id)?;
-        asset.load().ok()
+        tokio::task::spawn_blocking(move || asset.load())
+            .await
+            .ok()?
+            .ok()
     }
 
     pub async fn approved_pet_assets(&self) -> ApprovedPetAssetCatalog {
@@ -932,6 +941,35 @@ mod tests {
         assert_ne!(first.generation(), second.generation());
         assert!(second.asset(&first_asset_id).is_none());
         assert!(second.asset_id_for_pet(&selected).is_some());
+    }
+
+    #[tokio::test]
+    async fn active_pet_asset_uses_retained_bytes_after_source_changes() {
+        let root = std::env::temp_dir().join(format!("lili-pet-asset-retained-{}", Uuid::new_v4()));
+        let package_dir = root.join("pets").join("lili");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(
+            package_dir.join("pet.json"),
+            r#"{"id":"lili","displayName":"Lili","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state.snapshot().await.pet_asset_id.unwrap();
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .await
+            .unwrap();
+        std::fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let state = AppState::with_pet_catalog(PetCatalog::load(&root));
+        let asset_id = state.snapshot().await.pet_asset_id.unwrap();
+        let retained = state.approved_pet_asset(&asset_id).await.unwrap();
+        std::fs::remove_file(package_dir.join("spritesheet.webp")).unwrap();
+
+        let served = state.approved_pet_asset(&asset_id).await.unwrap();
+        assert_eq!(served, retained);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
