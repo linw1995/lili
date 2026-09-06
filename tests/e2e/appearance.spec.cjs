@@ -107,19 +107,6 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   await expect(page.locator("[role=option]")).toHaveCount(1);
   await expect(page.locator("[role=option][aria-selected=true]")).toHaveCount(1);
   await expect(page.locator("#lili-appearance")).not.toContainText("Active pet");
-  await expect(page.locator("#lili-appearance")).toHaveCSS("user-select", "none");
-  const selectableCopy = page.locator(".appearance-pet-item-copy").first();
-  await expect(selectableCopy).toHaveCSS("user-select", "text");
-  const selectableCopyText = await selectableCopy.innerText();
-  await selectableCopy.selectText();
-  const selectedText = await page.evaluate(() => {
-    const selection = window.getSelection();
-    return selection?.toString() ?? "";
-  });
-  expect(selectedText).toBe(selectableCopyText);
-  expect(selectedText).not.toContain("Installed pets");
-  expect(selectedText).not.toContain("✓");
-  await page.evaluate(() => window.getSelection()?.removeAllRanges());
 
   const scene = page.locator(".appearance-scene-button[data-scene='review']");
   await scene.focus();
@@ -147,6 +134,56 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   );
 
   await expectNoHorizontalClipping(page);
+});
+
+test("Appearance keeps text selection inside its own container", async ({
+  page,
+}) => {
+  await openAppearance(page);
+
+  await expect(page.locator("#lili-appearance")).toHaveCSS("user-select", "none");
+  const selectableCopy = page.locator(".appearance-pet-item-copy").first();
+  await expect(selectableCopy).toHaveCSS("user-select", "text");
+  const selectableHeading = page.locator("#appearance-heading");
+  await expect(selectableHeading).toHaveCSS("user-select", "text");
+  const selectableCopyText = await selectableCopy.innerText();
+  const selectableHeadingText = await selectableHeading.innerText();
+  const headingBox = await selectableHeading.boundingBox();
+  const copyBox = await selectableCopy.boundingBox();
+  if (!headingBox || !copyBox) {
+    throw new Error("selectable text containers must be measurable");
+  }
+  await page.mouse.move(headingBox.x + 1, headingBox.y + headingBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    copyBox.x + copyBox.width - 1,
+    copyBox.y + copyBox.height - 1,
+  );
+  await page.mouse.up();
+  const selectedText = await page.evaluate(() => {
+    const selection = window.getSelection();
+    return selection?.toString() ?? "";
+  });
+  expect(selectedText).toContain(selectableHeadingText);
+  expect(selectedText).not.toContain(selectableCopyText);
+  expect(selectedText).not.toContain("Live preview");
+  expect(selectedText).not.toContain("✓");
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+
+  await page.mouse.move(
+    copyBox.x + copyBox.width - 1,
+    copyBox.y + copyBox.height - 1,
+  );
+  await page.mouse.down();
+  await page.mouse.move(headingBox.x + headingBox.width - 1, headingBox.y + 1);
+  await page.mouse.up();
+  const reverseSelectedText = await page.evaluate(() => {
+    const selection = window.getSelection();
+    return selection?.toString() ?? "";
+  });
+  expect(reverseSelectedText).toContain(selectableCopyText);
+  expect(reverseSelectedText).not.toContain(selectableHeadingText);
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
 });
 
 test("each Pet list entry shows its idle atlas preview", async ({ page }) => {

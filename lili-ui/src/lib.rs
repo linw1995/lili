@@ -12,6 +12,8 @@ use lili_pet::{AnimationScheduler, AnimationState, FrameDescriptor, LookFrame};
 mod appearance;
 mod notification_carousel;
 pub use appearance::AppearancePage;
+#[cfg(feature = "hydrate")]
+use appearance::install_appearance_selection_boundary;
 use notification_carousel::NotificationCarousel;
 
 #[cfg(any(test, feature = "hydrate"))]
@@ -1237,6 +1239,7 @@ pub fn hydrate() {
         leptos::mount::hydrate_body(move || {
             view! { <AppearancePage appearance=appearance.clone()/> }
         });
+        install_appearance_selection_boundary();
         if let Some(app) = web_sys::window()
             .and_then(|window| window.document())
             .and_then(|document| document.get_element_by_id("lili-appearance"))

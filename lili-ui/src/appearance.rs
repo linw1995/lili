@@ -23,14 +23,80 @@ function appearanceWindowInvoke(command) {
 export function closeAppearanceWindow() {
   appearanceWindowInvoke('close');
 }
+
+export function installAppearanceSelectionBoundary() {
+  const root = document.getElementById('lili-appearance');
+  if (!root || root.dataset.appearanceSelectionBoundary === 'true') return;
+
+  let selectionScope = null;
+  const scopeFor = (target) => {
+    const element = target instanceof Element ? target : target?.parentElement;
+    const scope = element?.closest?.('.appearance-selectable') ?? null;
+    return scope && root.contains(scope) ? scope : null;
+  };
+
+  const rememberScope = (event) => {
+    const scope = scopeFor(event.target);
+    if (scope || event.type === 'pointerdown') {
+      selectionScope = scope;
+    }
+  };
+
+  const boundSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || !selectionScope || selection.rangeCount === 0 || selection.isCollapsed) {
+      return;
+    }
+    if (!root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) {
+      selectionScope = null;
+      return;
+    }
+
+    // Desktop WebViews do not consistently support user-select: contain, so clamp the live range here.
+    const range = selection.getRangeAt(0);
+    const scopeRange = document.createRange();
+    scopeRange.selectNodeContents(selectionScope);
+    const boundedRange = range.cloneRange();
+    let changed = false;
+
+    if (range.compareBoundaryPoints(Range.START_TO_START, scopeRange) < 0) {
+      boundedRange.setStart(scopeRange.startContainer, scopeRange.startOffset);
+      changed = true;
+    }
+    if (range.compareBoundaryPoints(Range.END_TO_END, scopeRange) > 0) {
+      boundedRange.setEnd(scopeRange.endContainer, scopeRange.endOffset);
+      changed = true;
+    }
+
+    if (changed) {
+      selection.removeAllRanges();
+      if (!boundedRange.collapsed) {
+        selection.addRange(boundedRange);
+      }
+    }
+  };
+
+  root.addEventListener('pointerdown', rememberScope, true);
+  root.addEventListener('selectstart', rememberScope, true);
+  document.addEventListener('selectionchange', boundSelection);
+  root.dataset.appearanceSelectionBoundary = 'true';
+}
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = closeAppearanceWindow)]
     fn close_appearance_window();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = installAppearanceSelectionBoundary)]
+    fn install_appearance_selection_boundary_js();
 }
 
 #[cfg(not(feature = "hydrate"))]
 fn close_appearance_window() {}
+
+#[cfg(feature = "hydrate")]
+pub(crate) fn install_appearance_selection_boundary() {
+    install_appearance_selection_boundary_js();
+}
 
 #[cfg(feature = "hydrate")]
 struct AppearanceClock {
