@@ -68,7 +68,25 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
     "data-tauri-drag-region",
     "deep",
   );
-  await expect(page.locator(".appearance-window-controls button")).toHaveCount(2);
+  const closeControl = page.locator(".appearance-window-controls button");
+  await expect(closeControl).toHaveCount(1);
+  await expect(closeControl).toHaveAttribute(
+    "aria-label",
+    "Close Appearance window",
+  );
+  await expect(page.locator(".appearance-page-label")).toHaveCount(0);
+  await expect(page.locator(".appearance-brand-mark")).toHaveCount(0);
+  await expect(page.locator(".appearance-desktop-surface")).toHaveCount(0);
+  await expect(page.locator(".appearance-scene-badge")).toHaveCount(0);
+  const topbarOrder = await page.evaluate(() => {
+    const control = document.querySelector(".appearance-window-controls");
+    const brand = document.querySelector(".appearance-brand");
+    return {
+      controlLeft: control.getBoundingClientRect().left,
+      brandLeft: brand.getBoundingClientRect().left,
+    };
+  });
+  expect(topbarOrder.controlLeft).toBeLessThan(topbarOrder.brandLeft);
   await expect(page.locator(".appearance-nav-button")).toHaveCount(1);
   await expect(page.locator(".appearance-nav-button span").last()).toHaveText("Pet");
   await expect(page.locator(".appearance-nav-button")).toHaveAttribute(

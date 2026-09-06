@@ -20,24 +20,14 @@ function appearanceWindowInvoke(command) {
   void invoke(`plugin:window|${command}`, { label }).catch(() => {});
 }
 
-export function minimizeAppearanceWindow() {
-  appearanceWindowInvoke('minimize');
-}
-
 export function closeAppearanceWindow() {
   appearanceWindowInvoke('close');
 }
 "#)]
 extern "C" {
-    #[wasm_bindgen::prelude::wasm_bindgen(js_name = minimizeAppearanceWindow)]
-    fn minimize_appearance_window();
-
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = closeAppearanceWindow)]
     fn close_appearance_window();
 }
-
-#[cfg(not(feature = "hydrate"))]
-fn minimize_appearance_window() {}
 
 #[cfg(not(feature = "hydrate"))]
 fn close_appearance_window() {}
@@ -169,22 +159,8 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
         >
             <div class="appearance-window-frame">
                 <header class="appearance-topbar" data-tauri-drag-region="deep">
-                    <div class="appearance-brand">
-                        <span class="appearance-brand-mark" aria-hidden="true">"✦"</span>
-                        <span class="appearance-brand-copy"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
-                    </div>
-                    <div class="appearance-top-actions">
-                        <span class="appearance-page-label">"Appearance"</span>
+                    <div class="appearance-topbar-leading">
                         <div class="appearance-window-controls" aria-label="Window controls">
-                            <button
-                                class="appearance-window-control"
-                                type="button"
-                                aria-label="Minimize Appearance window"
-                                title="Minimize"
-                                on:click=move |_| minimize_appearance_window()
-                            >
-                                <span aria-hidden="true">"−"</span>
-                            </button>
                             <button
                                 class="appearance-window-control appearance-window-control-close"
                                 type="button"
@@ -194,6 +170,9 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             >
                                 <span aria-hidden="true">"×"</span>
                             </button>
+                        </div>
+                        <div class="appearance-brand">
+                            <span class="appearance-brand-copy"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
                         </div>
                     </div>
                 </header>
@@ -228,11 +207,6 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             </div>
 
                             <div class="appearance-stage" aria-live="polite">
-                                <div class="appearance-desktop-surface" aria-hidden="true">
-                                    <div class="appearance-desktop-bar"><span></span><span></span><span></span></div>
-                                    <span class="appearance-desktop-copy">"Desktop surface"</span>
-                                    <div class="appearance-desktop-lines"></div>
-                                </div>
                                 <div
                                     class="appearance-scene"
                                     id="appearance-scene"
@@ -275,9 +249,8 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                         <span class="appearance-pet-tag">
                                             {move || scene_label(preview.get().scene())}
                                         </span>
+                                        </div>
                                     </div>
-                                </div>
-                                <span class="appearance-scene-badge">"Preview only"</span>
                             </div>
                         </section>
 
@@ -722,8 +695,12 @@ mod tests {
         assert!(html.contains("data-ssr-marker=\"appearance-ready\""));
         assert!(html.contains("class=\"appearance-window-frame\""));
         assert!(html.contains("data-tauri-drag-region=\"deep\""));
-        assert!(html.contains("aria-label=\"Minimize Appearance window\""));
         assert!(html.contains("aria-label=\"Close Appearance window\""));
+        assert!(!html.contains("appearance-page-label"));
+        assert!(!html.contains("Minimize Appearance window"));
+        assert!(!html.contains("appearance-brand-mark"));
+        assert!(!html.contains("appearance-desktop-surface"));
+        assert!(!html.contains("appearance-scene-badge"));
         assert!(html.contains("class=\"appearance-nav-button\""));
         assert_eq!(html.matches("class=\"appearance-nav-button\"").count(), 1);
         assert!(html.contains(">Pet</span>"));
@@ -870,12 +847,15 @@ mod tests {
     fn appearance_css_has_wide_and_narrow_layout_guards() {
         let css = include_str!("../../web/lili.css");
         assert!(css.contains(".appearance-window-frame {"));
+        assert!(css.contains(".appearance-topbar-leading {"));
         assert!(css.contains("min-height: calc(100vh - 24px);"));
         assert!(css.contains("@keyframes appearance-idle-preview"));
         assert!(css.contains(".notification-card {"));
         assert!(css.contains(".notification-card-preview"));
         assert!(css.contains("-webkit-user-drag: none;"));
         assert!(css.contains("pointer-events: none;"));
+        assert!(!css.contains(".appearance-desktop-surface {"));
+        assert!(!css.contains(".appearance-scene-badge {"));
         assert!(css.contains("width: 384px;"));
         assert!(css.contains("height: 572px;"));
         assert!(css.contains("grid-template-columns: 190px minmax(0, 1fr);"));

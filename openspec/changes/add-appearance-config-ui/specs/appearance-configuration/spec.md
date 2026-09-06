@@ -11,7 +11,7 @@ The system SHALL provide a dedicated always-on-top Appearance surface with a Lil
 #### Scenario: Appearance surface opens
 
 - **WHEN** the user opens Appearance from the desktop application
-- **THEN** the surface shows `Pet` as the selected and only visible navigation entry, shows the live preview in the center, shows the installed Pet list on the right, and exposes the custom frame's drag, minimize, and close affordances
+- **THEN** the surface shows `Pet` as the selected and only visible navigation entry, shows the live preview in the center, shows the installed Pet list on the right, and exposes the custom frame's drag and top-left close affordances
 
 #### Scenario: No other configuration page exists
 
