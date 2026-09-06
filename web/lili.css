@@ -379,7 +379,7 @@ html:not([data-notification-placement="below"])
   display: flex;
   min-height: calc(100vh - 24px);
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--appearance-line-strong);
   border-radius: 20px;
   background: var(--appearance-shell);
@@ -395,6 +395,7 @@ html:not([data-notification-placement="below"])
   min-height: 70px;
   padding: 0 26px;
   border-bottom: 1px solid var(--appearance-line);
+  border-radius: 19px 19px 0 0;
   background: var(--appearance-panel);
 }
 
@@ -489,6 +490,7 @@ html:not([data-notification-placement="below"])
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
   min-height: 0;
+  border-radius: 0 0 19px 19px;
   background: var(--appearance-panel);
 }
 
@@ -499,6 +501,7 @@ html:not([data-notification-placement="below"])
   gap: 6px;
   padding: 23px 12px 17px;
   border-right: 1px solid var(--appearance-line);
+  border-bottom-left-radius: 19px;
   background: var(--appearance-soft);
 }
 
@@ -533,7 +536,8 @@ html:not([data-notification-placement="below"])
 .appearance-main {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
+  border-bottom-right-radius: 19px;
   padding: 28px 30px 26px;
 }
 
@@ -961,6 +965,7 @@ html:not([data-notification-placement="below"])
 
   .appearance-body {
     grid-template-columns: 1fr;
+    border-radius: 0;
   }
 
   .appearance-sidebar {
@@ -970,6 +975,7 @@ html:not([data-notification-placement="below"])
     padding: 10px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--appearance-line);
+    border-radius: 0;
   }
 
   .appearance-nav-button {
@@ -984,6 +990,7 @@ html:not([data-notification-placement="below"])
 
   .appearance-main {
     overflow: visible;
+    border-radius: 0;
   }
 }
 

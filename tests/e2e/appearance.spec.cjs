@@ -64,6 +64,14 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   await openAppearance(page);
 
   await expect(page.locator(".appearance-window-frame")).toBeVisible();
+  await expect(page.locator(".appearance-window-frame")).toHaveCSS(
+    "overflow",
+    "visible",
+  );
+  await expect(page.locator(".appearance-main")).toHaveCSS(
+    "overflow",
+    "visible",
+  );
   await expect(page.locator(".appearance-topbar")).toHaveAttribute(
     "data-tauri-drag-region",
     "deep",
