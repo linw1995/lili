@@ -181,17 +181,14 @@ impl NativeDiagnosticsRefresh {
 struct FixturePresentationStore {
     presentation: Arc<RwLock<PetPresentationState>>,
     sender: Arc<watch::Sender<PetPresentationState>>,
-    approved_asset_id: String,
 }
 
 impl FixturePresentationStore {
     fn new(initial: PetPresentationState) -> Self {
-        let approved_asset_id = initial.pet_asset_id.clone().unwrap_or_default();
         let (sender, _) = watch::channel(initial.clone());
         Self {
             presentation: Arc::new(RwLock::new(initial)),
             sender: Arc::new(sender),
-            approved_asset_id,
         }
     }
 
@@ -684,10 +681,12 @@ fn unix_time_ms() -> u64 {
 
 async fn pet_asset(State(state): State<ServerState>, Path(asset_id): Path<String>) -> Response {
     let approved_asset_id = match &state.fixture {
-        Some(fixture) if fixture.serves_asset(&asset_id).await => &fixture.approved_asset_id,
-        _ => &asset_id,
+        Some(fixture) if fixture.serves_asset(&asset_id).await => {
+            state.app.snapshot().await.pet_asset_id.unwrap_or(asset_id)
+        }
+        _ => asset_id,
     };
-    let Some(asset) = state.app.approved_pet_asset(approved_asset_id).await else {
+    let Some(asset) = state.app.approved_pet_asset(&approved_asset_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
