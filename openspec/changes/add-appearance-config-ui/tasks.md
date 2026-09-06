@@ -23,7 +23,7 @@
 - [x] 4.2 Wire keyboard-reachable Pet-list selection to the signed mutation and refresh the selected marker, approved asset, and preview; verify selecting each fixture Pet updates the page and persists across a reload
 - [x] 4.3 Implement the preview-only scene controller and renderer using the shared Pet atlas frame scheduler, approved asset identity, and production `NotificationCard` component; verify all seven scenes update in place and notification-bearing scenes use bounded read-only cards with disabled controls
 - [x] 4.4 Verify preview isolation under concurrent Session updates; assert that scene changes and Pet-list clicks do not duplicate, dismiss, or acknowledge notifications and do not add action-audit entries
-- [x] 4.5 Add accessibility and responsive coverage for the Appearance page; verify keyboard operation, selected-state semantics, non-draggable Pet imagery, readable labels, no clipped controls at 320px and 736px, and the wide layout at 1,024px
+- [x] 4.5 Add accessibility and responsive coverage for the Appearance page; verify keyboard operation, selected-state semantics, bounded text selection, non-draggable Pet imagery, readable labels, no clipped controls at 320px and 736px, and the wide layout at 1,024px
 
 ## 5. Desktop window and navigation lifecycle
 

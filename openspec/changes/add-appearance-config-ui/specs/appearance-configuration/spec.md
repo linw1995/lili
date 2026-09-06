@@ -114,6 +114,11 @@ The system SHALL serve the Appearance surface through the existing authenticated
 - **WHEN** the user presses, swipes, selects, or drags a Pet image in the Appearance surface
 - **THEN** the browser does not select or drag the image, and Pet or scene controls remain the only interactive preview affordances
 
+#### Scenario: Text selection stays within its container
+
+- **WHEN** the user drags across readable text in an Appearance text container
+- **THEN** selection is enabled only for that container's text and does not include surrounding chrome, controls, or Pet imagery
+
 #### Scenario: Appearance renderer reconnects
 
 - **WHEN** the Appearance WebView reloads or reconnects

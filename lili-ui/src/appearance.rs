@@ -122,7 +122,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                 draggable="false"
                             />
                         </span>
-                        <span class="appearance-pet-item-copy">
+                        <span class="appearance-pet-item-copy appearance-selectable">
                             <strong>{pet.display_name}</strong>
                             <span>{move || if selected.get() { "Selected" } else { "Installed package" }}</span>
                         </span>
@@ -172,7 +172,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             </button>
                         </div>
                         <div class="appearance-brand">
-                            <span class="appearance-brand-copy"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
+                            <span class="appearance-brand-copy appearance-selectable"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
                         </div>
                     </div>
                 </header>
@@ -186,7 +186,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
 
                 <section class="appearance-main" aria-labelledby="appearance-heading">
                     <div class="appearance-page-heading">
-                        <h1 id="appearance-heading">"Appearance"</h1>
+                        <h1 id="appearance-heading" class="appearance-selectable">"Appearance"</h1>
                     </div>
 
                     <div class="appearance-workbench">
@@ -199,7 +199,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
 
                             <div class="appearance-scene-picker">
                                 <div class="appearance-scene-heading">
-                                    <strong>"Scene"</strong>
+                                    <strong class="appearance-selectable">"Scene"</strong>
                                 </div>
                                 <div class="appearance-scene-buttons" role="group" aria-label="Preview scenes">
                                     {scene_items}
@@ -255,7 +255,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                         </section>
 
                         <aside class="appearance-pet-panel" aria-label="Pet list">
-                            <h2>"Pet"</h2>
+                            <h2 class="appearance-selectable">"Pet"</h2>
                             <div class="appearance-pet-list-heading">
                                 <span>"Installed pets"</span>
                                 <span>{move || format!("{} available", appearance.get().pets.len())}</span>
@@ -266,7 +266,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             <Show when=move || selection_error.get().is_some()>
                                 <div class="appearance-status-line">
                                     <span class="appearance-status-dot" aria-hidden="true"></span>
-                                    <small role="alert" class="appearance-selection-error">
+                                    <small role="alert" class="appearance-selection-error appearance-selectable">
                                         {move || selection_error.get().unwrap_or_else(|| "Pet selection failed".to_owned())}
                                     </small>
                                 </div>
@@ -301,7 +301,7 @@ fn appearance_pet_item_static(pet: lili_core::AppearancePetView, selected: bool)
                     draggable="false"
                 />
             </span>
-            <span class="appearance-pet-item-copy">
+            <span class="appearance-pet-item-copy appearance-selectable">
                 <strong>{pet.display_name}</strong>
                 <span>{if selected { "Selected" } else { "Installed package" }}</span>
             </span>
@@ -848,6 +848,8 @@ mod tests {
         let css = include_str!("../../web/lili.css");
         assert!(css.contains(".appearance-window-frame {"));
         assert!(css.contains(".appearance-topbar-leading {"));
+        assert!(css.contains(".appearance-selectable,"));
+        assert!(css.contains("-webkit-user-select: text;"));
         assert!(css.contains("overflow: visible;"));
         assert!(css.contains("border-radius: 0 0 19px 19px;"));
         assert!(css.contains("min-height: calc(100vh - 96px);"));

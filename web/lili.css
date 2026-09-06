@@ -362,6 +362,7 @@ html:not([data-notification-placement="below"])
   font-size: 14px;
   line-height: 1.45;
   pointer-events: auto;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -373,6 +374,12 @@ html:not([data-notification-placement="below"])
 
 #lili-appearance.appearance-surface button {
   font: inherit;
+}
+
+.appearance-selectable,
+.appearance-selectable * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .appearance-window-frame {

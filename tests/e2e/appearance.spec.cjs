@@ -107,6 +107,19 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   await expect(page.locator("[role=option]")).toHaveCount(1);
   await expect(page.locator("[role=option][aria-selected=true]")).toHaveCount(1);
   await expect(page.locator("#lili-appearance")).not.toContainText("Active pet");
+  await expect(page.locator("#lili-appearance")).toHaveCSS("user-select", "none");
+  const selectableCopy = page.locator(".appearance-pet-item-copy").first();
+  await expect(selectableCopy).toHaveCSS("user-select", "text");
+  const selectableCopyText = await selectableCopy.innerText();
+  await selectableCopy.selectText();
+  const selectedText = await page.evaluate(() => {
+    const selection = window.getSelection();
+    return selection?.toString() ?? "";
+  });
+  expect(selectedText).toBe(selectableCopyText);
+  expect(selectedText).not.toContain("Installed pets");
+  expect(selectedText).not.toContain("✓");
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
 
   const scene = page.locator(".appearance-scene-button[data-scene='review']");
   await scene.focus();

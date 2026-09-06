@@ -13,6 +13,7 @@ This design covers the first Appearance surface for the Lili desktop pet. The pa
 - An open preview stage without a nested desktop window mockup or extra preview-status badge.
 - A right-side installed Pet list used to change the selected package; each item shows a looping Idle atlas thumbnail.
 - Pet imagery is presentation-only: browser image selection, swipe, and drag interactions are disabled while the surrounding controls remain operable.
+- Readable text can be selected only inside its own marked text container; chrome and controls remain unselectable.
 - No Active pet summary and no additional configuration forms.
 
 ## Preview scenes
