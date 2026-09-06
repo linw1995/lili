@@ -239,6 +239,7 @@ fn appearance_window_contract(app: &AppHandle) -> bool {
     let route_contract = window.url().is_ok_and(|url| url.path() == "/appearance");
     let custom_frame_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
     let native_panel_contract = appearance_native_panel_contract(&window);
+    let always_on_top_contract = window.is_always_on_top().is_ok_and(|enabled| enabled);
     let size_contract = window
         .inner_size()
         .is_ok_and(|size| size.width > 0 && size.height > 0);
@@ -253,6 +254,7 @@ fn appearance_window_contract(app: &AppHandle) -> bool {
     route_contract
         && custom_frame_contract
         && native_panel_contract
+        && always_on_top_contract
         && size_contract
         && opened
         && focused

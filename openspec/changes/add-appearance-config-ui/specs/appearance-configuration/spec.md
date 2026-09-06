@@ -6,7 +6,7 @@ Defines the local Appearance surface where users choose a validated Pet package 
 
 ### Requirement: Render the focused Pet Appearance surface
 
-The system SHALL provide a dedicated Appearance surface with a Lili application shell inside a custom frameless window frame, a left navigation list containing exactly one visible configuration entry named `Pet`, a center live-preview area, and a right-side Pet list. The surface SHALL NOT present Notifications, Interactions, Connection, Active pet summary, or unrelated configuration forms as additional navigation entries or controls.
+The system SHALL provide a dedicated always-on-top Appearance surface with a Lili application shell inside a custom frameless window frame, a left navigation list containing exactly one visible configuration entry named `Pet`, a center live-preview area, and a right-side Pet list. The surface SHALL NOT present Notifications, Interactions, Connection, Active pet summary, or unrelated configuration forms as additional navigation entries or controls.
 
 #### Scenario: Appearance surface opens
 

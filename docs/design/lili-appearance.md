@@ -7,7 +7,7 @@ This design covers the first Appearance surface for the Lili desktop pet. The pa
 ## Layout
 
 - A desktop application shell with Lili branding and an Appearance title, presented inside a rounded custom window frame.
-- A frameless native window with a dedicated drag region, branded minimize and close controls, and a target initial size of 1180 x 860 px; macOS uses the same shared `NSPanel` policy as the desktop companion windows.
+- An always-on-top frameless native window with a dedicated drag region, branded minimize and close controls, and a target initial size of 1180 x 860 px; macOS uses the same shared `NSPanel` policy as the desktop companion windows.
 - A left navigation rail with one visible entry: `Pet`.
 - A center preview workbench with explicit scene controls.
 - A right-side installed Pet list used to change the selected package; each item shows a looping Idle atlas thumbnail.

@@ -595,7 +595,7 @@ fn create_appearance_window(
     .inner_size(APPEARANCE_WINDOW_WIDTH, APPEARANCE_WINDOW_HEIGHT)
     .decorations(false)
     .transparent(true)
-    .always_on_top(false)
+    .always_on_top(true)
     .resizable(true)
     .shadow(false)
     .skip_taskbar(false)
