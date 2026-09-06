@@ -95,6 +95,11 @@ pub enum PetSelectionError {
     Persistence(#[source] PersistenceError),
 }
 
+enum PetSelectionPreparation {
+    Available(PetCatalog, ApprovedPetAssetCatalog, ApprovedPetAsset),
+    Unavailable(PetCatalog),
+}
+
 #[derive(Clone, Default)]
 struct ActionRuntimeState {
     supervisor: Option<ActionSupervisor>,
@@ -349,6 +354,7 @@ impl AppState {
     ) -> Result<PetSummary, PetSelectionError> {
         let _selection_guard = self.pet_selection_lock.lock().await;
         let selected_pet_id = pet_id.clone();
+        let current_active = self.pet_catalog.read().await.active().clone();
         let persistent = if store.is_some() {
             Some(
                 self.persistent_state(None)
@@ -360,10 +366,12 @@ impl AppState {
         };
         let pets_root = pets_root.to_owned();
         let store = store.cloned();
-        let (catalog, approved_pet_assets, pet_asset) = tokio::task::spawn_blocking(move || {
+        let preparation = tokio::task::spawn_blocking(move || {
             let catalog = PetCatalog::load_with_selection(&pets_root, Some(&selected_pet_id));
             if catalog.active().definition().id() != &selected_pet_id {
-                return Err(PetSelectionError::Unavailable);
+                return Ok(PetSelectionPreparation::Unavailable(
+                    catalog.with_active(current_active),
+                ));
             }
             let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&catalog);
             let asset_id = approved_pet_assets
@@ -379,10 +387,23 @@ impl AppState {
                     .save_selected_pet(persistent)
                     .map_err(PetSelectionError::Persistence)?;
             }
-            Ok((catalog, approved_pet_assets, pet_asset))
+            Ok(PetSelectionPreparation::Available(
+                catalog,
+                approved_pet_assets,
+                pet_asset,
+            ))
         })
         .await
         .map_err(|_| PetSelectionError::Unavailable)??;
+        let (catalog, approved_pet_assets, pet_asset) = match preparation {
+            PetSelectionPreparation::Available(catalog, approved_pet_assets, pet_asset) => {
+                (catalog, approved_pet_assets, pet_asset)
+            }
+            PetSelectionPreparation::Unavailable(catalog) => {
+                *self.pet_catalog.write().await = catalog;
+                return Err(PetSelectionError::Unavailable);
+            }
+        };
         Ok(self
             .replace_pet_catalog_with_assets(catalog, approved_pet_assets, pet_asset)
             .await)
@@ -1060,6 +1081,72 @@ mod tests {
         assert_eq!(state.snapshot().await, before);
         assert!(store.load().unwrap().is_none());
         std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_pet_selection_refreshes_catalog_without_replacing_active_pet() {
+        let root =
+            std::env::temp_dir().join(format!("lili-pet-selection-refresh-{}", Uuid::new_v4()));
+        let active_dir = root.join("pets").join("active-pet");
+        let candidate_dir = root.join("pets").join("candidate-pet");
+        std::fs::create_dir_all(&active_dir).unwrap();
+        std::fs::create_dir_all(&candidate_dir).unwrap();
+        let manifest = |id: &str, display_name: &str| {
+            format!(
+                r#"{{"id":"{id}","displayName":"{display_name}","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}}"#
+            )
+        };
+        std::fs::write(
+            active_dir.join("pet.json"),
+            manifest("active-pet", "Active"),
+        )
+        .unwrap();
+        std::fs::write(
+            candidate_dir.join("pet.json"),
+            manifest("candidate-pet", "Candidate"),
+        )
+        .unwrap();
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state.snapshot().await.pet_asset_id.unwrap();
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .await
+            .unwrap();
+        std::fs::write(active_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+        std::fs::write(candidate_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let active_id = lili_core::PetId::parse("active-pet").unwrap();
+        let candidate_id = lili_core::PetId::parse("candidate-pet").unwrap();
+        let pets_root = root.join("pets");
+        let state = AppState::with_pet_catalog(PetCatalog::load_with_selection(
+            &pets_root,
+            Some(&active_id),
+        ));
+        std::fs::remove_file(candidate_dir.join("spritesheet.webp")).unwrap();
+
+        assert!(matches!(
+            state.select_pet(&pets_root, &candidate_id, None).await,
+            Err(PetSelectionError::Unavailable)
+        ));
+        assert_eq!(
+            state.snapshot().await.selected_pet.unwrap().id,
+            active_id.clone()
+        );
+        assert!(
+            state
+                .available_pets()
+                .await
+                .into_iter()
+                .all(|pet| pet.id != candidate_id)
+        );
+        let view = state.appearance_view().await;
+        assert_eq!(view.selected_pet_id, Some(active_id.clone()));
+        assert!(view.pets.into_iter().all(|pet| pet.id != candidate_id));
+        assert_eq!(
+            state.persistent_state(None).await.selected_pet_id(),
+            Some(&active_id)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
