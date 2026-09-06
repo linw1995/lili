@@ -238,6 +238,7 @@ fn appearance_window_contract(app: &AppHandle) -> bool {
     };
     let route_contract = window.url().is_ok_and(|url| url.path() == "/appearance");
     let custom_frame_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
+    let native_panel_contract = appearance_native_panel_contract(&window);
     let size_contract = window
         .inner_size()
         .is_ok_and(|size| size.width > 0 && size.height > 0);
@@ -251,6 +252,7 @@ fn appearance_window_contract(app: &AppHandle) -> bool {
     let cleaned_up = window.hide().is_ok() && window.is_visible().is_ok_and(|visible| !visible);
     route_contract
         && custom_frame_contract
+        && native_panel_contract
         && size_contract
         && opened
         && focused
@@ -258,6 +260,16 @@ fn appearance_window_contract(app: &AppHandle) -> bool {
         && hidden_after_close
         && reopened
         && cleaned_up
+}
+
+#[cfg(target_os = "macos")]
+fn appearance_native_panel_contract(window: &WebviewWindow) -> bool {
+    crate::macos_panel::satisfies_desktop_companion_contract(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn appearance_native_panel_contract(_window: &WebviewWindow) -> bool {
+    true
 }
 
 async fn selected_pet_persistence_contract(

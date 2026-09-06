@@ -587,7 +587,9 @@ fn create_appearance_window(
         APPEARANCE_WINDOW_LABEL,
         WebviewUrl::External("about:blank".parse().expect("valid bootstrap URL")),
     )
+    .initialization_script(DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT)
     .initialization_script(FETCH_SIGNER_SCRIPT)
+    .accept_first_mouse(true)
     .devtools(false)
     .title("Lili Appearance")
     .inner_size(APPEARANCE_WINDOW_WIDTH, APPEARANCE_WINDOW_HEIGHT)
@@ -601,6 +603,7 @@ fn create_appearance_window(
     .focused(false)
     .on_navigation(move |url| url.origin() == allowed_origin)
     .build()?;
+    configure_appearance_window(&window)?;
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
@@ -734,6 +737,16 @@ fn suppress_webview_context_menu(_window: &tauri::WebviewWindow) -> tauri::Resul
 #[cfg(target_os = "macos")]
 fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     macos_panel::configure_auxiliary(window)
+}
+
+#[cfg(target_os = "macos")]
+fn configure_appearance_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    macos_panel::configure_settings(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_appearance_window(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
