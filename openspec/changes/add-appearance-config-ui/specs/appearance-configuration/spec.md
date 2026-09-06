@@ -6,12 +6,12 @@ Defines the local Appearance surface where users choose a validated Pet package 
 
 ### Requirement: Render the focused Pet Appearance surface
 
-The system SHALL provide a dedicated Appearance surface with a Lili application shell, a left navigation list containing exactly one visible configuration entry named `Pet`, a center live-preview area, and a right-side Pet list. The surface SHALL NOT present Notifications, Interactions, Connection, Active pet summary, or unrelated configuration forms as additional navigation entries or controls.
+The system SHALL provide a dedicated Appearance surface with a Lili application shell inside a custom frameless window frame, a left navigation list containing exactly one visible configuration entry named `Pet`, a center live-preview area, and a right-side Pet list. The surface SHALL NOT present Notifications, Interactions, Connection, Active pet summary, or unrelated configuration forms as additional navigation entries or controls.
 
 #### Scenario: Appearance surface opens
 
 - **WHEN** the user opens Appearance from the desktop application
-- **THEN** the surface shows `Pet` as the selected and only visible navigation entry, shows the live preview in the center, and shows the installed Pet list on the right
+- **THEN** the surface shows `Pet` as the selected and only visible navigation entry, shows the live preview in the center, shows the installed Pet list on the right, and exposes the custom frame's drag, minimize, and close affordances
 
 #### Scenario: No other configuration page exists
 
@@ -25,7 +25,12 @@ The system SHALL list every Pet package that has passed the existing Pet v2 vali
 #### Scenario: Valid packages are listed
 
 - **WHEN** the application has one or more validated packages in its Lili-owned Pet root
-- **THEN** the right-side list contains each available package, and exactly one package is marked selected when a valid selection exists
+- **THEN** the right-side list contains each available package, each entry renders a looping Idle atlas thumbnail, and exactly one package is marked selected when a valid selection exists
+
+#### Scenario: Pet list previews Idle state
+
+- **WHEN** the user views the installed Pet list
+- **THEN** every listed package renders its approved asset in a fixed thumbnail viewport using the Idle scene, without requiring a scene change or triggering native runtime state
 
 #### Scenario: Only the embedded fallback is available
 

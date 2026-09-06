@@ -27,7 +27,7 @@
 
 ## 5. Desktop window and navigation lifecycle
 
-- [x] 5.1 Create the normal decorated Appearance settings WebView, navigate it through the pinned loopback bootstrap, and focus an existing window instead of creating duplicates; verify open, focus, close, and relaunch behavior on the desktop smoke path
+- [x] 5.1 Create the custom-framed frameless Appearance settings WebView with a drag region and branded window controls, navigate it through the pinned loopback bootstrap, and focus an existing window instead of creating duplicates; verify open, focus, close, and relaunch behavior on the desktop smoke path
 - [x] 5.2 Add the `settings` action to the tray and Pet context menu while preserving existing Show, Always on Top, Pet selection, and Quit behavior; verify the settings action does not change transparent Pet or notification-window lifecycle semantics
 - [x] 5.3 Reconcile selected-Pet updates across the settings window, transparent Pet window, notification window, tray state, and persisted state; verify a selection made from either tray or Appearance produces one consistent active Pet after restart
 
@@ -41,5 +41,5 @@
 ### Verification record
 
 - `nix run .#format-check`, `nix run .#lint`, `nix run .#test`, `nix flake check --no-build`, `nix run .#spec-validate`, and `nix run .#build` passed.
-- The Appearance Playwright fixture passed all 6 tests, including the seven scenes, fallback asset, Pet selection, reload persistence, preview isolation, keyboard semantics, and 320/736/1024px layouts.
+- The Appearance Playwright fixture passed 7 tests, including the Idle atlas thumbnails, seven scenes, fallback asset, Pet selection, reload persistence, preview isolation, keyboard semantics, and 320/736/1024px layouts.
 - The full Playwright suite and packaged macOS acceptance remain environment-gated on this host: the former repeatedly stalled while building the pinned Playwright npm derivation, and the latter stopped before app launch because the installed Codex version did not match the reviewed contract.

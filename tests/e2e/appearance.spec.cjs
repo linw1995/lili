@@ -63,6 +63,12 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
 }) => {
   await openAppearance(page);
 
+  await expect(page.locator(".appearance-window-frame")).toBeVisible();
+  await expect(page.locator(".appearance-topbar")).toHaveAttribute(
+    "data-tauri-drag-region",
+    "deep",
+  );
+  await expect(page.locator(".appearance-window-controls button")).toHaveCount(2);
   await expect(page.locator(".appearance-nav-button")).toHaveCount(1);
   await expect(page.locator(".appearance-nav-button span").last()).toHaveText("Pet");
   await expect(page.locator(".appearance-nav-button")).toHaveAttribute(
@@ -95,6 +101,31 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   );
 
   await expectNoHorizontalClipping(page);
+});
+
+test("each Pet list entry shows its idle atlas preview", async ({ page }) => {
+  await openAppearance(page);
+  const previews = page.locator(".appearance-pet-thumb-atlas");
+  await expect(previews).toHaveCount(await page.locator("[role=option]").count());
+  await expect(previews.first()).toHaveCSS(
+    "animation-name",
+    "appearance-idle-preview",
+  );
+
+  const geometry = await previews.first().evaluate((element) => {
+    const frame = element.parentElement.getBoundingClientRect();
+    const atlas = element.getBoundingClientRect();
+    return {
+      frame: { width: frame.width, height: frame.height },
+      atlas: { width: atlas.width, height: atlas.height },
+      overflow: getComputedStyle(element.parentElement).overflow,
+    };
+  });
+  expect(geometry.frame.width).toBe(48);
+  expect(geometry.frame.height).toBe(52);
+  expect(geometry.atlas.width).toBe(384);
+  expect(geometry.atlas.height).toBe(572);
+  expect(geometry.overflow).toBe("hidden");
 });
 
 test("Appearance renders every preview scene with bounded read-only state", async ({

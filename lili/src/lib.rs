@@ -70,8 +70,8 @@ const NOTIFICATION_WINDOW_HIDE_DELAY: Duration = Duration::from_secs(5);
 const NOTIFICATION_SHADOW_INSET: i32 = 12;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const APPEARANCE_WINDOW_LABEL: &str = "appearance";
-const APPEARANCE_WINDOW_WIDTH: f64 = 1_040.0;
-const APPEARANCE_WINDOW_HEIGHT: f64 = 760.0;
+const APPEARANCE_WINDOW_WIDTH: f64 = 1_180.0;
+const APPEARANCE_WINDOW_HEIGHT: f64 = 860.0;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 const DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 document.addEventListener('contextmenu', (event) => {
@@ -479,8 +479,11 @@ fn register_appearance_window_capability(
     let capability = CapabilityBuilder::new("appearance-window")
         .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
         .local(false)
-        .window("appearance")
-        .permission("allow-sign-loopback-request");
+        .window(APPEARANCE_WINDOW_LABEL)
+        .permission("allow-sign-loopback-request")
+        .permission("core:window:allow-close")
+        .permission("core:window:allow-minimize")
+        .permission("core:window:allow-start-dragging");
     app.add_capability(capability)
 }
 
@@ -588,11 +591,11 @@ fn create_appearance_window(
     .devtools(false)
     .title("Lili Appearance")
     .inner_size(APPEARANCE_WINDOW_WIDTH, APPEARANCE_WINDOW_HEIGHT)
-    .decorations(true)
-    .transparent(false)
+    .decorations(false)
+    .transparent(true)
     .always_on_top(false)
     .resizable(true)
-    .shadow(true)
+    .shadow(false)
     .skip_taskbar(false)
     .visible(false)
     .focused(false)
@@ -2554,10 +2557,10 @@ mod tests {
     }
 
     #[test]
-    fn appearance_window_uses_the_dedicated_normal_settings_contract() {
+    fn appearance_window_uses_the_dedicated_custom_frame_contract() {
         assert_eq!(APPEARANCE_WINDOW_LABEL, "appearance");
-        assert_eq!(APPEARANCE_WINDOW_WIDTH, 1_040.0);
-        assert_eq!(APPEARANCE_WINDOW_HEIGHT, 760.0);
+        assert_eq!(APPEARANCE_WINDOW_WIDTH, 1_180.0);
+        assert_eq!(APPEARANCE_WINDOW_HEIGHT, 860.0);
     }
 
     #[test]

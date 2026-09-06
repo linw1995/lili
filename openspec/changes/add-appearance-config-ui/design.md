@@ -14,7 +14,7 @@ The saved visual design is intentionally narrower than the existing runtime: a l
 
 **Goals:**
 
-- Add a normal desktop settings window that uses the existing signed loopback and SSR/WebView delivery path.
+- Add a custom-framed desktop settings window that uses the existing signed loopback and SSR/WebView delivery path.
 - Make the current validated Pet catalog visible and let users select a Pet by stable identifier.
 - Make the seven agreed preview scenes directly inspectable in one Appearance surface.
 - Reuse the same approved atlas and animation mappings used by the transparent desktop Pet.
@@ -34,7 +34,7 @@ The saved visual design is intentionally narrower than the existing runtime: a l
 
 ### Use a dedicated settings WebView on the existing loopback origin
 
-Add an `appearance` Tauri WebviewWindow with normal settings-window behavior: decorations enabled, resizable within a bounded range, visible in the task switcher where the platform permits it, and focused only when explicitly opened. Navigate it through a third one-shot loopback bootstrap path that establishes the same HttpOnly session cookie and certificate pinning as the existing Pet and notification windows.
+Add an `appearance` Tauri WebviewWindow with a custom frameless shell: native decorations disabled, a rounded branded frame rendered by the page, an explicit drag region, branded minimize and close controls, resizable behavior, visible task-switcher participation where the platform permits it, and focus only when explicitly opened. Start it at 1180 x 860 px so the three-column desktop layout is not clipped on first open. Navigate it through a third one-shot loopback bootstrap path that establishes the same HttpOnly session cookie and certificate pinning as the existing Pet and notification windows.
 
 The SSR shell will route `/appearance` to a dedicated `AppearancePage` component instead of extending the transparent `AppSurface` renderer. The page will contain the saved left navigation rail, the center preview, and the right Pet list. The tray menu and the Pet context menu will gain one `settings` action that opens or focuses this window; no second transport or local file URL will be introduced.
 
@@ -97,7 +97,7 @@ Alternatives considered:
 - [Settings and transparent Pet windows can drift after a selection] → Publish the active presentation through the existing watch channel, refresh the Appearance view model after a successful mutation, and keep one native selection service for tray and settings.
 - [A malformed or removed package can leave a stale list entry] → Revalidate before mutation, issue generation-scoped asset identities, remove invalid entries from the refreshed response, and preserve the embedded fallback with diagnostics.
 - [Preview controls could accidentally trigger native behavior] → Use a separate preview scene model and read-only card component, grant only the signed API capability, and assert that fixture scene changes do not alter reducer, notification, or action-audit state.
-- [The settings window may behave differently across platforms] → Use platform-native decorated-window defaults, keep the existing loopback/certificate path, and add packaged macOS, Windows, and supported Linux acceptance coverage for opening, focusing, closing, and relaunching the surface.
+- [The settings window may behave differently across platforms] → Keep the custom frame within the WebView, preserve the existing loopback/certificate path, and add packaged macOS, Windows, and supported Linux acceptance coverage for opening, focusing, closing, and relaunching the surface.
 
 ## Migration Plan
 

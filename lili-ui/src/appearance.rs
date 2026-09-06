@@ -10,6 +10,37 @@ use lili_core::{AppearanceView, PetNotificationKind};
 use lili_pet::{AnimationScheduler, FrameDescriptor, PreviewScene};
 
 #[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+function appearanceWindowInvoke(command) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  const label = window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
+  if (!invoke || !label) return;
+  void invoke(`plugin:window|${command}`, { label }).catch(() => {});
+}
+
+export function minimizeAppearanceWindow() {
+  appearanceWindowInvoke('minimize');
+}
+
+export function closeAppearanceWindow() {
+  appearanceWindowInvoke('close');
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = minimizeAppearanceWindow)]
+    fn minimize_appearance_window();
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = closeAppearanceWindow)]
+    fn close_appearance_window();
+}
+
+#[cfg(not(feature = "hydrate"))]
+fn minimize_appearance_window() {}
+
+#[cfg(not(feature = "hydrate"))]
+fn close_appearance_window() {}
+
+#[cfg(feature = "hydrate")]
 struct AppearanceClock {
     window: web_sys::Window,
     interval_id: i32,
@@ -89,7 +120,12 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                         }
                     >
                         <span class="appearance-pet-thumb">
-                            <img src=asset_url.clone() alt="" aria-hidden="true" />
+                            <img
+                                class="appearance-pet-thumb-atlas"
+                                src=asset_url.clone()
+                                alt=""
+                                aria-hidden="true"
+                            />
                         </span>
                         <span class="appearance-pet-item-copy">
                             <strong>{pet.display_name}</strong>
@@ -126,18 +162,39 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
             data-ssr-marker="appearance-ready"
             data-appearance-view=serialized_appearance
         >
-            <header class="appearance-topbar">
-                <div class="appearance-brand">
-                    <span class="appearance-brand-mark" aria-hidden="true">"✦"</span>
-                    <span class="appearance-brand-copy"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
-                </div>
-                <div class="appearance-top-actions">
-                    <span class="appearance-local-status"><span class="appearance-status-dot" aria-hidden="true"></span>"Local only"</span>
-                    <span class="appearance-page-label">"Appearance"</span>
-                </div>
-            </header>
+            <div class="appearance-window-frame">
+                <header class="appearance-topbar" data-tauri-drag-region="deep">
+                    <div class="appearance-brand">
+                        <span class="appearance-brand-mark" aria-hidden="true">"✦"</span>
+                        <span class="appearance-brand-copy"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
+                    </div>
+                    <div class="appearance-top-actions">
+                        <span class="appearance-local-status"><span class="appearance-status-dot" aria-hidden="true"></span>"Local only"</span>
+                        <span class="appearance-page-label">"Appearance"</span>
+                        <div class="appearance-window-controls" aria-label="Window controls">
+                            <button
+                                class="appearance-window-control"
+                                type="button"
+                                aria-label="Minimize Appearance window"
+                                title="Minimize"
+                                on:click=move |_| minimize_appearance_window()
+                            >
+                                <span aria-hidden="true">"−"</span>
+                            </button>
+                            <button
+                                class="appearance-window-control appearance-window-control-close"
+                                type="button"
+                                aria-label="Close Appearance window"
+                                title="Close"
+                                on:click=move |_| close_appearance_window()
+                            >
+                                <span aria-hidden="true">"×"</span>
+                            </button>
+                        </div>
+                    </div>
+                </header>
 
-            <div class="appearance-body">
+                <div class="appearance-body">
                 <nav class="appearance-sidebar" aria-label="Settings sections">
                     <div class="appearance-sidebar-label">"Configure"</div>
                     <button class="appearance-nav-button" type="button" aria-current="page">
@@ -269,6 +326,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                     </div>
                 </section>
             </div>
+            </div>
         </main>
     }
 }
@@ -286,7 +344,7 @@ fn appearance_pet_item_static(pet: lili_core::AppearancePetView, selected: bool)
             data-pet-id=pet.id.as_str().to_owned()
         >
             <span class="appearance-pet-thumb">
-                <img src=asset_url alt="" aria-hidden="true" />
+                <img class="appearance-pet-thumb-atlas" src=asset_url alt="" aria-hidden="true" />
             </span>
             <span class="appearance-pet-item-copy">
                 <strong>{pet.display_name}</strong>
@@ -700,11 +758,16 @@ mod tests {
         .to_html();
 
         assert!(html.contains("data-ssr-marker=\"appearance-ready\""));
+        assert!(html.contains("class=\"appearance-window-frame\""));
+        assert!(html.contains("data-tauri-drag-region=\"deep\""));
+        assert!(html.contains("aria-label=\"Minimize Appearance window\""));
+        assert!(html.contains("aria-label=\"Close Appearance window\""));
         assert!(html.contains("class=\"appearance-nav-button\""));
         assert_eq!(html.matches("class=\"appearance-nav-button\"").count(), 1);
         assert!(html.contains(">Pet</span>"));
         assert!(html.contains("id=\"appearance-heading\""));
         assert!(html.contains("/pet-assets/asset-id"));
+        assert_eq!(html.matches("appearance-pet-thumb-atlas").count(), 1);
         assert_eq!(html.matches("aria-pressed=").count(), 7);
         assert_eq!(html.matches("data-scene=").count(), 8);
         assert!(!html.contains("Active pet"));
@@ -818,6 +881,11 @@ mod tests {
     #[test]
     fn appearance_css_has_wide_and_narrow_layout_guards() {
         let css = include_str!("../../web/lili.css");
+        assert!(css.contains(".appearance-window-frame {"));
+        assert!(css.contains("min-height: calc(100vh - 24px);"));
+        assert!(css.contains("@keyframes appearance-idle-preview"));
+        assert!(css.contains("width: 384px;"));
+        assert!(css.contains("height: 572px;"));
         assert!(css.contains("grid-template-columns: 190px minmax(0, 1fr);"));
         assert!(css.contains("grid-template-columns: minmax(0, 1fr) 300px;"));
         assert!(css.contains("@media (max-width: 900px)"));

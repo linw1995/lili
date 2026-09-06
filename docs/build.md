@@ -20,7 +20,7 @@ On Linux, install the distribution's native Tauri development packages first. De
 
 ### Packaged macOS acceptance
 
-Run `nix run .#macos-acceptance` on a graphical macOS host to build the signed-path `.app` acceptance target. The packaged check exercises loopback certificate pinning, the decorated Appearance settings window, Settings launch through both native menu paths, focus/close/reopen behavior, selected-Pet persistence, clean shutdown, and the existing non-activating transparent Pet and notification windows. Set `CODEX_BIN` when the Codex executable is not on `PATH`.
+Run `nix run .#macos-acceptance` on a graphical macOS host to build the signed-path `.app` acceptance target. The packaged check exercises loopback certificate pinning, the custom-framed Appearance settings window, Settings launch through both native menu paths, focus/close/reopen behavior, selected-Pet persistence, clean shutdown, and the existing non-activating transparent Pet and notification windows. Set `CODEX_BIN` when the Codex executable is not on `PATH`.
 
 Build a complete release for the current macOS or Linux host with:
 
@@ -34,7 +34,7 @@ The command runs the supported Codex matrix gate, creates the platform-standard 
 
 The Web application and Tauri desktop are supported on X11 and on Wayland compositors that implement the layer, activation, tray, transparency, and pointer behavior used by GTK/WebKit. Run `nix run .#linux-acceptance` inside a graphical session to validate the installed compositor and desktop environment.
 
-The Linux packaged acceptance also checks the decorated Appearance window, loopback-signed Pet selection, approved asset delivery, window focus/close/reopen behavior, persistence, and clean shutdown. It records compositor limitations and the observed physical DPI scale instead of bypassing them.
+The Linux packaged acceptance also checks the custom-framed Appearance window, loopback-signed Pet selection, approved asset delivery, window focus/close/reopen behavior, persistence, and clean shutdown. It records compositor limitations and the observed physical DPI scale instead of bypassing them.
 
 Linux window managers remain authoritative. A compositor may ignore always-on-top hints, omit the legacy tray protocol, restrict programmatic window positioning, or render transparent windows differently. Lili treats these as compositor capabilities: session ingestion and the Web application remain available, while unavailable desktop affordances are reported by acceptance instead of bypassing compositor policy. Headless CI must provide a virtual X11 session and a tray host.
 
