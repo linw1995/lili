@@ -1957,16 +1957,30 @@ fn run_pet_context_action(
     action: String,
 ) -> Result<(), String> {
     hide_pet_context_menu(&app);
-    match TrayAction::parse(&action) {
-        TrayAction::Show => show_pet_window(&app, &actions.visibility),
-        TrayAction::AlwaysOnTop => {
+    dispatch_pet_context_action(
+        &action,
+        || show_pet_window(&app, &actions.visibility),
+        || {
             let enabled = !actions.always_on_top.is_checked().unwrap_or(true);
             set_always_on_top(&app, &actions.state, &actions.always_on_top, enabled);
-        }
-        TrayAction::Settings => {
-            open_appearance_window(&app)?;
-        }
-        TrayAction::Quit => handle_application_tray_action(&app, TrayAction::Quit),
+        },
+        || open_appearance_window(&app).map(|_| ()),
+        || handle_application_tray_action(&app, TrayAction::Quit),
+    )
+}
+
+fn dispatch_pet_context_action(
+    action: &str,
+    on_show: impl FnOnce(),
+    on_always_on_top: impl FnOnce(),
+    on_settings: impl FnOnce() -> Result<(), String>,
+    on_quit: impl FnOnce(),
+) -> Result<(), String> {
+    match TrayAction::parse(action) {
+        TrayAction::Show => on_show(),
+        TrayAction::AlwaysOnTop => on_always_on_top(),
+        TrayAction::Settings => on_settings()?,
+        TrayAction::Quit => on_quit(),
         TrayAction::SelectPet(_) | TrayAction::Unknown => {}
     }
     Ok(())
@@ -2585,6 +2599,41 @@ mod tests {
         );
         assert_eq!(TrayAction::parse("pet:bad\nvalue"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("unknown"), TrayAction::Unknown);
+    }
+
+    #[test]
+    fn pet_context_dispatch_runs_only_the_matching_action() {
+        use std::cell::Cell;
+
+        for action in [
+            "show",
+            "always-on-top",
+            "settings",
+            "quit",
+            "pet:lili",
+            "unknown",
+        ] {
+            let show = Cell::new(false);
+            let always_on_top = Cell::new(false);
+            let settings = Cell::new(false);
+            let quit = Cell::new(false);
+            dispatch_pet_context_action(
+                action,
+                || show.set(true),
+                || always_on_top.set(true),
+                || {
+                    settings.set(true);
+                    Ok(())
+                },
+                || quit.set(true),
+            )
+            .unwrap();
+
+            assert_eq!(show.get(), action == "show");
+            assert_eq!(always_on_top.get(), action == "always-on-top");
+            assert_eq!(settings.get(), action == "settings");
+            assert_eq!(quit.get(), action == "quit");
+        }
     }
 
     #[test]
