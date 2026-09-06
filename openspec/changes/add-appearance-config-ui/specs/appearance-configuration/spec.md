@@ -49,7 +49,7 @@ The system SHALL list every Pet package that has passed the existing Pet v2 vali
 
 ### Requirement: Preview supported Pet scenes
 
-The system SHALL expose explicit, keyboard-reachable scene controls for `Idle`, `Running`, `Review`, `Attention`, `Failed`, `Waiting`, and `Click`. Selecting a scene SHALL update the center preview to the corresponding representative lifecycle, notification, or transient interaction presentation using the same approved Pet asset and animation mappings as the desktop renderer.
+The system SHALL expose explicit, keyboard-reachable scene controls for `Idle`, `Running`, `Review`, `Attention`, `Failed`, `Waiting`, and `Click`. Selecting a scene SHALL update the center preview to the corresponding representative lifecycle, notification, or transient interaction presentation using the same approved Pet asset and animation mappings as the desktop renderer. Notification-bearing scenes SHALL reuse the production notification-card component and styles with controls disabled for preview.
 
 #### Scenario: Initial preview is useful
 

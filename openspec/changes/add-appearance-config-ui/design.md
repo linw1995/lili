@@ -70,7 +70,7 @@ Create an `AppearancePage` and a focused preview component in `lili-ui`. A local
 - `Waiting` → waiting lifecycle plus a bounded attention card.
 - `Click` → the representative transient click animation.
 
-The preview component will reuse the atlas frame scheduler and approved asset URL logic. Notification cards in the preview will be read-only fixture data with no activation or dismissal handlers. Scene and selected-Pet signals will live only in the Appearance WebView and will not be written to `AppState`.
+The preview component will reuse the atlas frame scheduler, approved asset URL logic, and the existing `NotificationCard` component with its production CSS. Notification cards in the preview will use read-only fixture data and disabled controls, so they remain visually identical to runtime notifications without invoking activation or dismissal handlers. Scene and selected-Pet signals will live only in the Appearance WebView and will not be written to `AppState`.
 
 If common frame code is currently private to the live Pet component, extract the reusable frame/scene mapping into `lili-pet` or a small shared module rather than duplicating timing tables. The live renderer remains the authority for actual Session-driven animation.
 

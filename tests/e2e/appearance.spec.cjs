@@ -94,10 +94,17 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
     "data-scene",
     "review",
   );
-  await expect(page.locator(".appearance-preview-notification")).toHaveCount(1);
-  await expect(page.locator(".appearance-preview-notification button")).toHaveCount(0);
-  await expect(page.locator(".appearance-preview-notification")).toContainText(
-    "Review ready",
+  await expect(page.locator(".notification-card-preview")).toHaveCount(1);
+  await expect(
+    page.locator(".notification-card-preview .notification-controls button"),
+  ).toHaveCount(2);
+  const previewControls = page.locator(
+    ".notification-card-preview .notification-controls button",
+  );
+  await expect(previewControls.nth(0)).toBeDisabled();
+  await expect(previewControls.nth(1)).toBeDisabled();
+  await expect(page.locator(".notification-card-preview")).toContainText(
+    "Task completed successfully.",
   );
 
   await expectNoHorizontalClipping(page);
@@ -155,9 +162,11 @@ test("Appearance renders every preview scene with bounded read-only state", asyn
     );
     await expect(button).toHaveAttribute("aria-pressed", "true");
     await expect(
-      page.locator(".appearance-preview-notification"),
+      page.locator(".notification-card-preview"),
     ).toHaveCount(expected.notification ? 1 : 0);
-    await expect(page.locator(".appearance-notification button")).toHaveCount(0);
+    await expect(
+      page.locator(".notification-card-preview .notification-controls button"),
+    ).toHaveCount(expected.notification ? 2 : 0);
   }
 });
 

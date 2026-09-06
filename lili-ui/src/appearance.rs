@@ -6,8 +6,10 @@ use leptos::prelude::*;
 use lili_core::AppearanceSelectionRequest;
 #[cfg(feature = "hydrate")]
 use lili_core::PetId;
-use lili_core::{AppearanceView, PetNotificationKind};
+use lili_core::{AppearanceView, PetNotificationKind, PetNotificationPresentation};
 use lili_pet::{AnimationScheduler, FrameDescriptor, PreviewScene};
+
+use super::notification_carousel::NotificationPreviewCard;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
@@ -70,6 +72,8 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let selection_in_flight = RwSignal::new(false);
     let preview = RwSignal::new(AppearancePreviewController::new(PreviewScene::Idle));
     let preview_frame = RwSignal::new(preview.get_untracked().frame());
+    let preview_wall_clock = RwSignal::new(0_u64);
+    let preview_reduced_motion = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
     start_appearance_selection_refresh(appearance, selection_in_flight);
     #[cfg(feature = "hydrate")]
@@ -242,24 +246,17 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                                 <div class="appearance-preview-empty">"No pending notifications"</div>
                                             }
                                         >
-                                            <div
-                                                class="appearance-notification appearance-preview-notification"
-                                                data-kind=move || preview.get().scene().spec().notification().map(notification_token).unwrap_or_default()
-                                                aria-label="Read-only notification preview"
-                                            >
-                                                <span class="appearance-notification-mark" aria-hidden="true">
-                                                    {move || notification_glyph(preview.get().scene().spec().notification())}
-                                                </span>
-                                                <span class="appearance-notification-copy">
-                                                    <strong>
-                                                        {move || notification_title(preview.get().scene().spec().notification())}
-                                                    </strong>
-                                                    <span>
-                                                        {move || notification_body(preview.get().scene().spec().notification())}
-                                                    </span>
-                                                </span>
-                                                <span class="appearance-notification-action" aria-hidden="true">"↗"</span>
-                                            </div>
+                                            {move || {
+                                                let notification = preview_notification(preview.get().scene())
+                                                    .expect("notification preview scene must provide a notification");
+                                                view! {
+                                                    <NotificationPreviewCard
+                                                        notification
+                                                        wall_clock=preview_wall_clock
+                                                        reduced_motion=preview_reduced_motion
+                                                    />
+                                                }
+                                            }}
                                         </Show>
                                     </div>
                                     <div class="appearance-pet" id="appearance-pet">
@@ -418,35 +415,40 @@ const fn scene_placement(_scene: PreviewScene) -> &'static str {
     "above"
 }
 
-const fn notification_token(notification: PetNotificationKind) -> &'static str {
-    notification.as_str()
-}
-
-const fn notification_glyph(notification: Option<PetNotificationKind>) -> &'static str {
-    match notification {
-        Some(PetNotificationKind::Attention) => "!",
-        Some(PetNotificationKind::Completion) => "✓",
-        Some(PetNotificationKind::Failure) => "×",
-        None => "",
-    }
-}
-
-const fn notification_title(notification: Option<PetNotificationKind>) -> &'static str {
-    match notification {
-        Some(PetNotificationKind::Attention) => "Needs attention",
-        Some(PetNotificationKind::Completion) => "Review ready",
-        Some(PetNotificationKind::Failure) => "Run failed",
-        None => "No notification",
-    }
-}
-
-const fn notification_body(notification: Option<PetNotificationKind>) -> &'static str {
-    match notification {
-        Some(PetNotificationKind::Attention) => "A read-only attention card for this preview.",
-        Some(PetNotificationKind::Completion) => "A read-only completion card for this preview.",
-        Some(PetNotificationKind::Failure) => "A read-only failure card for this preview.",
-        None => "No notification is shown in this preview.",
-    }
+fn preview_notification(scene: PreviewScene) -> Option<PetNotificationPresentation> {
+    let (kind, project_label, summary) = match scene {
+        PreviewScene::Review => (
+            PetNotificationKind::Completion,
+            "Review",
+            "Task completed successfully.",
+        ),
+        PreviewScene::Attention => (
+            PetNotificationKind::Attention,
+            "Attention",
+            "A task needs your attention.",
+        ),
+        PreviewScene::Failed => (
+            PetNotificationKind::Failure,
+            "Failed",
+            "The task could not be completed.",
+        ),
+        PreviewScene::Waiting => (
+            PetNotificationKind::Attention,
+            "Waiting",
+            "Waiting for the next task update.",
+        ),
+        PreviewScene::Idle | PreviewScene::Running | PreviewScene::Click => return None,
+    };
+    Some(PetNotificationPresentation {
+        activation_id: format!("appearance-preview-{}", scene_token(scene)),
+        kind,
+        project_label: Some(project_label.to_owned()),
+        summary: summary.to_owned(),
+        summary_truncated: false,
+        summary_redacted: false,
+        occurred_at_ms: 0,
+        unread: false,
+    })
 }
 
 const fn scene_token(scene: PreviewScene) -> &'static str {
@@ -762,13 +764,36 @@ mod tests {
     #[test]
     fn notification_scenes_are_bounded_read_only_preview_cards() {
         for scene in PreviewScene::all() {
-            let notification = scene.spec().notification();
-            if notification.is_some() {
-                assert!(!notification_body(notification).is_empty());
-                assert!(!notification_title(notification).is_empty());
+            if let Some(notification_kind) = scene.spec().notification() {
+                let notification = preview_notification(*scene)
+                    .expect("notification scenes must provide preview data");
+                assert_eq!(notification.kind, notification_kind);
+                assert!(!notification.summary.is_empty());
             }
         }
-        assert_eq!(notification_token(PetNotificationKind::Failure), "failure");
+        assert!(preview_notification(PreviewScene::Idle).is_none());
+    }
+
+    #[test]
+    fn appearance_notification_preview_reuses_the_notification_card() {
+        let notification = preview_notification(PreviewScene::Review).unwrap();
+        let html = view! {
+            <NotificationPreviewCard
+                notification
+                wall_clock=RwSignal::new(0_u64)
+                reduced_motion=RwSignal::new(false)
+            />
+        }
+        .to_html();
+
+        assert!(html.contains("notification-card"));
+        assert!(html.contains("notification-card-preview"));
+        assert!(html.contains("notification-card-body"));
+        assert!(html.contains("notification-summary"));
+        assert!(html.contains("Task completed successfully."));
+        assert!(html.contains("disabled"));
+        assert!(!html.contains("activateNativeNotification"));
+        assert!(!html.contains("dismissNativeNotification"));
     }
 
     #[test]
@@ -789,7 +814,6 @@ mod tests {
         for live_hook in [
             "/interactions",
             "/dismiss",
-            "data-notification-id",
             "activateNative",
             "dismissNative",
             "openNativePetContextMenu",
@@ -839,6 +863,8 @@ mod tests {
         assert!(css.contains(".appearance-window-frame {"));
         assert!(css.contains("min-height: calc(100vh - 24px);"));
         assert!(css.contains("@keyframes appearance-idle-preview"));
+        assert!(css.contains(".notification-card {"));
+        assert!(css.contains(".notification-card-preview"));
         assert!(css.contains("width: 384px;"));
         assert!(css.contains("height: 572px;"));
         assert!(css.contains("grid-template-columns: 190px minmax(0, 1fr);"));

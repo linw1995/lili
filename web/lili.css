@@ -768,82 +768,32 @@ html:not([data-notification-placement="below"])
 }
 
 .appearance-notifications {
+  --notification-card-height: 58px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 7px;
-  width: min(310px, 100%);
-  min-height: 61px;
+  width: min(360px, 100%);
+  min-height: var(--notification-card-height);
 }
 
-.appearance-notification {
-  display: grid;
-  grid-template-columns: 27px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
+.appearance-notifications .notification-card-preview {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
   width: 100%;
-  min-height: 55px;
-  padding: 8px 10px 8px 9px;
-  border: 1px solid light-dark(rgb(255 255 255 / 80%), rgb(255 255 255 / 16%));
-  border-radius: 15px;
-  background: light-dark(rgb(255 255 255 / 77%), rgb(22 29 40 / 84%));
-  box-shadow: 0 8px 20px light-dark(rgb(44 63 91 / 16%), rgb(0 0 0 / 30%)), inset 0 1px 0 light-dark(rgb(255 255 255 / 82%), rgb(255 255 255 / 13%));
-  backdrop-filter: blur(18px) saturate(1.1);
+  height: var(--notification-card-height);
+  margin: 0;
+  opacity: 1;
+  pointer-events: none;
+  transform: scale(1);
+  transition: none;
+  will-change: auto;
+  z-index: 1;
 }
 
-.appearance-notification[data-kind="attention"] .appearance-notification-mark {
-  background: var(--appearance-amber-soft);
-  color: var(--appearance-amber);
-}
-
-.appearance-notification[data-kind="completion"] .appearance-notification-mark {
-  background: var(--appearance-green-soft);
-  color: var(--appearance-green);
-}
-
-.appearance-notification[data-kind="failure"] .appearance-notification-mark {
-  background: var(--appearance-red-soft);
-  color: var(--appearance-red);
-}
-
-.appearance-notification-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 27px;
-  height: 27px;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.appearance-notification-copy {
-  min-width: 0;
-}
-
-.appearance-notification-copy strong,
-.appearance-notification-copy span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.appearance-notification-copy strong {
-  color: var(--appearance-text);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.appearance-notification-copy span {
-  margin-top: 1px;
-  color: var(--appearance-muted);
-  font-size: 10px;
-}
-
-.appearance-notification-action {
-  color: var(--appearance-muted);
-  font-size: 16px;
+.appearance-notifications .notification-card-preview .notification-controls {
+  pointer-events: none;
 }
 
 .appearance-preview-empty {

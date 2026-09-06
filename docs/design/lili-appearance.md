@@ -25,7 +25,7 @@ The center preview exposes the states already represented by the Pet renderer:
 - `Waiting`
 - `Click`
 
-Scene selection is presentation-only. It does not deliver a Session event, acknowledge a notification, or execute an interaction action.
+Scene selection is presentation-only. It does not deliver a Session event, acknowledge a notification, or execute an interaction action. Notification-bearing scenes reuse the production notification card and styles with disabled controls.
 
 ## Saved design assets
 
