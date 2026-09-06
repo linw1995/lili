@@ -15,8 +15,9 @@ use lili_actions::{
     PetLifecycleSnapshotV1, PetSnapshotV1,
 };
 use lili_core::{
-    AppearancePetView, AppearanceView, PetActionFeedbackKind, PetActionFeedbackPresentation,
-    PetLifecycleState, PetNotificationKind, PetNotificationPresentation, PetPresentationState,
+    AppearancePetView, AppearanceView, MAX_APPEARANCE_PETS, PetActionFeedbackKind,
+    PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
+    PetNotificationPresentation, PetPresentationState,
 };
 use lili_pet::{AtlasFormat, AvailablePet, PetCatalog, PetSummary};
 use lili_session::{
@@ -143,10 +144,31 @@ impl ApprovedPetAsset {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ApprovedPetAssetEntry {
+    id: String,
+    pet: AvailablePet,
+}
+
+impl ApprovedPetAssetEntry {
+    fn load(&self) -> Result<ApprovedPetAsset, lili_pet::AtlasValidationError> {
+        let loaded = self.pet.load_asset()?;
+        let content_type = match loaded.atlas().format() {
+            AtlasFormat::Png => "image/png",
+            AtlasFormat::WebP => "image/webp",
+        };
+        Ok(ApprovedPetAsset {
+            id: self.id.clone(),
+            content_type,
+            bytes: Arc::from(loaded.bytes()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApprovedPetAssetCatalog {
     generation: Uuid,
     by_pet: Arc<HashMap<lili_core::PetId, String>>,
-    assets: Arc<HashMap<String, ApprovedPetAsset>>,
+    assets: Arc<HashMap<String, ApprovedPetAssetEntry>>,
 }
 
 impl ApprovedPetAssetCatalog {
@@ -158,7 +180,7 @@ impl ApprovedPetAssetCatalog {
         self.by_pet.get(pet_id).map(String::as_str)
     }
 
-    pub fn asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
+    fn asset(&self, asset_id: &str) -> Option<ApprovedPetAssetEntry> {
         self.assets.get(asset_id).cloned()
     }
 
@@ -182,17 +204,11 @@ impl ApprovedPetAssetCatalog {
         let mut by_pet = HashMap::with_capacity(candidates.len());
         let mut assets = HashMap::with_capacity(candidates.len());
         for (pet_id, pet) in candidates {
-            let Ok(asset) = approved_asset(&pet) else {
-                continue;
-            };
             let asset_id = Uuid::new_v4().simple().to_string();
             by_pet.insert(pet_id, asset_id.clone());
             assets.insert(
                 asset_id.clone(),
-                ApprovedPetAsset {
-                    id: asset_id,
-                    ..asset
-                },
+                ApprovedPetAssetEntry { id: asset_id, pet },
             );
         }
 
@@ -218,7 +234,9 @@ impl AppState {
     }
 
     fn with_reducer(pet_catalog: PetCatalog, reducer: SessionReducer) -> Self {
-        let (pet_catalog, approved_pet_assets, pet_asset) = load_active_asset(pet_catalog);
+        let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&pet_catalog);
+        let (pet_catalog, approved_pet_assets, pet_asset) =
+            load_active_asset(pet_catalog, approved_pet_assets);
         let selected_pet = Some(PetSummary::from(pet_catalog.active().definition()));
         let pet_asset_id = Some(pet_asset.id().to_owned());
         let session_state = reducer.snapshot();
@@ -253,7 +271,8 @@ impl AppState {
     }
 
     pub async fn approved_pet_asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
-        self.approved_pet_assets.read().await.asset(asset_id)
+        let asset = self.approved_pet_assets.read().await.asset(asset_id)?;
+        asset.load().ok()
     }
 
     pub async fn approved_pet_assets(&self) -> ApprovedPetAssetCatalog {
@@ -263,8 +282,8 @@ impl AppState {
     pub async fn appearance_view(&self) -> AppearanceView {
         let catalog = self.pet_catalog.read().await.clone();
         let assets = self.approved_pet_assets.read().await.clone();
-        let pets = catalog
-            .available_summaries()
+        let selected_pet = PetSummary::from(catalog.active().definition());
+        let pets = bounded_appearance_summaries(catalog.available_summaries(), selected_pet)
             .into_iter()
             .filter_map(|pet| {
                 assets
@@ -286,7 +305,19 @@ impl AppState {
     }
 
     pub async fn replace_pet_catalog(&self, pet_catalog: PetCatalog) -> PetSummary {
-        let (pet_catalog, approved_pet_assets, pet_asset) = load_active_asset(pet_catalog);
+        let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&pet_catalog);
+        let (pet_catalog, approved_pet_assets, pet_asset) =
+            load_active_asset(pet_catalog, approved_pet_assets);
+        self.replace_pet_catalog_with_assets(pet_catalog, approved_pet_assets, pet_asset)
+            .await
+    }
+
+    async fn replace_pet_catalog_with_assets(
+        &self,
+        pet_catalog: PetCatalog,
+        approved_pet_assets: ApprovedPetAssetCatalog,
+        pet_asset: ApprovedPetAsset,
+    ) -> PetSummary {
         let selected_pet = PetSummary::from(pet_catalog.active().definition());
         let pet_asset_id = pet_asset.id().to_owned();
         *self.pet_catalog.write().await = pet_catalog;
@@ -313,9 +344,14 @@ impl AppState {
             return Err(PetSelectionError::Unavailable);
         }
         let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&catalog);
-        if approved_pet_assets.asset_id_for_pet(pet_id).is_none() {
-            return Err(PetSelectionError::Unavailable);
-        }
+        let asset_id = approved_pet_assets
+            .asset_id_for_pet(pet_id)
+            .map(str::to_owned)
+            .ok_or(PetSelectionError::Unavailable)?;
+        let pet_asset = approved_pet_assets
+            .asset(&asset_id)
+            .and_then(|asset| asset.load().ok())
+            .ok_or(PetSelectionError::Unavailable)?;
         if let Some(store) = store {
             let persistent = self
                 .persistent_state(None)
@@ -325,7 +361,9 @@ impl AppState {
                 .save_selected_pet(&persistent)
                 .map_err(PetSelectionError::Persistence)?;
         }
-        Ok(self.replace_pet_catalog(catalog).await)
+        Ok(self
+            .replace_pet_catalog_with_assets(catalog, approved_pet_assets, pet_asset)
+            .await)
     }
 
     pub async fn snapshot(&self) -> ViewSnapshot {
@@ -795,11 +833,15 @@ fn presentation_from_view(
 
 fn load_active_asset(
     pet_catalog: PetCatalog,
+    approved_pet_assets: ApprovedPetAssetCatalog,
 ) -> (PetCatalog, ApprovedPetAssetCatalog, ApprovedPetAsset) {
-    let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&pet_catalog);
-    if let Some(asset_id) =
-        approved_pet_assets.asset_id_for_pet(pet_catalog.active().definition().id())
-        && let Some(asset) = approved_pet_assets.asset(asset_id)
+    let active_id = approved_pet_assets
+        .asset_id_for_pet(pet_catalog.active().definition().id())
+        .map(str::to_owned);
+    if let Some(asset_id) = active_id
+        && let Some(asset) = approved_pet_assets
+            .asset(&asset_id)
+            .and_then(|asset| asset.load().ok())
     {
         return (pet_catalog, approved_pet_assets, asset);
     }
@@ -811,21 +853,26 @@ fn load_active_asset(
         .expect("embedded fallback asset must remain approved");
     let asset = approved_pet_assets
         .asset(asset_id)
+        .and_then(|asset| asset.load().ok())
         .expect("embedded fallback asset must resolve");
     (fallback, approved_pet_assets, asset)
 }
 
-fn approved_asset(pet: &AvailablePet) -> Result<ApprovedPetAsset, lili_pet::AtlasValidationError> {
-    let loaded = pet.load_asset()?;
-    let content_type = match loaded.atlas().format() {
-        AtlasFormat::Png => "image/png",
-        AtlasFormat::WebP => "image/webp",
-    };
-    Ok(ApprovedPetAsset {
-        id: Uuid::new_v4().simple().to_string(),
-        content_type,
-        bytes: Arc::from(loaded.bytes()),
-    })
+fn bounded_appearance_summaries(
+    mut summaries: Vec<PetSummary>,
+    selected: PetSummary,
+) -> Vec<PetSummary> {
+    if summaries.len() <= MAX_APPEARANCE_PETS {
+        return summaries;
+    }
+
+    summaries.truncate(MAX_APPEARANCE_PETS);
+    if !summaries.iter().any(|pet| pet.id == selected.id) {
+        summaries.pop();
+        summaries.push(selected);
+        summaries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+    }
+    summaries
 }
 
 impl Default for AppState {
@@ -975,6 +1022,22 @@ mod tests {
         assert_eq!(view.pets[0].display_name, "Lili");
         assert_eq!(view.selected_pet_id, Some(selected));
         assert!(view.validate().is_ok());
+    }
+
+    #[test]
+    fn bounded_appearance_summaries_keep_the_active_pet_within_the_contract_limit() {
+        let summaries = (0..=MAX_APPEARANCE_PETS)
+            .map(|index| PetSummary {
+                id: lili_core::PetId::parse(&format!("pet-{index}")).unwrap(),
+                display_name: format!("Pet {index}"),
+            })
+            .collect::<Vec<_>>();
+        let selected = summaries.last().cloned().unwrap();
+
+        let bounded = bounded_appearance_summaries(summaries, selected.clone());
+
+        assert_eq!(bounded.len(), MAX_APPEARANCE_PETS);
+        assert!(bounded.iter().any(|pet| pet.id == selected.id));
     }
 
     #[tokio::test]
