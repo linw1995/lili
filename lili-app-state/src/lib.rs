@@ -1028,7 +1028,7 @@ mod tests {
     fn bounded_appearance_summaries_keep_the_active_pet_within_the_contract_limit() {
         let summaries = (0..=MAX_APPEARANCE_PETS)
             .map(|index| PetSummary {
-                id: lili_core::PetId::parse(&format!("pet-{index}")).unwrap(),
+                id: lili_core::PetId::parse(format!("pet-{index}")).unwrap(),
                 display_name: format!("Pet {index}"),
             })
             .collect::<Vec<_>>();
