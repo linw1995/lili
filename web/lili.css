@@ -839,6 +839,15 @@ html:not([data-notification-placement="below"])
   transform: translate(0, 0);
 }
 
+.appearance-pet-atlas,
+.appearance-pet-thumb-atlas {
+  pointer-events: none;
+  touch-action: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .appearance-pet-tag {
   position: absolute;
   z-index: 1;

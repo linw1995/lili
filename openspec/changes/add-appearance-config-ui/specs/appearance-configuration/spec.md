@@ -109,6 +109,11 @@ The system SHALL serve the Appearance surface through the existing authenticated
 - **WHEN** keyboard focus reaches the Pet list or scene controls
 - **THEN** the user can select a Pet or scene without a pointer, and the selected state is exposed through native focus and accessibility semantics
 
+#### Scenario: Pet imagery is presentation-only
+
+- **WHEN** the user presses, swipes, selects, or drags a Pet image in the Appearance surface
+- **THEN** the browser does not select or drag the image, and Pet or scene controls remain the only interactive preview affordances
+
 #### Scenario: Appearance renderer reconnects
 
 - **WHEN** the Appearance WebView reloads or reconnects

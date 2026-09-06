@@ -129,6 +129,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                 src=asset_url.clone()
                                 alt=""
                                 aria-hidden="true"
+                                draggable="false"
                             />
                         </span>
                         <span class="appearance-pet-item-copy">
@@ -265,6 +266,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                             src=selected_asset_url
                                             alt=""
                                             aria-hidden="true"
+                                            draggable="false"
                                             data-frame-row=move || preview_frame.get().row()
                                             data-frame-column=move || preview_frame.get().column()
                                             style:animation="none"
@@ -318,7 +320,13 @@ fn appearance_pet_item_static(pet: lili_core::AppearancePetView, selected: bool)
             data-pet-id=pet.id.as_str().to_owned()
         >
             <span class="appearance-pet-thumb">
-                <img class="appearance-pet-thumb-atlas" src=asset_url alt="" aria-hidden="true" />
+                <img
+                    class="appearance-pet-thumb-atlas"
+                    src=asset_url
+                    alt=""
+                    aria-hidden="true"
+                    draggable="false"
+                />
             </span>
             <span class="appearance-pet-item-copy">
                 <strong>{pet.display_name}</strong>
@@ -722,6 +730,7 @@ mod tests {
         assert!(html.contains("id=\"appearance-heading\""));
         assert!(html.contains("/pet-assets/asset-id"));
         assert_eq!(html.matches("appearance-pet-thumb-atlas").count(), 1);
+        assert_eq!(html.matches("draggable=\"false\"").count(), 2);
         assert_eq!(html.matches("aria-pressed=").count(), 7);
         assert_eq!(html.matches("data-scene=").count(), 8);
         assert!(!html.contains("Choose a companion"));
@@ -865,6 +874,8 @@ mod tests {
         assert!(css.contains("@keyframes appearance-idle-preview"));
         assert!(css.contains(".notification-card {"));
         assert!(css.contains(".notification-card-preview"));
+        assert!(css.contains("-webkit-user-drag: none;"));
+        assert!(css.contains("pointer-events: none;"));
         assert!(css.contains("width: 384px;"));
         assert!(css.contains("height: 572px;"));
         assert!(css.contains("grid-template-columns: 190px minmax(0, 1fr);"));

@@ -118,6 +118,16 @@ test("each Pet list entry shows its idle atlas preview", async ({ page }) => {
     "animation-name",
     "appearance-idle-preview",
   );
+  await expect(page.locator(".appearance-pet-atlas")).toHaveAttribute(
+    "draggable",
+    "false",
+  );
+  await expect(previews.first()).toHaveAttribute("draggable", "false");
+  await expect(page.locator(".appearance-pet-atlas")).toHaveCSS(
+    "pointer-events",
+    "none",
+  );
+  await expect(previews.first()).toHaveCSS("pointer-events", "none");
 
   const geometry = await previews.first().evaluate((element) => {
     const frame = element.parentElement.getBoundingClientRect();

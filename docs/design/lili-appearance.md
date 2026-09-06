@@ -11,6 +11,7 @@ This design covers the first Appearance surface for the Lili desktop pet. The pa
 - A left navigation rail with one visible entry: `Pet`.
 - A center preview workbench with explicit scene controls.
 - A right-side installed Pet list used to change the selected package; each item shows a looping Idle atlas thumbnail.
+- Pet imagery is presentation-only: browser image selection, swipe, and drag interactions are disabled while the surrounding controls remain operable.
 - No Active pet summary and no additional configuration forms.
 
 ## Preview scenes
