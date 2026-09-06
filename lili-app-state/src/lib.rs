@@ -69,9 +69,7 @@ pub struct AppState {
     snapshot: Arc<RwLock<ViewSnapshot>>,
     settings: Arc<RwLock<UserSettings>>,
     session_reducer: Arc<Mutex<SessionReducer>>,
-    pet_catalog: Arc<RwLock<PetCatalog>>,
-    approved_pet_assets: Arc<RwLock<ApprovedPetAssetCatalog>>,
-    pet_asset: Arc<RwLock<ApprovedPetAsset>>,
+    pet_state: Arc<RwLock<PetRuntimeState>>,
     pet_selection_lock: Arc<Mutex<()>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
     action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
@@ -176,6 +174,12 @@ pub struct ApprovedPetAssetCatalog {
     assets: Arc<HashMap<String, ApprovedPetAssetEntry>>,
 }
 
+struct PetRuntimeState {
+    catalog: PetCatalog,
+    approved_pet_assets: ApprovedPetAssetCatalog,
+    active_asset: ApprovedPetAsset,
+}
+
 impl ApprovedPetAssetCatalog {
     pub fn generation(&self) -> Uuid {
         self.generation
@@ -258,9 +262,11 @@ impl AppState {
             snapshot: Arc::new(RwLock::new(initial_snapshot)),
             settings: Arc::new(RwLock::new(UserSettings::default())),
             session_reducer: Arc::new(Mutex::new(reducer)),
-            pet_catalog: Arc::new(RwLock::new(pet_catalog)),
-            approved_pet_assets: Arc::new(RwLock::new(approved_pet_assets)),
-            pet_asset: Arc::new(RwLock::new(pet_asset)),
+            pet_state: Arc::new(RwLock::new(PetRuntimeState {
+                catalog: pet_catalog,
+                approved_pet_assets,
+                active_asset: pet_asset,
+            })),
             pet_selection_lock: Arc::new(Mutex::new(())),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
             action_feedback: Arc::new(RwLock::new(None)),
@@ -272,17 +278,18 @@ impl AppState {
     }
 
     pub async fn available_pets(&self) -> Vec<PetSummary> {
-        self.pet_catalog.read().await.available_summaries()
+        let pet_state = self.pet_state.read().await;
+        let selected = PetSummary::from(pet_state.catalog.active().definition());
+        summaries_with_active_metadata(pet_state.catalog.available_summaries(), selected)
     }
 
     pub async fn approved_pet_asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
-        let active_asset = self.pet_asset.read().await;
-        if active_asset.id() == asset_id {
-            return Some(active_asset.clone());
+        let pet_state = self.pet_state.read().await;
+        if pet_state.active_asset.id() == asset_id {
+            return Some(pet_state.active_asset.clone());
         }
-        drop(active_asset);
-
-        let asset = self.approved_pet_assets.read().await.asset(asset_id)?;
+        let asset = pet_state.approved_pet_assets.asset(asset_id)?;
+        drop(pet_state);
         tokio::task::spawn_blocking(move || asset.load())
             .await
             .ok()?
@@ -290,12 +297,13 @@ impl AppState {
     }
 
     pub async fn approved_pet_assets(&self) -> ApprovedPetAssetCatalog {
-        self.approved_pet_assets.read().await.clone()
+        self.pet_state.read().await.approved_pet_assets.clone()
     }
 
     pub async fn appearance_view(&self) -> AppearanceView {
-        let catalog = self.pet_catalog.read().await.clone();
-        let assets = self.approved_pet_assets.read().await.clone();
+        let pet_state = self.pet_state.read().await;
+        let catalog = &pet_state.catalog;
+        let assets = &pet_state.approved_pet_assets;
         let selected_pet = PetSummary::from(catalog.active().definition());
         let pets = bounded_appearance_summaries(catalog.available_summaries(), selected_pet)
             .into_iter()
@@ -334,9 +342,11 @@ impl AppState {
     ) -> PetSummary {
         let selected_pet = PetSummary::from(pet_catalog.active().definition());
         let pet_asset_id = pet_asset.id().to_owned();
-        *self.pet_catalog.write().await = pet_catalog;
-        *self.approved_pet_assets.write().await = approved_pet_assets;
-        *self.pet_asset.write().await = pet_asset;
+        *self.pet_state.write().await = PetRuntimeState {
+            catalog: pet_catalog,
+            approved_pet_assets,
+            active_asset: pet_asset,
+        };
         {
             let mut snapshot = self.snapshot.write().await;
             snapshot.selected_pet = Some(selected_pet.clone());
@@ -354,7 +364,7 @@ impl AppState {
     ) -> Result<PetSummary, PetSelectionError> {
         let _selection_guard = self.pet_selection_lock.lock().await;
         let selected_pet_id = pet_id.clone();
-        let current_active = self.pet_catalog.read().await.active().clone();
+        let current_active = self.pet_state.read().await.catalog.active().clone();
         let persistent = if store.is_some() {
             Some(
                 self.persistent_state(None)
@@ -400,7 +410,7 @@ impl AppState {
                 (catalog, approved_pet_assets, pet_asset)
             }
             PetSelectionPreparation::Unavailable(catalog) => {
-                *self.pet_catalog.write().await = catalog;
+                self.pet_state.write().await.catalog = catalog;
                 return Err(PetSelectionError::Unavailable);
             }
         };
@@ -462,7 +472,7 @@ impl AppState {
     ) -> Result<ReductionOutcome, PersistenceError> {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let selected_pet_id =
-            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+            lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
         let accepted_at_ms = self.monotonic_time_ms();
@@ -520,7 +530,7 @@ impl AppState {
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
         let selected_pet_id =
-            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+            lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
         let outcome = reducer.acknowledge_notification(id, self.monotonic_time_ms());
@@ -693,7 +703,7 @@ impl AppState {
         window_placement: Option<WindowPlacement>,
     ) -> PersistentApplicationState {
         let selected_pet_id =
-            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+            lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
         PersistentApplicationState::new(
             selected_pet_id,
             window_placement,
@@ -905,6 +915,7 @@ fn bounded_appearance_summaries(
     mut summaries: Vec<PetSummary>,
     selected: PetSummary,
 ) -> Vec<PetSummary> {
+    summaries = summaries_with_active_metadata(summaries, selected.clone());
     if summaries.len() <= MAX_APPEARANCE_PETS {
         return summaries;
     }
@@ -915,6 +926,19 @@ fn bounded_appearance_summaries(
         summaries.push(selected);
         summaries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
     }
+    summaries
+}
+
+fn summaries_with_active_metadata(
+    mut summaries: Vec<PetSummary>,
+    selected: PetSummary,
+) -> Vec<PetSummary> {
+    if let Some(index) = summaries.iter().position(|pet| pet.id == selected.id) {
+        summaries[index] = selected.clone();
+    } else {
+        summaries.push(selected.clone());
+    }
+    summaries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
     summaries
 }
 
@@ -1161,6 +1185,52 @@ mod tests {
         assert_eq!(view.pets[0].display_name, "Lili");
         assert_eq!(view.selected_pet_id, Some(selected));
         assert!(view.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn appearance_view_prefers_active_metadata_on_fallback_id_collision() {
+        let root =
+            std::env::temp_dir().join(format!("lili-pet-fallback-collision-{}", Uuid::new_v4()));
+        let package_dir = root.join("pets").join("lili");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(
+            package_dir.join("pet.json"),
+            r#"{"id":"lili","displayName":"External Lili","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state.snapshot().await.pet_asset_id.unwrap();
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .await
+            .unwrap();
+        std::fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let pets_root = root.join("pets");
+        let missing = lili_core::PetId::parse("missing-pet").unwrap();
+        let state =
+            AppState::with_pet_catalog(PetCatalog::load_with_selection(&pets_root, Some(&missing)));
+        let view = state.appearance_view().await;
+        let fallback_pet = view.pets.iter().find(|pet| pet.id.as_str() == "lili");
+
+        assert_eq!(
+            view.selected_pet_id.as_ref().map(lili_core::PetId::as_str),
+            Some("lili")
+        );
+        assert_eq!(
+            fallback_pet.map(|pet| pet.display_name.as_str()),
+            Some("Lili")
+        );
+        assert_eq!(
+            state
+                .available_pets()
+                .await
+                .into_iter()
+                .find(|pet| pet.id.as_str() == "lili")
+                .map(|pet| pet.display_name),
+            Some("Lili".to_owned())
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
