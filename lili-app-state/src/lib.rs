@@ -1123,6 +1123,7 @@ mod tests {
             Some(&active_id),
         ));
         std::fs::remove_file(candidate_dir.join("spritesheet.webp")).unwrap();
+        std::fs::remove_file(active_dir.join("spritesheet.webp")).unwrap();
 
         assert!(matches!(
             state.select_pet(&pets_root, &candidate_id, None).await,
