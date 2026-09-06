@@ -152,9 +152,18 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let preview = RwSignal::new(AppearancePreviewController::new(PreviewScene::Idle));
     let preview_frame = RwSignal::new(preview.get_untracked().frame());
     let preview_wall_clock = RwSignal::new(0_u64);
+    #[cfg(feature = "hydrate")]
+    let preview_reduced_motion = RwSignal::new(super::system_prefers_reduced_motion());
+    #[cfg(not(feature = "hydrate"))]
     let preview_reduced_motion = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
-    start_appearance_lifecycle(appearance, selection_in_flight, preview, preview_frame);
+    start_appearance_lifecycle(
+        appearance,
+        selection_in_flight,
+        preview,
+        preview_frame,
+        preview_reduced_motion,
+    );
     let initial_appearance = appearance.get_untracked();
     let serialized_appearance = serde_json::to_string(&initial_appearance).unwrap_or_default();
     let selected_asset_url = move || {
@@ -455,6 +464,15 @@ impl AppearancePreviewController {
     fn advance(&mut self, delta: Duration) -> FrameDescriptor {
         self.scheduler.advance(delta)
     }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn tick(&mut self, delta: Duration, reduced_motion: bool) -> FrameDescriptor {
+        if reduced_motion {
+            self.frame()
+        } else {
+            self.advance(delta)
+        }
+    }
 }
 
 fn frame_transform(frame: FrameDescriptor) -> String {
@@ -561,6 +579,7 @@ fn start_appearance_lifecycle(
     selection_in_flight: RwSignal<bool>,
     preview: RwSignal<AppearancePreviewController>,
     preview_frame: RwSignal<FrameDescriptor>,
+    preview_reduced_motion: RwSignal<bool>,
 ) {
     use wasm_bindgen::{JsCast, closure::Closure};
 
@@ -581,7 +600,7 @@ fn start_appearance_lifecycle(
     };
     if appearance_window_is_native() {
         let shown_callback = Closure::<dyn FnMut()>::new(move || {
-            start_appearance_preview_clock(preview, preview_frame);
+            start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
             start_appearance_selection_refresh(appearance, selection_in_flight);
         });
         let hidden_callback = Closure::<dyn FnMut()>::new(move || {
@@ -599,7 +618,7 @@ fn start_appearance_lifecycle(
         lifecycle._shown_callback = Some(shown_callback);
         lifecycle._hidden_callback = Some(hidden_callback);
         if appearance_window_is_visible() {
-            start_appearance_preview_clock(preview, preview_frame);
+            start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
             start_appearance_selection_refresh(appearance, selection_in_flight);
         }
     } else {
@@ -610,7 +629,7 @@ fn start_appearance_lifecycle(
                     stop_appearance_preview_clock();
                     stop_appearance_selection_refresh();
                 } else {
-                    start_appearance_preview_clock(preview, preview_frame);
+                    start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
                     start_appearance_selection_refresh(appearance, selection_in_flight);
                 }
             }
@@ -621,7 +640,7 @@ fn start_appearance_lifecycle(
         );
         lifecycle._visibility_callback = Some(visibility_callback);
         if !document.hidden() {
-            start_appearance_preview_clock(preview, preview_frame);
+            start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
             start_appearance_selection_refresh(appearance, selection_in_flight);
         }
     }
@@ -652,6 +671,7 @@ fn stop_appearance_selection_refresh() {
 fn start_appearance_preview_clock(
     preview: RwSignal<AppearancePreviewController>,
     preview_frame: RwSignal<FrameDescriptor>,
+    preview_reduced_motion: RwSignal<bool>,
 ) {
     use std::cell::Cell;
 
@@ -664,8 +684,14 @@ fn start_appearance_preview_clock(
     let callback = Closure::<dyn FnMut()>::new(move || {
         let now = super::animation_clock_ms();
         let elapsed_ms = now.saturating_sub(last_tick.replace(now));
+        let reduced_motion = super::system_prefers_reduced_motion();
+        if preview_reduced_motion.get_untracked() != reduced_motion {
+            preview_reduced_motion.set(reduced_motion);
+        }
         let mut frame = preview.get_untracked().frame();
-        preview.update(|preview| frame = preview.advance(Duration::from_millis(elapsed_ms)));
+        preview.update(|preview| {
+            frame = preview.tick(Duration::from_millis(elapsed_ms), reduced_motion)
+        });
         preview_frame.set(frame);
     });
     let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
@@ -925,6 +951,15 @@ mod tests {
             None,
             "scene previews must not carry a live notification"
         );
+    }
+
+    #[test]
+    fn appearance_preview_controller_holds_a_frame_when_motion_is_reduced() {
+        let mut controller = AppearancePreviewController::new(PreviewScene::Running);
+        let running_frame = controller.tick(Duration::from_millis(400), false);
+        let held_frame = controller.tick(Duration::from_millis(400), true);
+
+        assert_eq!(held_frame, running_frame);
     }
 
     #[test]
