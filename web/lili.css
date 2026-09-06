@@ -401,18 +401,13 @@ html:not([data-notification-placement="below"])
 .appearance-brand,
 .appearance-brand-copy,
 .appearance-top-actions,
-.appearance-local-status,
 .appearance-page-label,
 .appearance-panel-heading,
 .appearance-panel-heading-copy,
-.appearance-live-label,
-.appearance-preview-footer,
-.appearance-preview-footer span,
 .appearance-pet-item,
 .appearance-pet-item-copy,
 .appearance-pet-item-check,
 .appearance-scene-heading,
-.appearance-scene-heading span,
 .appearance-status-line {
   display: flex;
   align-items: center;
@@ -448,10 +443,6 @@ html:not([data-notification-placement="below"])
 }
 
 .appearance-brand-copy span,
-.appearance-local-status,
-.appearance-panel-heading-copy span,
-.appearance-scene-heading span,
-.appearance-preview-footer,
 .appearance-pet-item-copy span,
 .appearance-status-line small {
   color: var(--appearance-muted);
@@ -499,11 +490,6 @@ html:not([data-notification-placement="below"])
   color: var(--appearance-red);
 }
 
-.appearance-local-status {
-  gap: 7px;
-  white-space: nowrap;
-}
-
 .appearance-status-dot {
   width: 7px;
   height: 7px;
@@ -542,15 +528,6 @@ html:not([data-notification-placement="below"])
   background: var(--appearance-soft);
 }
 
-.appearance-sidebar-label {
-  padding: 0 10px 9px;
-  color: var(--appearance-faint);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
 .appearance-nav-button {
   display: flex;
   align-items: center;
@@ -579,26 +556,6 @@ html:not([data-notification-placement="below"])
   text-align: center;
 }
 
-.appearance-sidebar-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: auto;
-  padding: 15px 10px 0;
-  border-top: 1px solid var(--appearance-line);
-}
-
-.appearance-sidebar-foot strong {
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.appearance-sidebar-foot span {
-  color: var(--appearance-muted);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
 .appearance-main {
   min-width: 0;
   min-height: 0;
@@ -619,13 +576,6 @@ html:not([data-notification-placement="below"])
   line-height: 1.15;
   letter-spacing: -0.04em;
   font-weight: 600;
-}
-
-.appearance-page-heading p {
-  max-width: 640px;
-  margin: 0;
-  color: var(--appearance-muted);
-  font-size: 13px;
 }
 
 .appearance-workbench {
@@ -662,17 +612,6 @@ html:not([data-notification-placement="below"])
 .appearance-panel-heading-copy strong {
   font-size: 13px;
   font-weight: 600;
-}
-
-.appearance-live-label {
-  gap: 7px;
-  min-height: 26px;
-  padding: 0 8px;
-  border-radius: 7px;
-  background: var(--appearance-cyan-soft);
-  color: var(--appearance-cyan);
-  font-size: 10px;
-  font-weight: 700;
 }
 
 .appearance-scene-picker {
@@ -993,26 +932,6 @@ html:not([data-notification-placement="below"])
   backdrop-filter: blur(10px);
 }
 
-.appearance-preview-footer {
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 43px;
-  padding: 0 18px;
-  border-top: 1px solid var(--appearance-line);
-}
-
-.appearance-preview-footer > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.appearance-preview-footer > span:last-child {
-  flex: 0 0 auto;
-  color: var(--appearance-cyan);
-  white-space: nowrap;
-}
-
 .appearance-pet-panel {
   padding: 18px;
 }
@@ -1021,12 +940,6 @@ html:not([data-notification-placement="below"])
   margin: 0 0 4px;
   font-size: 16px;
   font-weight: 600;
-}
-
-.appearance-pet-panel > p {
-  margin: 0 0 17px;
-  color: var(--appearance-muted);
-  font-size: 12px;
 }
 
 .appearance-pet-list-heading {
@@ -1190,11 +1103,6 @@ html:not([data-notification-placement="below"])
     border-bottom: 1px solid var(--appearance-line);
   }
 
-  .appearance-sidebar-label,
-  .appearance-sidebar-foot {
-    display: none;
-  }
-
   .appearance-nav-button {
     justify-content: center;
     padding: 0 5px;
@@ -1225,10 +1133,6 @@ html:not([data-notification-placement="below"])
     min-height: 62px;
     padding: 0 16px;
     border-radius: 0;
-  }
-
-  .appearance-local-status {
-    display: none;
   }
 
   .appearance-main {

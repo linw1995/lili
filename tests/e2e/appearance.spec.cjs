@@ -96,8 +96,8 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   );
   await expect(page.locator(".appearance-preview-notification")).toHaveCount(1);
   await expect(page.locator(".appearance-preview-notification button")).toHaveCount(0);
-  await expect(page.locator("#appearance-preview-footer-copy")).toContainText(
-    "Read-only completion card",
+  await expect(page.locator(".appearance-preview-notification")).toContainText(
+    "Review ready",
   );
 
   await expectNoHorizontalClipping(page);

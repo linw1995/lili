@@ -169,7 +169,6 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                         <span class="appearance-brand-copy"><strong>"Lili"</strong><span>"Pet Studio"</span></span>
                     </div>
                     <div class="appearance-top-actions">
-                        <span class="appearance-local-status"><span class="appearance-status-dot" aria-hidden="true"></span>"Local only"</span>
                         <span class="appearance-page-label">"Appearance"</span>
                         <div class="appearance-window-controls" aria-label="Window controls">
                             <button
@@ -196,20 +195,14 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
 
                 <div class="appearance-body">
                 <nav class="appearance-sidebar" aria-label="Settings sections">
-                    <div class="appearance-sidebar-label">"Configure"</div>
                     <button class="appearance-nav-button" type="button" aria-current="page">
                         <span aria-hidden="true">"🐾"</span><span>"Pet"</span>
                     </button>
-                    <div class="appearance-sidebar-foot">
-                        <strong>"Pet configuration"</strong>
-                        <span>"Choose a package and preview each state."</span>
-                    </div>
                 </nav>
 
                 <section class="appearance-main" aria-labelledby="appearance-heading">
                     <div class="appearance-page-heading">
                         <h1 id="appearance-heading">"Appearance"</h1>
-                        <p>"Choose a companion on the right, then switch scenes to inspect how it looks in each desktop state."</p>
                     </div>
 
                     <div class="appearance-workbench">
@@ -217,17 +210,12 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             <div class="appearance-panel-heading">
                                 <div class="appearance-panel-heading-copy">
                                     <strong>"Live preview"</strong>
-                                    <span>"Preview stays local until you select a Pet."</span>
                                 </div>
-                                <span class="appearance-live-label"><span class="appearance-status-dot" aria-hidden="true"></span>"Live"</span>
                             </div>
 
                             <div class="appearance-scene-picker">
                                 <div class="appearance-scene-heading">
                                     <strong>"Scene"</strong>
-                                    <span id="appearance-scene-caption">
-                                        {move || scene_caption(preview.get().scene())}
-                                    </span>
                                 </div>
                                 <div class="appearance-scene-buttons" role="group" aria-label="Preview scenes">
                                     {scene_items}
@@ -292,18 +280,10 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                 </div>
                                 <span class="appearance-scene-badge">"Preview only"</span>
                             </div>
-
-                            <div class="appearance-preview-footer">
-                                <span id="appearance-preview-footer-copy">
-                                    {move || scene_footer(preview.get().scene())}
-                                </span>
-                                <span>"Single scene"</span>
-                            </div>
                         </section>
 
                         <aside class="appearance-pet-panel" aria-label="Pet list">
                             <h2>"Pet"</h2>
-                            <p>"Choose which Pet appears in Lili Pet Studio."</p>
                             <div class="appearance-pet-list-heading">
                                 <span>"Installed pets"</span>
                                 <span>{move || format!("{} available", appearance.get().pets.len())}</span>
@@ -311,17 +291,14 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             <div class="appearance-pet-list" role="listbox" aria-label="Installed pets">
                                 {pet_items}
                             </div>
-                            <div class="appearance-status-line">
-                                <span class="appearance-status-dot" aria-hidden="true"></span>
-                                <Show
-                                    when=move || selection_error.get().is_some()
-                                    fallback=|| view! { <small>"All Pets run locally on your device."</small> }
-                                >
+                            <Show when=move || selection_error.get().is_some()>
+                                <div class="appearance-status-line">
+                                    <span class="appearance-status-dot" aria-hidden="true"></span>
                                     <small role="alert" class="appearance-selection-error">
                                         {move || selection_error.get().unwrap_or_else(|| "Pet selection failed".to_owned())}
                                     </small>
-                                </Show>
-                            </div>
+                                </div>
+                            </Show>
                         </aside>
                     </div>
                 </section>
@@ -434,31 +411,6 @@ const fn animation_token(animation: lili_pet::AnimationState) -> &'static str {
         lili_pet::AnimationState::Waiting => "waiting",
         lili_pet::AnimationState::Running => "running",
         lili_pet::AnimationState::Review => "review",
-    }
-}
-
-const fn scene_caption(scene: PreviewScene) -> &'static str {
-    match scene {
-        PreviewScene::Idle => "Idle · no pending notification",
-        PreviewScene::Running => "Running · activity animation",
-        PreviewScene::Review => "Review · completion notification",
-        PreviewScene::Attention => "Attention · attention notification",
-        PreviewScene::Failed => "Failed · failure notification",
-        PreviewScene::Waiting => "Waiting · attention notification",
-        PreviewScene::Click => "Click · waving animation",
-    }
-}
-
-const fn scene_footer(scene: PreviewScene) -> &'static str {
-    match scene {
-        PreviewScene::Idle | PreviewScene::Running | PreviewScene::Click => {
-            "No notification window is shown in this state."
-        }
-        PreviewScene::Review => "Read-only completion card is shown above the Pet.",
-        PreviewScene::Attention | PreviewScene::Waiting => {
-            "Read-only attention card is shown above the Pet."
-        }
-        PreviewScene::Failed => "Read-only failure card is shown above the Pet.",
     }
 }
 
@@ -770,6 +722,9 @@ mod tests {
         assert_eq!(html.matches("appearance-pet-thumb-atlas").count(), 1);
         assert_eq!(html.matches("aria-pressed=").count(), 7);
         assert_eq!(html.matches("data-scene=").count(), 8);
+        assert!(!html.contains("Choose a companion"));
+        assert!(!html.contains("Pet configuration"));
+        assert!(!html.contains("All Pets run locally"));
         assert!(!html.contains("Active pet"));
         assert!(!html.contains(">Notifications</span>"));
         assert!(!html.contains(">Interactions</span>"));
