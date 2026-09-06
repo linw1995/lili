@@ -928,6 +928,25 @@ mod tests {
     }
 
     #[test]
+    fn appearance_animation_tokens_cover_every_standard_animation() {
+        let expected = [
+            "idle",
+            "running-right",
+            "running-left",
+            "waving",
+            "jumping",
+            "failed",
+            "waiting",
+            "running",
+            "review",
+        ];
+
+        for (spec, expected) in lili_pet::STANDARD_ANIMATIONS.into_iter().zip(expected) {
+            assert_eq!(animation_token(spec.state()), expected);
+        }
+    }
+
+    #[test]
     fn notification_scenes_are_bounded_read_only_preview_cards() {
         for scene in PreviewScene::all() {
             if let Some(notification_kind) = scene.spec().notification() {
