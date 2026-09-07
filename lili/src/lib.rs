@@ -38,7 +38,7 @@ use lili_app_state::{
 };
 use lili_core::PetId;
 use lili_pet::PetCatalog;
-use lili_server::{StaticAssets, build_native_router_with_diagnostics_and_persistence};
+use lili_server::{StaticAssets, build_native_router_with_diagnostics_and_persistence_at};
 use lili_session::{
     BoundForwardingEndpoint, ClaimedSqliteSpoolRecord, CodexPluginEvidenceStore,
     ForwardingCredentialStore, ForwardingTransportError, SqliteSpoolStore,
@@ -58,7 +58,7 @@ use tokio::sync::oneshot;
 const SPOOL_DRAIN_INTERVAL: Duration = Duration::from_millis(250);
 const CONTEXT_MENU_WINDOW_LABEL: &str = "pet-context-menu";
 const CONTEXT_MENU_WIDTH: u32 = 244;
-const CONTEXT_MENU_HEIGHT: u32 = 160;
+const CONTEXT_MENU_HEIGHT: u32 = 192;
 // Reserve transparent space around the WebView content so its CSS shadow remains visible.
 const CONTEXT_MENU_SHADOW_MARGIN: i32 = 24;
 #[cfg(any(test, target_os = "macos"))]
@@ -69,6 +69,17 @@ const NOTIFICATION_WINDOW_HEIGHT: u32 = 158;
 const NOTIFICATION_WINDOW_HIDE_DELAY: Duration = Duration::from_secs(5);
 const NOTIFICATION_SHADOW_INSET: i32 = 12;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
+const APPEARANCE_WINDOW_LABEL: &str = "appearance";
+const APPEARANCE_WINDOW_WIDTH: f64 = 1_180.0;
+const APPEARANCE_WINDOW_HEIGHT: f64 = 860.0;
+const APPEARANCE_WINDOW_SHOWN_SCRIPT: &str = r#"
+window.__LILI_APPEARANCE_VISIBLE__ = true;
+window.dispatchEvent(new Event('lili-appearance-shown'));
+"#;
+const APPEARANCE_WINDOW_HIDDEN_SCRIPT: &str = r#"
+window.__LILI_APPEARANCE_VISIBLE__ = false;
+window.dispatchEvent(new Event('lili-appearance-hidden'));
+"#;
 const PET_SPRITE_LOGICAL_HEIGHT: f64 = 208.0;
 const DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT: &str = r#"
 document.addEventListener('contextmenu', (event) => {
@@ -317,14 +328,16 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         visibility: tray_menu.visibility.clone(),
         always_on_top: tray_menu.always_on_top.clone(),
     });
-    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics_and_persistence(
+    let loopback = LoopbackServer::bind(build_native_router_with_diagnostics_and_persistence_at(
         state.clone(),
         assets,
         None,
         state_store.clone(),
+        application_paths.pets_root(),
     ))
     .expect("failed to bind secure loopback transport");
     let bootstrap_url = loopback.bootstrap_url();
+    let appearance_bootstrap_url = loopback.appearance_bootstrap_url();
     let notification_bootstrap_url = loopback.notification_bootstrap_url();
     let certificate_sha256 = loopback.certificate_sha256();
     let origin = loopback.origin();
@@ -337,6 +350,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
         .expect("failed to register loopback capability");
     register_notification_window_capability(&app, &origin)
         .expect("failed to register notification window capability");
+    register_appearance_window_capability(&app, &origin)
+        .expect("failed to register Appearance window capability");
     register_context_menu_capability(&app, &origin)
         .expect("failed to configure context menu capability");
     let context_menu_navigation = ContextMenuNavigation {
@@ -355,6 +370,8 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     app.manage(context_menu_navigation.clone());
     let _context_menu_window = create_context_menu_window(app.handle(), &context_menu_navigation)
         .expect("failed to preload pet context menu window");
+    let appearance_window = create_appearance_window(&app, &origin)
+        .expect("failed to create Appearance settings window");
     let window = create_pet_window(&app, &state, &origin, smoke, acceptance)
         .expect("failed to create pet window");
     let notification_window = create_notification_window(&app, &state, &origin, acceptance)
@@ -362,6 +379,12 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     restore_window_placement(&window, saved_window_placement.as_ref());
     platform_pinning::install_and_navigate(&window, bootstrap_url, certificate_sha256)
         .expect("failed to install loopback certificate pinning");
+    platform_pinning::install_and_navigate(
+        &appearance_window,
+        appearance_bootstrap_url,
+        certificate_sha256,
+    )
+    .expect("failed to install Appearance loopback certificate pinning");
     platform_pinning::install_and_navigate(
         &notification_window,
         notification_bootstrap_url,
@@ -371,7 +394,7 @@ fn run_desktop(smoke: bool, acceptance: bool) {
     window.show().expect("failed to show pet window");
     register_pet_window_events(&window, app.handle().clone());
     register_notification_window_events(&notification_window, app.handle().clone());
-    register_notification_updates(&app, state.clone());
+    register_notification_updates(&app, state.clone(), tray_menu.pet_items.clone());
     run_desktop_event_loop(app, smoke, state, state_store, shutdown_tx);
 }
 
@@ -454,6 +477,21 @@ fn register_notification_window_capability(
         .permission("allow-sign-loopback-request")
         .permission("allow-focus-pet-window")
         .permission("allow-set-notification-hit-region");
+    app.add_capability(capability)
+}
+
+fn register_appearance_window_capability(
+    app: &tauri::App,
+    origin: &tauri::Url,
+) -> tauri::Result<()> {
+    let capability = CapabilityBuilder::new("appearance-window")
+        .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
+        .local(false)
+        .window(APPEARANCE_WINDOW_LABEL)
+        .permission("allow-sign-loopback-request")
+        .permission("core:window:allow-close")
+        .permission("core:window:allow-minimize")
+        .permission("core:window:allow-start-dragging");
     app.add_capability(capability)
 }
 
@@ -544,6 +582,64 @@ fn create_notification_window(
     }?;
     configure_notification_window(&window)?;
     Ok(window)
+}
+
+fn create_appearance_window(
+    app: &tauri::App,
+    origin: &tauri::Url,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let allowed_origin = origin.origin();
+    let app_handle = app.handle().clone();
+    let window = WebviewWindowBuilder::new(
+        app.handle(),
+        APPEARANCE_WINDOW_LABEL,
+        WebviewUrl::External("about:blank".parse().expect("valid bootstrap URL")),
+    )
+    .initialization_script(DISABLE_CONTEXT_MENU_INITIALIZATION_SCRIPT)
+    .initialization_script(FETCH_SIGNER_SCRIPT)
+    .accept_first_mouse(true)
+    .devtools(false)
+    .title("Lili Appearance")
+    .inner_size(APPEARANCE_WINDOW_WIDTH, APPEARANCE_WINDOW_HEIGHT)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .resizable(true)
+    .shadow(false)
+    .skip_taskbar(false)
+    .visible(false)
+    .focused(false)
+    .on_page_load(move |window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            && payload.url().path() == "/appearance"
+            && window.is_visible().unwrap_or(false)
+        {
+            let _ = window.eval(APPEARANCE_WINDOW_SHOWN_SCRIPT);
+        }
+    })
+    .on_navigation(move |url| url.origin() == allowed_origin)
+    .build()?;
+    configure_appearance_window(&window)?;
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            if let Some(window) = app_handle.get_webview_window(APPEARANCE_WINDOW_LABEL) {
+                let _ = window.eval(APPEARANCE_WINDOW_HIDDEN_SCRIPT);
+                let _ = window.hide();
+            }
+        }
+    });
+    Ok(window)
+}
+
+fn open_appearance_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let Some(window) = app.get_webview_window(APPEARANCE_WINDOW_LABEL) else {
+        return Ok(false);
+    };
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    let _ = window.eval(APPEARANCE_WINDOW_SHOWN_SCRIPT);
+    Ok(true)
 }
 
 fn create_context_menu_window(
@@ -661,6 +757,16 @@ fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result
     macos_panel::configure_auxiliary(window)
 }
 
+#[cfg(target_os = "macos")]
+fn configure_appearance_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    macos_panel::configure_settings(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_appearance_window(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn configure_notification_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     suppress_webview_context_menu(window)?;
@@ -746,17 +852,34 @@ fn register_notification_window_events(window: &tauri::WebviewWindow, app: tauri
     });
 }
 
-fn register_notification_updates(app: &tauri::App, state: AppState) {
+fn register_notification_updates(
+    app: &tauri::App,
+    state: AppState,
+    pet_items: Vec<(PetId, CheckMenuItem<tauri::Wry>)>,
+) {
     let app = app.handle().clone();
     let mut presentations = state.subscribe_pet_presentation();
     let unread = presentations.borrow().unread_notification_count;
     sync_notification_window(&app, unread);
+    let selected_pet_id = tauri::async_runtime::block_on(state.appearance_view()).selected_pet_id;
+    sync_tray_pet_selection(&pet_items, selected_pet_id.as_ref());
     tauri::async_runtime::spawn(async move {
         while presentations.changed().await.is_ok() {
             let unread = presentations.borrow_and_update().unread_notification_count;
             sync_notification_window(&app, unread);
+            let selected_pet_id = state.appearance_view().await.selected_pet_id;
+            sync_tray_pet_selection(&pet_items, selected_pet_id.as_ref());
         }
     });
+}
+
+fn sync_tray_pet_selection(
+    pet_items: &[(PetId, CheckMenuItem<tauri::Wry>)],
+    selected_pet_id: Option<&PetId>,
+) {
+    for (pet_id, item) in pet_items {
+        let _ = item.set_checked(selected_pet_id == Some(pet_id));
+    }
 }
 
 fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
@@ -1834,13 +1957,30 @@ fn run_pet_context_action(
     action: String,
 ) -> Result<(), String> {
     hide_pet_context_menu(&app);
-    match TrayAction::parse(&action) {
-        TrayAction::Show => show_pet_window(&app, &actions.visibility),
-        TrayAction::AlwaysOnTop => {
+    dispatch_pet_context_action(
+        &action,
+        || show_pet_window(&app, &actions.visibility),
+        || {
             let enabled = !actions.always_on_top.is_checked().unwrap_or(true);
             set_always_on_top(&app, &actions.state, &actions.always_on_top, enabled);
-        }
-        TrayAction::Quit => handle_application_tray_action(&app, TrayAction::Quit),
+        },
+        || open_appearance_window(&app).map(|_| ()),
+        || handle_application_tray_action(&app, TrayAction::Quit),
+    )
+}
+
+fn dispatch_pet_context_action(
+    action: &str,
+    on_show: impl FnOnce(),
+    on_always_on_top: impl FnOnce(),
+    on_settings: impl FnOnce() -> Result<(), String>,
+    on_quit: impl FnOnce(),
+) -> Result<(), String> {
+    match TrayAction::parse(action) {
+        TrayAction::Show => on_show(),
+        TrayAction::AlwaysOnTop => on_always_on_top(),
+        TrayAction::Settings => on_settings()?,
+        TrayAction::Quit => on_quit(),
         TrayAction::SelectPet(_) | TrayAction::Unknown => {}
     }
     Ok(())
@@ -2037,6 +2177,7 @@ fn build_tray_menu(
             &parts.window.always_on_top,
             &parts.pet.menu,
             &parts.utility.separator,
+            &parts.utility.settings,
             &parts.utility.quit,
         ],
     )?;
@@ -2115,13 +2256,19 @@ fn build_tray_pet_items(app: &tauri::App, state: &AppState) -> tauri::Result<Tra
 
 struct TrayUtilityItems {
     separator: PredefinedMenuItem<tauri::Wry>,
+    settings: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
 }
 
 fn build_tray_utility_items(app: &tauri::App) -> tauri::Result<TrayUtilityItems> {
     let separator = PredefinedMenuItem::separator(app)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    Ok(TrayUtilityItems { separator, quit })
+    Ok(TrayUtilityItems {
+        separator,
+        settings,
+        quit,
+    })
 }
 
 fn handle_tray_icon_event(
@@ -2163,7 +2310,7 @@ fn handle_tray_menu_event(
         TrayAction::SelectPet(pet_id) => {
             handle_pet_selection(app, state, pets_root, pet_items, visibility, &pet_id);
         }
-        TrayAction::Quit | TrayAction::Unknown => {
+        TrayAction::Settings | TrayAction::Quit | TrayAction::Unknown => {
             handle_application_tray_action(app, action);
         }
     }
@@ -2271,8 +2418,12 @@ fn handle_pet_selection(
 }
 
 fn handle_application_tray_action(app: &tauri::AppHandle, action: TrayAction) {
-    if action == TrayAction::Quit {
-        app.exit(0);
+    match action {
+        TrayAction::Settings => {
+            let _ = open_appearance_window(app);
+        }
+        TrayAction::Quit => app.exit(0),
+        _ => {}
     }
 }
 
@@ -2281,6 +2432,7 @@ enum TrayAction {
     Show,
     AlwaysOnTop,
     SelectPet(PetId),
+    Settings,
     Quit,
     Unknown,
 }
@@ -2290,6 +2442,7 @@ impl TrayAction {
         match id {
             "show" => Self::Show,
             "always-on-top" => Self::AlwaysOnTop,
+            "settings" => Self::Settings,
             "quit" => Self::Quit,
             _ => id
                 .strip_prefix("pet:")
@@ -2305,19 +2458,9 @@ fn select_pet(
     pet_id: &PetId,
     store: Option<&AppStateStore>,
 ) -> Result<(), String> {
-    let catalog = PetCatalog::load_with_selection(pets_root, Some(pet_id));
-    if catalog.active().definition().id() != pet_id {
-        return Err("selected pet is unavailable".to_owned());
-    }
-    if let Some(store) = store {
-        let persistent = tauri::async_runtime::block_on(state.persistent_state(None))
-            .with_selected_pet_id(Some(pet_id.clone()));
-        store
-            .save_selected_pet(&persistent)
-            .map_err(|error| format!("selected pet could not be saved: {error}"))?;
-    }
-    tauri::async_runtime::block_on(state.replace_pet_catalog(catalog));
-    Ok(())
+    tauri::async_runtime::block_on(state.select_pet(pets_root, pet_id, store))
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn desktop_assets(
@@ -2448,7 +2591,7 @@ mod tests {
         assert_eq!(TrayAction::parse("always-on-top"), TrayAction::AlwaysOnTop);
         assert_eq!(TrayAction::parse("toggle-visibility"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("hide"), TrayAction::Unknown);
-        assert_eq!(TrayAction::parse("settings"), TrayAction::Unknown);
+        assert_eq!(TrayAction::parse("settings"), TrayAction::Settings);
         assert_eq!(TrayAction::parse("diagnostics"), TrayAction::Unknown);
         assert_eq!(
             TrayAction::parse("pet:lili"),
@@ -2456,6 +2599,50 @@ mod tests {
         );
         assert_eq!(TrayAction::parse("pet:bad\nvalue"), TrayAction::Unknown);
         assert_eq!(TrayAction::parse("unknown"), TrayAction::Unknown);
+    }
+
+    #[test]
+    fn pet_context_dispatch_runs_only_the_matching_action() {
+        use std::cell::Cell;
+
+        for action in [
+            "show",
+            "always-on-top",
+            "settings",
+            "quit",
+            "pet:lili",
+            "unknown",
+        ] {
+            let show = Cell::new(false);
+            let always_on_top = Cell::new(false);
+            let settings = Cell::new(false);
+            let quit = Cell::new(false);
+            dispatch_pet_context_action(
+                action,
+                || show.set(true),
+                || always_on_top.set(true),
+                || {
+                    settings.set(true);
+                    Ok(())
+                },
+                || quit.set(true),
+            )
+            .unwrap();
+
+            assert_eq!(show.get(), action == "show");
+            assert_eq!(always_on_top.get(), action == "always-on-top");
+            assert_eq!(settings.get(), action == "settings");
+            assert_eq!(quit.get(), action == "quit");
+        }
+    }
+
+    #[test]
+    fn appearance_window_uses_the_dedicated_custom_frame_contract() {
+        assert_eq!(APPEARANCE_WINDOW_LABEL, "appearance");
+        assert_eq!(APPEARANCE_WINDOW_WIDTH, 1_180.0);
+        assert_eq!(APPEARANCE_WINDOW_HEIGHT, 860.0);
+        assert!(APPEARANCE_WINDOW_SHOWN_SCRIPT.contains("lili-appearance-shown"));
+        assert!(APPEARANCE_WINDOW_HIDDEN_SCRIPT.contains("lili-appearance-hidden"));
     }
 
     #[test]

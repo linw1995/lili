@@ -176,6 +176,20 @@ impl PetCatalog {
         &self.active
     }
 
+    pub fn with_active(mut self, active: AvailablePet) -> Self {
+        let active_id = active.definition().id();
+        if !self
+            .packages
+            .iter()
+            .any(|pet| pet.definition().id() == active_id)
+        {
+            self.packages.push(active.clone());
+        }
+        self.requested_identifier = active_id.as_str().to_owned();
+        self.active = active;
+        self
+    }
+
     pub fn packages(&self) -> &[AvailablePet] {
         &self.packages
     }

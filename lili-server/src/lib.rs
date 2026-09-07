@@ -12,11 +12,15 @@ use axum::{
 use leptos::prelude::*;
 use lili_actions::{ActionAuditEntry, EffectiveActionsView, InteractionTrigger};
 use lili_app_state::{
-    AppState, AppStateStore, IngestionDiagnostics, NativeIngestionHandle, UserSettings,
+    AppState, AppStateStore, IngestionDiagnostics, NativeIngestionHandle, PetSelectionError,
+    UserSettings,
 };
-use lili_core::{DiagnosticPrivacy, PetPresentationState, diagnostic_privacy};
+use lili_core::{
+    AppearanceErrorCode, AppearanceErrorResponse, AppearanceSelectionRequest, AppearanceView,
+    DiagnosticPrivacy, PetPresentationState, diagnostic_privacy,
+};
 use lili_session::{CodexAdapterDiagnostics, NotificationId, ReductionOutcome};
-use lili_ui::{App, AppSurface};
+use lili_ui::{App, AppSurface, AppearancePage};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -90,6 +94,9 @@ const CONTEXT_MENU_HTML: &str = r#"<!doctype html>
     <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="always-on-top">
       <span class="menu-mark" aria-hidden="true"></span><span>Always on Top</span>
     </button>
+    <button type="button" role="menuitem" data-action="settings">
+      <span class="menu-mark" aria-hidden="true"></span><span>Settings</span>
+    </button>
     <button type="button" role="menuitem" data-action="quit">
       <span class="menu-mark" aria-hidden="true"></span><span>Quit</span>
     </button>
@@ -147,6 +154,7 @@ struct ServerState {
     fixture: Option<FixturePresentationStore>,
     diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
     persistence_store: Option<AppStateStore>,
+    pets_root: PathBuf,
 }
 
 type CodexDiagnosticsInspector = Arc<dyn Fn() -> CodexAdapterDiagnostics + Send + Sync>;
@@ -173,17 +181,14 @@ impl NativeDiagnosticsRefresh {
 struct FixturePresentationStore {
     presentation: Arc<RwLock<PetPresentationState>>,
     sender: Arc<watch::Sender<PetPresentationState>>,
-    approved_asset_id: String,
 }
 
 impl FixturePresentationStore {
     fn new(initial: PetPresentationState) -> Self {
-        let approved_asset_id = initial.pet_asset_id.clone().unwrap_or_default();
         let (sender, _) = watch::channel(initial.clone());
         Self {
             presentation: Arc::new(RwLock::new(initial)),
             sender: Arc::new(sender),
-            approved_asset_id,
         }
     }
 
@@ -251,19 +256,21 @@ impl FixturePresentationStore {
 
 impl ServerState {
     fn native(app: AppState, diagnostics_refresh: Option<NativeDiagnosticsRefresh>) -> Self {
-        Self::native_with_persistence(app, diagnostics_refresh, None)
+        Self::native_with_persistence(app, diagnostics_refresh, None, PathBuf::from("/"))
     }
 
     fn native_with_persistence(
         app: AppState,
         diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
         persistence_store: Option<AppStateStore>,
+        pets_root: PathBuf,
     ) -> Self {
         Self {
             app,
             fixture: None,
             diagnostics_refresh,
             persistence_store,
+            pets_root,
         }
     }
 
@@ -274,6 +281,7 @@ impl ServerState {
             fixture: Some(FixturePresentationStore::new(initial)),
             diagnostics_refresh: None,
             persistence_store: None,
+            pets_root: PathBuf::from("/"),
         }
     }
 
@@ -355,8 +363,29 @@ pub fn build_native_router_with_diagnostics_and_persistence(
     diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
     persistence_store: Option<AppStateStore>,
 ) -> Router {
+    build_native_router_with_diagnostics_and_persistence_at(
+        state,
+        assets,
+        diagnostics_refresh,
+        persistence_store,
+        PathBuf::from("/"),
+    )
+}
+
+pub fn build_native_router_with_diagnostics_and_persistence_at(
+    state: AppState,
+    assets: Option<StaticAssets>,
+    diagnostics_refresh: Option<NativeDiagnosticsRefresh>,
+    persistence_store: Option<AppStateStore>,
+    pets_root: PathBuf,
+) -> Router {
     build_server_router(
-        ServerState::native_with_persistence(state, diagnostics_refresh, persistence_store),
+        ServerState::native_with_persistence(
+            state,
+            diagnostics_refresh,
+            persistence_store,
+            pets_root,
+        ),
         assets,
         false,
     )
@@ -387,6 +416,8 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
         .route("/snapshot", get(snapshot))
         .route("/events", get(events))
         .route("/settings", get(settings).merge(put(update_settings)))
+        .route("/appearance", get(appearance))
+        .route("/appearance/pet", put(select_appearance_pet))
         .route("/interactions", post(interaction))
         .route(
             "/notifications/{notification_id}/dismiss",
@@ -397,6 +428,7 @@ fn build_server_router(state: ServerState, assets: Option<StaticAssets>, fixture
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/context-menu", get(context_menu))
+        .route("/appearance", get(appearance_shell))
         .route("/pet-assets/{asset_id}", get(pet_asset))
         .route("/presentation-events", get(events))
         .nest("/api/v1", api)
@@ -438,6 +470,59 @@ async fn health() -> Json<Health> {
 
 async fn context_menu() -> Html<&'static str> {
     Html(CONTEXT_MENU_HTML)
+}
+
+async fn appearance_shell(State(state): State<ServerState>) -> Html<String> {
+    let appearance = state.app.appearance_view().await;
+    let app = view! { <AppearancePage appearance/> }.to_html();
+    Html(format_document(app))
+}
+
+fn format_document(app: String) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"stylesheet\" href=\"/assets/lili.css\"><script type=\"module\" src=\"/assets/lili-bootstrap.js\"></script><title>Lili</title></head><body>{app}</body></html>"
+    )
+}
+
+async fn appearance(State(state): State<ServerState>) -> Json<AppearanceView> {
+    Json(state.app.appearance_view().await)
+}
+
+async fn select_appearance_pet(
+    State(state): State<ServerState>,
+    Json(request): Json<AppearanceSelectionRequest>,
+) -> Result<Json<AppearanceView>, (StatusCode, Json<AppearanceErrorResponse>)> {
+    request.validate().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(AppearanceErrorResponse {
+                code: AppearanceErrorCode::InvalidPetId,
+            }),
+        )
+    })?;
+    state
+        .app
+        .select_pet(
+            &state.pets_root,
+            &request.pet_id,
+            state.persistence_store.as_ref(),
+        )
+        .await
+        .map_err(|error| match error {
+            PetSelectionError::Unavailable => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(AppearanceErrorResponse {
+                    code: AppearanceErrorCode::PetUnavailable,
+                }),
+            ),
+            PetSelectionError::Persistence(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AppearanceErrorResponse {
+                    code: AppearanceErrorCode::PersistenceUnavailable,
+                }),
+            ),
+        })?;
+    Ok(Json(state.app.appearance_view().await))
 }
 
 async fn snapshot(State(state): State<ServerState>) -> Json<lili_app_state::ViewSnapshot> {
@@ -596,10 +681,12 @@ fn unix_time_ms() -> u64 {
 
 async fn pet_asset(State(state): State<ServerState>, Path(asset_id): Path<String>) -> Response {
     let approved_asset_id = match &state.fixture {
-        Some(fixture) if fixture.serves_asset(&asset_id).await => &fixture.approved_asset_id,
-        _ => &asset_id,
+        Some(fixture) if fixture.serves_asset(&asset_id).await => {
+            state.app.snapshot().await.pet_asset_id.unwrap_or(asset_id)
+        }
+        _ => asset_id,
     };
-    let Some(asset) = state.app.approved_pet_asset(approved_asset_id).await else {
+    let Some(asset) = state.app.approved_pet_asset(&approved_asset_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
@@ -793,13 +880,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        for action in ["show", "always-on-top", "quit"] {
+        for action in ["show", "always-on-top", "settings", "quit"] {
             assert!(body.contains(&format!("data-action=\"{action}\"")));
         }
-        for action in ["toggle-visibility", "hide", "settings", "diagnostics"] {
+        for action in ["toggle-visibility", "hide", "diagnostics"] {
             assert!(!body.contains(&format!("data-action=\"{action}\"")));
         }
-        assert_eq!(body.matches("data-action=").count(), 3);
+        assert_eq!(body.matches("data-action=").count(), 4);
         assert!(body.contains("height: 100%;"));
         assert!(body.contains("height: calc(100% - 48px);"));
         assert!(body.contains("overflow: hidden;"));
@@ -950,6 +1037,238 @@ mod tests {
         assert!(body.contains("data-surface=\"notifications\""));
         assert!(body.contains("class=\"notification-stack\""));
         assert!(!body.contains("class=\"pet-sprite\""));
+    }
+
+    #[tokio::test]
+    async fn appearance_surface_and_snapshot_expose_the_focused_pet_contract() {
+        let router = build_router(AppState::default(), None);
+        let response = router
+            .clone()
+            .oneshot(Request::get("/appearance").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("id=\"lili-appearance\""));
+        assert!(body.contains("data-appearance-view="));
+        assert!(body.contains("aria-current=\"page\""));
+        assert!(body.contains("class=\"appearance-nav-button\""));
+        assert!(body.contains("Pet"));
+        assert!(body.contains("id=\"appearance-heading\""));
+        assert!(body.contains("Appearance"));
+        assert!(!body.contains(">Notifications</button>"));
+
+        let response = router
+            .oneshot(
+                Request::get("/api/v1/appearance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let appearance: AppearanceView = serde_json::from_slice(&body).unwrap();
+        assert_eq!(appearance.pets.len(), 1);
+        assert_eq!(appearance.pets[0].id.as_str(), "lili");
+        assert_eq!(
+            appearance.selected_pet_id.as_ref().map(|id| id.as_str()),
+            Some("lili")
+        );
+        assert!(appearance.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn appearance_selection_rejects_invalid_ids_and_updates_the_selected_pet() {
+        let state = AppState::default();
+        let router = build_router(state.clone(), None);
+        let before = state.snapshot().await;
+
+        let invalid = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"../escape"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(invalid.into_body(), usize::MAX).await.unwrap();
+        let error: AppearanceErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, AppearanceErrorCode::InvalidPetId);
+        assert_eq!(state.snapshot().await, before);
+
+        let unavailable = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"missing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(unavailable.into_body(), usize::MAX).await.unwrap();
+        let error: AppearanceErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, AppearanceErrorCode::PetUnavailable);
+        assert_eq!(state.snapshot().await, before);
+
+        let selected = router
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"lili"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(selected.status(), StatusCode::OK);
+        let body = to_bytes(selected.into_body(), usize::MAX).await.unwrap();
+        let selected: AppearanceView = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            selected.selected_pet_id.as_ref().map(|id| id.as_str()),
+            Some("lili")
+        );
+    }
+
+    #[tokio::test]
+    async fn appearance_data_excludes_paths_credentials_and_action_configuration() {
+        let response = build_router(AppState::default(), None)
+            .oneshot(
+                Request::get("/api/v1/appearance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        for private_field in [
+            "applicationRoot",
+            "petsRoot",
+            "spritesheetPath",
+            "credentials",
+            "rawPayload",
+            "command",
+        ] {
+            assert!(
+                !body.contains(private_field),
+                "unexpected private field {private_field}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn appearance_selection_does_not_mutate_session_notifications_or_action_audit() {
+        let state = AppState::default();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-appearance-isolation".to_owned()),
+            session_id: Some("session-appearance-isolation".to_owned()),
+            turn_id: Some("turn-appearance-isolation".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: Some("Finished".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let before = state.snapshot().await;
+        let router = build_router(state.clone(), None);
+
+        let response = router
+            .oneshot(
+                Request::put("/api/v1/appearance/pet")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"petId":"lili"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let after = state.snapshot().await;
+        assert_eq!(after.session_state, before.session_state);
+        assert_eq!(after.actions, before.actions);
+        assert_eq!(state.action_audit().await, Vec::new());
+        assert_eq!(
+            state.pet_presentation().await.unread_notification_count,
+            before.session_state.notifications.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn appearance_selection_isolated_during_concurrent_session_ingestion() {
+        let state = AppState::default();
+        let selection_router = build_router(state.clone(), None);
+        let ingestion_state = state.clone();
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-concurrent-appearance".to_owned()),
+            session_id: Some("session-concurrent-appearance".to_owned()),
+            turn_id: Some("turn-concurrent-appearance".to_owned()),
+            occurred_at_ms: Some(20),
+            project: None,
+            summary: Some("Finished while preview was open".to_owned()),
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+
+        let selection = tokio::spawn(async move {
+            selection_router
+                .oneshot(
+                    Request::put("/api/v1/appearance/pet")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"petId":"lili"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+        let ingestion = tokio::spawn(async move {
+            ingestion_state.apply_session_event(event).await;
+        });
+
+        let (selection, ingestion) = tokio::join!(selection, ingestion);
+        let response = selection.unwrap();
+        ingestion.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.session_state.notifications.len(), 1);
+        assert_eq!(
+            snapshot.session_state.notifications[0].state,
+            lili_session::NotificationState::Unread
+        );
+        assert_eq!(
+            snapshot.session_state.notifications[0]
+                .summary
+                .as_ref()
+                .map(|summary| summary.text()),
+            Some("Finished while preview was open")
+        );
+        assert_eq!(state.action_audit().await, Vec::new());
+        assert_eq!(
+            snapshot.session_state.notifications.len(),
+            snapshot
+                .session_state
+                .notifications
+                .iter()
+                .map(|notification| &notification.id)
+                .collect::<HashSet<_>>()
+                .len()
+        );
     }
 
     #[tokio::test]

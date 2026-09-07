@@ -2,7 +2,8 @@ mod ingestion;
 mod persistence;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -14,15 +15,17 @@ use lili_actions::{
     PetLifecycleSnapshotV1, PetSnapshotV1,
 };
 use lili_core::{
-    PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
+    AppearancePetView, AppearanceView, MAX_APPEARANCE_PETS, PetActionFeedbackKind,
+    PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
     PetNotificationPresentation, PetPresentationState,
 };
-use lili_pet::{AtlasFormat, PetCatalog, PetSummary};
+use lili_pet::{AtlasFormat, AvailablePet, PetCatalog, PetSummary};
 use lili_session::{
     NormalizedSessionEvent, Notification, NotificationId, NotificationKind, NotificationState,
     PresentationState, ReductionOutcome, SessionEventKind, SessionReducer, SessionViewSnapshot,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, watch};
 use uuid::Uuid;
 
@@ -66,8 +69,8 @@ pub struct AppState {
     snapshot: Arc<RwLock<ViewSnapshot>>,
     settings: Arc<RwLock<UserSettings>>,
     session_reducer: Arc<Mutex<SessionReducer>>,
-    pet_catalog: Arc<RwLock<PetCatalog>>,
-    pet_asset: Arc<RwLock<ApprovedPetAsset>>,
+    pet_state: Arc<RwLock<PetRuntimeState>>,
+    pet_selection_lock: Arc<Mutex<()>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
     action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
@@ -80,6 +83,19 @@ pub struct AppState {
 pub struct InteractionDispatchReceipt {
     pub accepted: bool,
     pub action_count: usize,
+}
+
+#[derive(Debug, Error)]
+pub enum PetSelectionError {
+    #[error("selected pet is unavailable")]
+    Unavailable,
+    #[error("selected pet could not be saved: {0}")]
+    Persistence(#[source] PersistenceError),
+}
+
+enum PetSelectionPreparation {
+    Available(PetCatalog, ApprovedPetAssetCatalog, ApprovedPetAsset),
+    Unavailable(PetCatalog),
 }
 
 #[derive(Clone, Default)]
@@ -130,6 +146,89 @@ impl ApprovedPetAsset {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ApprovedPetAssetEntry {
+    id: String,
+    pet: AvailablePet,
+}
+
+impl ApprovedPetAssetEntry {
+    fn load(&self) -> Result<ApprovedPetAsset, lili_pet::AtlasValidationError> {
+        let loaded = self.pet.load_asset()?;
+        let content_type = match loaded.atlas().format() {
+            AtlasFormat::Png => "image/png",
+            AtlasFormat::WebP => "image/webp",
+        };
+        Ok(ApprovedPetAsset {
+            id: self.id.clone(),
+            content_type,
+            bytes: Arc::from(loaded.bytes()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovedPetAssetCatalog {
+    generation: Uuid,
+    by_pet: Arc<HashMap<lili_core::PetId, String>>,
+    assets: Arc<HashMap<String, ApprovedPetAssetEntry>>,
+}
+
+struct PetRuntimeState {
+    catalog: PetCatalog,
+    approved_pet_assets: ApprovedPetAssetCatalog,
+    active_asset: ApprovedPetAsset,
+}
+
+impl ApprovedPetAssetCatalog {
+    pub fn generation(&self) -> Uuid {
+        self.generation
+    }
+
+    pub fn asset_id_for_pet(&self, pet_id: &lili_core::PetId) -> Option<&str> {
+        self.by_pet.get(pet_id).map(String::as_str)
+    }
+
+    fn asset(&self, asset_id: &str) -> Option<ApprovedPetAssetEntry> {
+        self.assets.get(asset_id).cloned()
+    }
+
+    pub fn asset_count(&self) -> usize {
+        self.assets.len()
+    }
+
+    fn from_catalog(pet_catalog: &PetCatalog) -> Self {
+        let mut candidates = HashMap::new();
+        let fallback = PetCatalog::default().active().clone();
+        candidates.insert(fallback.definition().id().clone(), fallback);
+        for pet in pet_catalog.packages() {
+            candidates.insert(pet.definition().id().clone(), pet.clone());
+        }
+        candidates.insert(
+            pet_catalog.active().definition().id().clone(),
+            pet_catalog.active().clone(),
+        );
+
+        let generation = Uuid::new_v4();
+        let mut by_pet = HashMap::with_capacity(candidates.len());
+        let mut assets = HashMap::with_capacity(candidates.len());
+        for (pet_id, pet) in candidates {
+            let asset_id = Uuid::new_v4().simple().to_string();
+            by_pet.insert(pet_id, asset_id.clone());
+            assets.insert(
+                asset_id.clone(),
+                ApprovedPetAssetEntry { id: asset_id, pet },
+            );
+        }
+
+        Self {
+            generation,
+            by_pet: Arc::new(by_pet),
+            assets: Arc::new(assets),
+        }
+    }
+}
+
 impl AppState {
     pub fn with_pet_catalog(pet_catalog: PetCatalog) -> Self {
         Self::with_reducer(pet_catalog, SessionReducer::default())
@@ -144,7 +243,9 @@ impl AppState {
     }
 
     fn with_reducer(pet_catalog: PetCatalog, reducer: SessionReducer) -> Self {
-        let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
+        let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&pet_catalog);
+        let (pet_catalog, approved_pet_assets, pet_asset) =
+            load_active_asset(pet_catalog, approved_pet_assets);
         let selected_pet = Some(PetSummary::from(pet_catalog.active().definition()));
         let pet_asset_id = Some(pet_asset.id().to_owned());
         let session_state = reducer.snapshot();
@@ -161,8 +262,12 @@ impl AppState {
             snapshot: Arc::new(RwLock::new(initial_snapshot)),
             settings: Arc::new(RwLock::new(UserSettings::default())),
             session_reducer: Arc::new(Mutex::new(reducer)),
-            pet_catalog: Arc::new(RwLock::new(pet_catalog)),
-            pet_asset: Arc::new(RwLock::new(pet_asset)),
+            pet_state: Arc::new(RwLock::new(PetRuntimeState {
+                catalog: pet_catalog,
+                approved_pet_assets,
+                active_asset: pet_asset,
+            })),
+            pet_selection_lock: Arc::new(Mutex::new(())),
             ingestion_diagnostics: Arc::new(RwLock::new(IngestionDiagnostics::default())),
             action_feedback: Arc::new(RwLock::new(None)),
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
@@ -173,20 +278,75 @@ impl AppState {
     }
 
     pub async fn available_pets(&self) -> Vec<PetSummary> {
-        self.pet_catalog.read().await.available_summaries()
+        let pet_state = self.pet_state.read().await;
+        let selected = PetSummary::from(pet_state.catalog.active().definition());
+        summaries_with_active_metadata(pet_state.catalog.available_summaries(), selected)
     }
 
     pub async fn approved_pet_asset(&self, asset_id: &str) -> Option<ApprovedPetAsset> {
-        let asset = self.pet_asset.read().await;
-        (asset.id() == asset_id).then(|| asset.clone())
+        let pet_state = self.pet_state.read().await;
+        if pet_state.active_asset.id() == asset_id {
+            return Some(pet_state.active_asset.clone());
+        }
+        let asset = pet_state.approved_pet_assets.asset(asset_id)?;
+        drop(pet_state);
+        tokio::task::spawn_blocking(move || asset.load())
+            .await
+            .ok()?
+            .ok()
+    }
+
+    pub async fn approved_pet_assets(&self) -> ApprovedPetAssetCatalog {
+        self.pet_state.read().await.approved_pet_assets.clone()
+    }
+
+    pub async fn appearance_view(&self) -> AppearanceView {
+        let pet_state = self.pet_state.read().await;
+        let catalog = &pet_state.catalog;
+        let assets = &pet_state.approved_pet_assets;
+        let selected_pet = PetSummary::from(catalog.active().definition());
+        let pets = bounded_appearance_summaries(catalog.available_summaries(), selected_pet)
+            .into_iter()
+            .filter_map(|pet| {
+                assets
+                    .asset_id_for_pet(&pet.id)
+                    .map(|asset_id| AppearancePetView {
+                        id: pet.id,
+                        display_name: pet.display_name,
+                        asset_id: asset_id.to_owned(),
+                    })
+            })
+            .collect();
+        let selected_pet_id = lili_core::PetId::parse(catalog.active().definition().id().as_str());
+        let view = AppearanceView {
+            pets,
+            selected_pet_id,
+        };
+        debug_assert!(view.validate().is_ok());
+        view
     }
 
     pub async fn replace_pet_catalog(&self, pet_catalog: PetCatalog) -> PetSummary {
-        let (pet_catalog, pet_asset) = load_active_asset(pet_catalog);
+        let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&pet_catalog);
+        let (pet_catalog, approved_pet_assets, pet_asset) =
+            load_active_asset(pet_catalog, approved_pet_assets);
+        self.replace_pet_catalog_with_assets(pet_catalog, approved_pet_assets, pet_asset)
+            .await
+    }
+
+    async fn replace_pet_catalog_with_assets(
+        &self,
+        pet_catalog: PetCatalog,
+        approved_pet_assets: ApprovedPetAssetCatalog,
+        pet_asset: ApprovedPetAsset,
+    ) -> PetSummary {
         let selected_pet = PetSummary::from(pet_catalog.active().definition());
         let pet_asset_id = pet_asset.id().to_owned();
-        *self.pet_catalog.write().await = pet_catalog;
-        *self.pet_asset.write().await = pet_asset;
+        *self.pet_state.write().await = PetRuntimeState {
+            catalog: pet_catalog,
+            approved_pet_assets,
+            active_asset: pet_asset,
+        };
         {
             let mut snapshot = self.snapshot.write().await;
             snapshot.selected_pet = Some(selected_pet.clone());
@@ -194,6 +354,69 @@ impl AppState {
         }
         self.publish_presentation().await;
         selected_pet
+    }
+
+    pub async fn select_pet(
+        &self,
+        pets_root: &Path,
+        pet_id: &lili_core::PetId,
+        store: Option<&AppStateStore>,
+    ) -> Result<PetSummary, PetSelectionError> {
+        let _selection_guard = self.pet_selection_lock.lock().await;
+        let selected_pet_id = pet_id.clone();
+        let current_active = self.pet_state.read().await.catalog.active().clone();
+        let persistent = if store.is_some() {
+            Some(
+                self.persistent_state(None)
+                    .await
+                    .with_selected_pet_id(Some(selected_pet_id.clone())),
+            )
+        } else {
+            None
+        };
+        let pets_root = pets_root.to_owned();
+        let store = store.cloned();
+        let preparation = tokio::task::spawn_blocking(move || {
+            let catalog = PetCatalog::load_with_selection(&pets_root, Some(&selected_pet_id));
+            if catalog.active().definition().id() != &selected_pet_id {
+                return Ok(PetSelectionPreparation::Unavailable(
+                    catalog.with_active(current_active),
+                ));
+            }
+            let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&catalog);
+            let asset_id = approved_pet_assets
+                .asset_id_for_pet(&selected_pet_id)
+                .map(str::to_owned)
+                .ok_or(PetSelectionError::Unavailable)?;
+            let pet_asset = approved_pet_assets
+                .asset(&asset_id)
+                .and_then(|asset| asset.load().ok())
+                .ok_or(PetSelectionError::Unavailable)?;
+            if let (Some(store), Some(persistent)) = (store.as_ref(), persistent.as_ref()) {
+                store
+                    .save_selected_pet(persistent)
+                    .map_err(PetSelectionError::Persistence)?;
+            }
+            Ok(PetSelectionPreparation::Available(
+                catalog,
+                approved_pet_assets,
+                pet_asset,
+            ))
+        })
+        .await
+        .map_err(|_| PetSelectionError::Unavailable)??;
+        let (catalog, approved_pet_assets, pet_asset) = match preparation {
+            PetSelectionPreparation::Available(catalog, approved_pet_assets, pet_asset) => {
+                (catalog, approved_pet_assets, pet_asset)
+            }
+            PetSelectionPreparation::Unavailable(catalog) => {
+                self.pet_state.write().await.catalog = catalog;
+                return Err(PetSelectionError::Unavailable);
+            }
+        };
+        Ok(self
+            .replace_pet_catalog_with_assets(catalog, approved_pet_assets, pet_asset)
+            .await)
     }
 
     pub async fn snapshot(&self) -> ViewSnapshot {
@@ -249,7 +472,7 @@ impl AppState {
     ) -> Result<ReductionOutcome, PersistenceError> {
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let selected_pet_id =
-            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+            lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
         let accepted_at_ms = self.monotonic_time_ms();
@@ -307,7 +530,7 @@ impl AppState {
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
         let selected_pet_id =
-            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+            lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
         let mut reducer = self.session_reducer.lock().await;
         let previous = reducer.clone();
         let outcome = reducer.acknowledge_notification(id, self.monotonic_time_ms());
@@ -480,7 +703,7 @@ impl AppState {
         window_placement: Option<WindowPlacement>,
     ) -> PersistentApplicationState {
         let selected_pet_id =
-            lili_core::PetId::parse(self.pet_catalog.read().await.requested_identifier());
+            lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
         PersistentApplicationState::new(
             selected_pet_id,
             window_placement,
@@ -661,29 +884,62 @@ fn presentation_from_view(
     }
 }
 
-fn load_active_asset(pet_catalog: PetCatalog) -> (PetCatalog, ApprovedPetAsset) {
-    if let Ok(asset) = approved_asset(&pet_catalog) {
-        return (pet_catalog, asset);
+fn load_active_asset(
+    pet_catalog: PetCatalog,
+    approved_pet_assets: ApprovedPetAssetCatalog,
+) -> (PetCatalog, ApprovedPetAssetCatalog, ApprovedPetAsset) {
+    let active_id = approved_pet_assets
+        .asset_id_for_pet(pet_catalog.active().definition().id())
+        .map(str::to_owned);
+    if let Some(asset_id) = active_id
+        && let Some(asset) = approved_pet_assets
+            .asset(&asset_id)
+            .and_then(|asset| asset.load().ok())
+    {
+        return (pet_catalog, approved_pet_assets, asset);
     }
 
     let fallback = PetCatalog::default();
-    let asset = approved_asset(&fallback).expect("embedded fallback asset must remain valid");
-    (fallback, asset)
+    let approved_pet_assets = ApprovedPetAssetCatalog::from_catalog(&fallback);
+    let asset_id = approved_pet_assets
+        .asset_id_for_pet(fallback.active().definition().id())
+        .expect("embedded fallback asset must remain approved");
+    let asset = approved_pet_assets
+        .asset(asset_id)
+        .and_then(|asset| asset.load().ok())
+        .expect("embedded fallback asset must resolve");
+    (fallback, approved_pet_assets, asset)
 }
 
-fn approved_asset(
-    pet_catalog: &PetCatalog,
-) -> Result<ApprovedPetAsset, lili_pet::AtlasValidationError> {
-    let loaded = pet_catalog.active().load_asset()?;
-    let content_type = match loaded.atlas().format() {
-        AtlasFormat::Png => "image/png",
-        AtlasFormat::WebP => "image/webp",
-    };
-    Ok(ApprovedPetAsset {
-        id: Uuid::new_v4().simple().to_string(),
-        content_type,
-        bytes: Arc::from(loaded.bytes()),
-    })
+fn bounded_appearance_summaries(
+    mut summaries: Vec<PetSummary>,
+    selected: PetSummary,
+) -> Vec<PetSummary> {
+    summaries = summaries_with_active_metadata(summaries, selected.clone());
+    if summaries.len() <= MAX_APPEARANCE_PETS {
+        return summaries;
+    }
+
+    summaries.truncate(MAX_APPEARANCE_PETS);
+    if !summaries.iter().any(|pet| pet.id == selected.id) {
+        summaries.pop();
+        summaries.push(selected);
+        summaries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+    }
+    summaries
+}
+
+fn summaries_with_active_metadata(
+    mut summaries: Vec<PetSummary>,
+    selected: PetSummary,
+) -> Vec<PetSummary> {
+    if let Some(index) = summaries.iter().position(|pet| pet.id == selected.id) {
+        summaries[index] = selected.clone();
+    } else {
+        summaries.push(selected.clone());
+    }
+    summaries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+    summaries
 }
 
 impl Default for AppState {
@@ -720,6 +976,277 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("action audit did not reach the expected length");
+    }
+
+    #[tokio::test]
+    async fn approved_pet_asset_registry_is_generation_scoped_and_path_opaque() {
+        let state = AppState::default();
+        let selected = lili_core::PetId::parse("lili").unwrap();
+        let first = state.approved_pet_assets().await;
+        let first_asset_id = first.asset_id_for_pet(&selected).unwrap().to_owned();
+
+        assert_eq!(first.asset_count(), 1);
+        assert!(first.asset(&first_asset_id).is_some());
+        assert!(
+            first
+                .asset("../../application-data/spritesheet.webp")
+                .is_none()
+        );
+
+        state.replace_pet_catalog(PetCatalog::default()).await;
+        let second = state.approved_pet_assets().await;
+
+        assert_ne!(first.generation(), second.generation());
+        assert!(second.asset(&first_asset_id).is_none());
+        assert!(second.asset_id_for_pet(&selected).is_some());
+    }
+
+    #[tokio::test]
+    async fn active_pet_asset_uses_retained_bytes_after_source_changes() {
+        let root = std::env::temp_dir().join(format!("lili-pet-asset-retained-{}", Uuid::new_v4()));
+        let package_dir = root.join("pets").join("lili");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(
+            package_dir.join("pet.json"),
+            r#"{"id":"lili","displayName":"Lili","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state.snapshot().await.pet_asset_id.unwrap();
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .await
+            .unwrap();
+        std::fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let state = AppState::with_pet_catalog(PetCatalog::load(&root));
+        let asset_id = state.snapshot().await.pet_asset_id.unwrap();
+        let retained = state.approved_pet_asset(&asset_id).await.unwrap();
+        std::fs::remove_file(package_dir.join("spritesheet.webp")).unwrap();
+
+        let served = state.approved_pet_asset(&asset_id).await.unwrap();
+        assert_eq!(served, retained);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pet_selection_revalidates_persists_and_replaces_the_active_asset() {
+        let root = std::env::temp_dir().join(format!("lili-pet-selection-{}", Uuid::new_v4()));
+        let paths = ApplicationPaths::from_root(root.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let selected = lili_core::PetId::parse("lili").unwrap();
+
+        let summary = state
+            .select_pet(&root.join("pets"), &selected, Some(&store))
+            .await
+            .unwrap();
+
+        assert_eq!(summary.id, selected);
+        assert_eq!(
+            store.load().unwrap().unwrap().selected_pet_id(),
+            Some(&selected)
+        );
+        assert_eq!(state.snapshot().await.selected_pet.unwrap().id, selected);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pet_selection_publishes_the_same_identity_used_by_all_windows() {
+        let root = std::env::temp_dir().join(format!("lili-pet-presentation-{}", Uuid::new_v4()));
+        let paths = ApplicationPaths::from_root(root.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let selected = lili_core::PetId::parse("lili").unwrap();
+        let mut presentations = state.subscribe_pet_presentation();
+
+        state
+            .select_pet(&root.join("pets"), &selected, Some(&store))
+            .await
+            .unwrap();
+        presentations.changed().await.unwrap();
+
+        let appearance = state.appearance_view().await;
+        let published = presentations.borrow_and_update().clone();
+        assert_eq!(appearance.selected_pet_id, Some(selected.clone()));
+        assert_eq!(
+            published.pet_asset_id,
+            appearance
+                .pets
+                .iter()
+                .find(|pet| pet.id == selected)
+                .map(|pet| pet.asset_id.clone())
+        );
+        assert_eq!(
+            store.load().unwrap().unwrap().selected_pet_id(),
+            Some(&selected)
+        );
+        assert_eq!(state.snapshot().await.session_state.revision, 0);
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_pet_selection_does_not_change_state_or_persistence() {
+        let root =
+            std::env::temp_dir().join(format!("lili-pet-selection-invalid-{}", Uuid::new_v4()));
+        let paths = ApplicationPaths::from_root(root.clone()).unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let state = AppState::default();
+        let before = state.snapshot().await;
+        let missing = lili_core::PetId::parse("missing").unwrap();
+
+        assert!(matches!(
+            state
+                .select_pet(&root.join("pets"), &missing, Some(&store))
+                .await,
+            Err(PetSelectionError::Unavailable)
+        ));
+        assert_eq!(state.snapshot().await, before);
+        assert!(store.load().unwrap().is_none());
+        std::fs::remove_dir_all(paths.root()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_pet_selection_refreshes_catalog_without_replacing_active_pet() {
+        let root =
+            std::env::temp_dir().join(format!("lili-pet-selection-refresh-{}", Uuid::new_v4()));
+        let active_dir = root.join("pets").join("active-pet");
+        let candidate_dir = root.join("pets").join("candidate-pet");
+        std::fs::create_dir_all(&active_dir).unwrap();
+        std::fs::create_dir_all(&candidate_dir).unwrap();
+        let manifest = |id: &str, display_name: &str| {
+            format!(
+                r#"{{"id":"{id}","displayName":"{display_name}","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}}"#
+            )
+        };
+        std::fs::write(
+            active_dir.join("pet.json"),
+            manifest("active-pet", "Active"),
+        )
+        .unwrap();
+        std::fs::write(
+            candidate_dir.join("pet.json"),
+            manifest("candidate-pet", "Candidate"),
+        )
+        .unwrap();
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state.snapshot().await.pet_asset_id.unwrap();
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .await
+            .unwrap();
+        std::fs::write(active_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+        std::fs::write(candidate_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let active_id = lili_core::PetId::parse("active-pet").unwrap();
+        let candidate_id = lili_core::PetId::parse("candidate-pet").unwrap();
+        let pets_root = root.join("pets");
+        let state = AppState::with_pet_catalog(PetCatalog::load_with_selection(
+            &pets_root,
+            Some(&active_id),
+        ));
+        std::fs::remove_file(candidate_dir.join("spritesheet.webp")).unwrap();
+        std::fs::remove_file(active_dir.join("spritesheet.webp")).unwrap();
+
+        assert!(matches!(
+            state.select_pet(&pets_root, &candidate_id, None).await,
+            Err(PetSelectionError::Unavailable)
+        ));
+        assert_eq!(
+            state.snapshot().await.selected_pet.unwrap().id,
+            active_id.clone()
+        );
+        assert!(
+            state
+                .available_pets()
+                .await
+                .into_iter()
+                .all(|pet| pet.id != candidate_id)
+        );
+        let view = state.appearance_view().await;
+        assert_eq!(view.selected_pet_id, Some(active_id.clone()));
+        assert!(view.pets.into_iter().all(|pet| pet.id != candidate_id));
+        assert_eq!(
+            state.persistent_state(None).await.selected_pet_id(),
+            Some(&active_id)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn appearance_view_lists_the_selected_pet_with_its_approved_asset() {
+        let state = AppState::default();
+        let view = state.appearance_view().await;
+        let selected = lili_core::PetId::parse("lili").unwrap();
+
+        assert_eq!(view.pets.len(), 1);
+        assert_eq!(view.pets[0].id, selected);
+        assert_eq!(view.pets[0].display_name, "Lili");
+        assert_eq!(view.selected_pet_id, Some(selected));
+        assert!(view.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn appearance_view_prefers_active_metadata_on_fallback_id_collision() {
+        let root =
+            std::env::temp_dir().join(format!("lili-pet-fallback-collision-{}", Uuid::new_v4()));
+        let package_dir = root.join("pets").join("lili");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(
+            package_dir.join("pet.json"),
+            r#"{"id":"lili","displayName":"External Lili","description":"Fixture","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+        let fallback_state = AppState::default();
+        let fallback_id = fallback_state.snapshot().await.pet_asset_id.unwrap();
+        let fallback = fallback_state
+            .approved_pet_asset(&fallback_id)
+            .await
+            .unwrap();
+        std::fs::write(package_dir.join("spritesheet.webp"), fallback.bytes()).unwrap();
+
+        let pets_root = root.join("pets");
+        let missing = lili_core::PetId::parse("missing-pet").unwrap();
+        let state =
+            AppState::with_pet_catalog(PetCatalog::load_with_selection(&pets_root, Some(&missing)));
+        let view = state.appearance_view().await;
+        let fallback_pet = view.pets.iter().find(|pet| pet.id.as_str() == "lili");
+
+        assert_eq!(
+            view.selected_pet_id.as_ref().map(lili_core::PetId::as_str),
+            Some("lili")
+        );
+        assert_eq!(
+            fallback_pet.map(|pet| pet.display_name.as_str()),
+            Some("Lili")
+        );
+        assert_eq!(
+            state
+                .available_pets()
+                .await
+                .into_iter()
+                .find(|pet| pet.id.as_str() == "lili")
+                .map(|pet| pet.display_name),
+            Some("Lili".to_owned())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_appearance_summaries_keep_the_active_pet_within_the_contract_limit() {
+        let summaries = (0..=MAX_APPEARANCE_PETS)
+            .map(|index| PetSummary {
+                id: lili_core::PetId::parse(format!("pet-{index}")).unwrap(),
+                display_name: format!("Pet {index}"),
+            })
+            .collect::<Vec<_>>();
+        let selected = summaries.last().cloned().unwrap();
+
+        let bounded = bounded_appearance_summaries(summaries, selected.clone());
+
+        assert_eq!(bounded.len(), MAX_APPEARANCE_PETS);
+        assert!(bounded.iter().any(|pet| pet.id == selected.id));
     }
 
     #[tokio::test]

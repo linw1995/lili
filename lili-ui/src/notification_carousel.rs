@@ -168,6 +168,31 @@ pub(super) fn NotificationCarousel(
     notification_stack
 }
 
+#[component]
+pub(super) fn NotificationPreviewCard(
+    notification: PetNotificationPresentation,
+    wall_clock: RwSignal<u64>,
+    reduced_motion: RwSignal<bool>,
+) -> impl IntoView {
+    let activation_id = notification.activation_id.clone();
+    let carousel = NotificationCarouselController::new(
+        vec![activation_id],
+        vec![notification.clone()],
+        reduced_motion,
+    );
+    view! {
+        <NotificationCard
+            notification
+            wall_clock
+            carousel
+            exit_role=None
+            exit_visual=None
+            interactive=false
+            preview=true
+        />
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NotificationCardVisual {
     pub(super) role: NotificationCardRole,
@@ -960,6 +985,8 @@ fn NotificationCard(
     carousel: NotificationCarouselController,
     exit_role: Option<NotificationCardRole>,
     exit_visual: Option<NotificationExitVisual>,
+    #[prop(default = true)] interactive: bool,
+    #[prop(default = false)] preview: bool,
 ) -> AnyView {
     let exiting = exit_role.is_some();
     let activation_id = notification.activation_id;
@@ -1002,10 +1029,18 @@ fn NotificationCard(
                 class="notification-activate"
                 type="button"
                 aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
-                tabindex=if exiting { "-1" } else { "0" }
-                disabled=exiting
-                on:focus=move |_| activate_carousel.focus_notification(&activate_focus_id)
-                on:click=move |_| activate_native_notification(&activate_id)
+                tabindex=if exiting || !interactive { "-1" } else { "0" }
+                disabled=exiting || !interactive
+                on:focus=move |_| {
+                    if interactive {
+                        activate_carousel.focus_notification(&activate_focus_id);
+                    }
+                }
+                on:click=move |_| {
+                    if interactive {
+                        activate_native_notification(&activate_id);
+                    }
+                }
             >
                 <NotificationOpenIcon/>
             </button>
@@ -1013,10 +1048,17 @@ fn NotificationCard(
                 class="notification-dismiss"
                 type="button"
                 aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
-                tabindex=if exiting { "-1" } else { "0" }
-                disabled=exiting
-                on:focus=move |_| dismiss_focus_carousel.focus_notification(&dismiss_focus_id)
+                tabindex=if exiting || !interactive { "-1" } else { "0" }
+                disabled=exiting || !interactive
+                on:focus=move |_| {
+                    if interactive {
+                        dismiss_focus_carousel.focus_notification(&dismiss_focus_id);
+                    }
+                }
                 on:click=move |event| {
+                    if !interactive {
+                        return;
+                    }
                     dismiss_click_carousel.prepare_exit(&dismiss_id, &event);
                     let request = dismiss_native_notification(&dismiss_id);
                     let failure_carousel = dismiss_failure_carousel.clone();
@@ -1038,8 +1080,8 @@ fn NotificationCard(
             class="notification-activate"
             type="button"
             aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
-            tabindex=if exiting { "-1" } else { "0" }
-            disabled=exiting
+            tabindex=if exiting || !interactive { "-1" } else { "0" }
+            disabled=exiting || !interactive
         >
             <NotificationOpenIcon/>
         </button>
@@ -1047,8 +1089,8 @@ fn NotificationCard(
             class="notification-dismiss"
             type="button"
             aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
-            tabindex=if exiting { "-1" } else { "0" }
-            disabled=exiting
+            tabindex=if exiting || !interactive { "-1" } else { "0" }
+            disabled=exiting || !interactive
         >
             <NotificationDismissIcon/>
         </button>
@@ -1110,6 +1152,7 @@ fn NotificationCard(
                 .foreground
                 && !exiting
             class:notification-card-exiting=exiting
+            class:notification-card-preview=preview
             aria-hidden=exiting.then_some("true")
             style=exit_style
             data-notification-id=activation_id

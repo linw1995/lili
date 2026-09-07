@@ -104,6 +104,11 @@ pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     register_notification_hit_region(window_number)
 }
 
+pub fn configure_settings(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let window_number = configure_panel(window)?;
+    register_context_menu_suppression(window_number)
+}
+
 pub fn update_notification_hit_region(
     window: &tauri::WebviewWindow,
     mode: NotificationHitRegionMode,
