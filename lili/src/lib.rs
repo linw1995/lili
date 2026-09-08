@@ -264,12 +264,21 @@ pub fn run() {
         }
         return;
     }
-    let acceptance = std::env::args().any(|argument| argument == "--desktop-acceptance");
-    let smoke = acceptance || std::env::args().any(|argument| argument == "--desktop-smoke");
-    run_desktop(smoke, acceptance);
+    let action_only_acceptance = arguments
+        .iter()
+        .any(|argument| argument == "--notification-action-acceptance");
+    let acceptance = action_only_acceptance
+        || arguments
+            .iter()
+            .any(|argument| argument == "--desktop-acceptance");
+    let smoke = acceptance
+        || arguments
+            .iter()
+            .any(|argument| argument == "--desktop-smoke");
+    run_desktop(smoke, acceptance, action_only_acceptance);
 }
 
-fn run_desktop(smoke: bool, acceptance: bool) {
+fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
     let app = tauri::Builder::default()
         .manage(DesktopAcceptanceState::default())
         .manage(DesktopSmokeState::default())
@@ -307,8 +316,11 @@ fn run_desktop(smoke: bool, acceptance: bool) {
             std::process::exit(1);
         }
     };
-    app.state::<DesktopAcceptanceState>()
-        .configure(application_paths.clone(), state.clone());
+    app.state::<DesktopAcceptanceState>().configure(
+        application_paths.clone(),
+        state.clone(),
+        action_only_acceptance,
+    );
     let _native_ingestion = configure_native_runtime(
         !smoke || acceptance,
         state_store.clone(),

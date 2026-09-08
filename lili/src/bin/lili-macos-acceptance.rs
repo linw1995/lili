@@ -251,13 +251,14 @@ mod macos {
     ) -> Result<Child, String> {
         let mut command = Command::new(binary);
         command
-            .arg("--desktop-acceptance")
+            .arg(if action_only {
+                "--notification-action-acceptance"
+            } else {
+                "--desktop-acceptance"
+            })
             .env("CODEX_HOME", codex_home)
             .env("HOME", application_home)
             .env("XDG_STATE_HOME", application_home.join("state"));
-        if action_only {
-            command.env("LILI_ACTION_ONLY_ACCEPTANCE", "1");
-        }
         command
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

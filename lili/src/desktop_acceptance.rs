@@ -92,11 +92,17 @@ pub struct BrowserAcceptanceReport {
 pub struct DesktopAcceptanceState {
     application_paths: Mutex<Option<ApplicationPaths>>,
     app_state: Mutex<Option<AppState>>,
+    action_only: AtomicBool,
     completed: AtomicBool,
 }
 
 impl DesktopAcceptanceState {
-    pub fn configure(&self, application_paths: ApplicationPaths, app_state: AppState) {
+    pub fn configure(
+        &self,
+        application_paths: ApplicationPaths,
+        app_state: AppState,
+        action_only: bool,
+    ) {
         *self
             .application_paths
             .lock()
@@ -105,6 +111,7 @@ impl DesktopAcceptanceState {
             .app_state
             .lock()
             .expect("desktop acceptance state must not be poisoned") = Some(app_state);
+        self.action_only.store(action_only, Ordering::Release);
     }
 }
 
@@ -230,8 +237,7 @@ pub async fn complete_desktop_acceptance(
     eprintln!(
         "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} actionContext={recorded_context_contract} notificationState={notification_state_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} appearanceSelection={appearance_selection_contract} selectedPet={selected_pet_contract}"
     );
-    let action_only = std::env::var_os("LILI_ACTION_ONLY_ACCEPTANCE").as_deref()
-        == Some(std::ffi::OsStr::new("1"));
+    let action_only = state.action_only.load(Ordering::Acquire);
     let action_boundary_passed = cfg!(any(
         target_os = "macos",
         target_os = "windows",
