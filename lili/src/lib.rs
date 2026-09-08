@@ -1789,6 +1789,7 @@ fn queue_context_menu_until_ready(
     Ok(should_queue)
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn clear_pending_context_menu_request(
     pending_position: &std::sync::Mutex<Option<ContextMenuRequest>>,
 ) -> Result<bool, String> {
@@ -1798,6 +1799,7 @@ fn clear_pending_context_menu_request(
     Ok(pending.take().is_some())
 }
 
+#[cfg(target_os = "macos")]
 fn dismiss_pet_context_menu(app: &tauri::AppHandle) {
     let navigation = app.state::<ContextMenuNavigation>();
     if clear_pending_context_menu_request(&navigation.pending_position).is_err() {
