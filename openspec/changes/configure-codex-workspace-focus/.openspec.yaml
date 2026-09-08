@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-07
+goal: Document and verify a Lili notification action configuration that invokes
+  a user-owned workspace-focus script without expanding Lili's responsibility.
+skip_specs: true
