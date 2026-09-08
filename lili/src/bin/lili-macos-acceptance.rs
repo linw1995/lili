@@ -1,5 +1,12 @@
 #[cfg(target_os = "macos")]
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--record-action")) {
+        if let Err(error) = macos::record_action() {
+            eprintln!("macOS action fixture failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = macos::run() {
         eprintln!("macOS acceptance failed: {error}");
         std::process::exit(1);
@@ -16,6 +23,7 @@ fn main() {
 mod macos {
     use std::{
         fs,
+        io::Read as _,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         thread,
@@ -30,6 +38,30 @@ mod macos {
     const PAYLOAD: &[u8] = include_bytes!(
         "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
     );
+
+    pub fn record_action() -> Result<(), String> {
+        let mut arguments = std::env::args_os().skip(1);
+        if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--record-action")) {
+            return Err("invalid action fixture mode".to_owned());
+        }
+        let output = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing action fixture output".to_owned())?;
+        if arguments.next().is_some() || !output.is_absolute() {
+            return Err("invalid action fixture output".to_owned());
+        }
+        let mut input = Vec::new();
+        std::io::stdin()
+            .take((lili_actions::MAX_INTERACTION_CONTEXT_BYTES + 1) as u64)
+            .read_to_end(&mut input)
+            .map_err(|error| format!("action fixture stdin could not be read: {error}"))?;
+        if input.len() > lili_actions::MAX_INTERACTION_CONTEXT_BYTES {
+            return Err("action fixture stdin exceeded its bound".to_owned());
+        }
+        fs::write(output, input)
+            .map_err(|error| format!("action fixture output could not be written: {error}"))
+    }
 
     pub fn run() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
@@ -198,14 +230,26 @@ mod macos {
             .expect("acceptance application path must be absolute")
         }
 
+        fn action_context_path(&self) -> PathBuf {
+            self.application_paths()
+                .root()
+                .join("desktop-acceptance-action-context.json")
+        }
+
         fn write_action_config(&self) -> Result<(), String> {
             let application_paths = self.application_paths();
             fs::create_dir_all(application_paths.config_root()).map_err(|error| {
                 format!("application config directory could not be created: {error}")
             })?;
-            fs::write(
-                application_paths.actions_path(),
+            let fixture = std::env::current_exe()
+                .map_err(|error| format!("action fixture path could not be resolved: {error}"))?;
+            let source = format!(
                 r#"version = 1
+
+[[action]]
+id = "open-session-context"
+trigger = "notification_activate"
+command = [{}, "--record-action", {}]
 
 [[action]]
 id = "macos-timeout"
@@ -213,9 +257,20 @@ trigger = "notification_activate"
 command = ["/bin/sleep", "5"]
 timeout_ms = 100
 "#,
-            )
-            .map_err(|error| format!("acceptance action config could not be written: {error}"))
+                toml_string(&fixture)?,
+                toml_string(&self.action_context_path())?,
+            );
+            fs::write(application_paths.actions_path(), source)
+                .map_err(|error| format!("acceptance action config could not be written: {error}"))
         }
+    }
+
+    fn toml_string(path: &Path) -> Result<String, String> {
+        serde_json::to_string(
+            path.to_str()
+                .ok_or_else(|| "acceptance path is not UTF-8".to_owned())?,
+        )
+        .map_err(|error| format!("acceptance path could not be encoded: {error}"))
     }
 
     impl Drop for AcceptanceWorkspace {

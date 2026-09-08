@@ -14,5 +14,5 @@
 
 - [x] 3.1 Add or reuse an inert test executable that records bounded stdin mechanically and performs no application inspection or desktop mutation; verify tests compare its decoded `provider`, `sessionId`, and remaining input with the clicked immutable notification snapshot.
 - [x] 3.2 Verify inherited default debounce/concurrency, rapid activation, concurrent primary-Session changes, action success, nonzero exit, timeout, and spawn failure preserve at-most-once dispatch and leave the underlying notification and Session state unchanged.
-- [ ] 3.3 Extend packaged desktop acceptance to load the documented action recipe with the inert stub and verify direct argv plus the canonical stdin payload without asserting any external workspace or window behavior.
+- [x] 3.3 Extend packaged desktop acceptance to load the documented action recipe with the inert stub and verify direct argv plus the canonical stdin payload without asserting any external workspace or window behavior.
 - [ ] 3.4 Run formatting, lint, targeted unit tests, packaged acceptance, documentation-drift checks, and `openspec validate configure-codex-workspace-focus --strict`; record only results actually observed.
