@@ -437,4 +437,25 @@ command = "echo unsafe"
             Err(InteractionContextError::TooLarge)
         );
     }
+
+    #[test]
+    fn documented_notification_context_matches_the_version_1_schema() {
+        let documentation = include_str!("../../docs/configuration.md");
+        let (_, fixture_section) = documentation
+            .split_once("<!-- interaction-context-v1-fixture-start -->")
+            .unwrap();
+        let (_, json) = fixture_section.split_once("```json\n").unwrap();
+        let (json, _) = json.split_once("\n```").unwrap();
+
+        assert!(json.len() <= MAX_INTERACTION_CONTEXT_BYTES);
+        let context = decode_interaction_context(json.as_bytes()).unwrap();
+        assert_eq!(context.version, INTERACTION_CONTEXT_VERSION);
+        assert_eq!(context.trigger, InteractionTrigger::NotificationActivate);
+        let notification = context.notification.unwrap();
+        assert_eq!(notification.provider, "codex");
+        assert_eq!(notification.session_id, "session-id");
+        assert_eq!(notification.turn_id, None);
+        assert_eq!(notification.project_label, None);
+        assert_eq!(notification.summary, None);
+    }
 }

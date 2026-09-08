@@ -179,8 +179,9 @@ LILI_ACTION_PROFILE = "local"
 
 `reject` concurrency requires `queue_capacity = 0`. `queue` concurrency requires a positive capacity. `max_parallel` is between 1 and 16, `queue_capacity` is at most 64, `timeout_ms` is between 1 and 120000, and `debounce_ms` is at most 60000.
 
-Lili writes one `InteractionContextV1` JSON document to the action's standard input. A notification activation has this shape:
+Lili writes one `InteractionContextV1` JSON document of at most 16 KiB to the action's standard input. A notification activation has this canonical version 1 shape:
 
+<!-- interaction-context-v1-fixture-start -->
 ```json
 {
   "version": 1,
@@ -197,18 +198,17 @@ Lili writes one `InteractionContextV1` JSON document to the action's standard in
     "eventId": "event-id",
     "provider": "codex",
     "sessionId": "session-id",
-    "turnId": "turn-id",
+    "turnId": null,
     "kind": "completion",
     "occurredAtMs": 0,
-    "projectLabel": "project",
-    "summary": {
-      "text": "Display-safe bounded summary",
-      "truncated": false,
-      "redacted": false
-    }
+    "projectLabel": null,
+    "summary": null
   }
 }
 ```
+<!-- interaction-context-v1-fixture-end -->
+
+`version`, `interactionId`, `acceptedAtMs`, `trigger`, `pet`, and `notification` are required for a notification activation. Every shown field inside `pet` and every non-nullable field inside `notification` is also required. `turnId`, `projectLabel`, and `summary` may be omitted or null; when `summary` is present, its `text`, `truncated`, and `redacted` fields are required. A `notification_activate` context requires a non-null `notification` object.
 
 Pet interactions use the same envelope with `notification: null`. The configured executable decides how to parse the JSON and what local operation to perform. Lili bounds runtime, output capture, concurrency, and process-tree cleanup, but the executable still has the current operating-system user's authority.
 
