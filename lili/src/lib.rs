@@ -749,9 +749,16 @@ fn configure_desktop_companion_window(
     window: &tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> tauri::Result<()> {
-    macos_panel::configure(window, move |event| {
-        open_pet_context_menu_from_native(&app, event);
-    })
+    let open_app = app.clone();
+    macos_panel::configure(
+        window,
+        move |event| open_pet_context_menu_from_native(&open_app, event),
+        move || {
+            if let Some(window) = app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
+                let _ = window.hide();
+            }
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]

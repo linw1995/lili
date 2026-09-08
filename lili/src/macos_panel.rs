@@ -52,6 +52,7 @@ pub struct ContextMenuEvent {
 }
 
 type ContextMenuHandler = Arc<dyn Fn(ContextMenuEvent) + Send + Sync>;
+type ContextMenuDismissHandler = Arc<dyn Fn() + Send + Sync>;
 
 const PET_SPRITE_HEIGHT: f64 = 208.0;
 const PET_SPRITE_WIDTH: f64 = 192.0;
@@ -65,9 +66,15 @@ struct NotificationHitRegion {
     below_pet: bool,
 }
 
+struct PetContextMenuRegistration {
+    window_number: isize,
+    open: ContextMenuHandler,
+    dismiss: ContextMenuDismissHandler,
+}
+
 #[derive(Default)]
 struct ContextMenuState {
-    pet: Option<(isize, ContextMenuHandler)>,
+    pet: Option<PetContextMenuRegistration>,
     suppressed_windows: HashSet<isize>,
     notification_hit_region: Option<NotificationHitRegion>,
 }
@@ -84,6 +91,7 @@ thread_local! {
 pub fn configure(
     window: &tauri::WebviewWindow,
     context_menu_handler: impl Fn(ContextMenuEvent) + Send + Sync + 'static,
+    context_menu_dismiss_handler: impl Fn() + Send + Sync + 'static,
 ) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
     let context_menu_handler: ContextMenuHandler = Arc::new(context_menu_handler);
@@ -92,7 +100,11 @@ pub fn configure(
         .lock()
         .map_err(|_| tauri::Error::AssetNotFound("context menu state".to_owned()))?;
     state.suppressed_windows.insert(window_number);
-    state.pet = Some((window_number, Arc::clone(&context_menu_handler)));
+    state.pet = Some(PetContextMenuRegistration {
+        window_number,
+        open: Arc::clone(&context_menu_handler),
+        dismiss: Arc::new(context_menu_dismiss_handler),
+    });
     drop(state);
     install_context_menu_monitor();
     Ok(())
@@ -454,27 +466,45 @@ fn install_context_menu_monitor() {
             refresh_notification_mouse_passthrough();
             return event as *const NSEvent as *mut NSEvent;
         }
-        let Some((suppressed, handler)) = CONTEXT_MENU_STATE.get().and_then(|state| {
-            state.lock().ok().map(|state| {
-                let suppressed = state.suppressed_windows.contains(&window_number);
-                let handler = state.pet.as_ref().and_then(|(pet_window_number, handler)| {
-                    should_open_pet_context_menu(
-                        event_type,
-                        window_number,
-                        *pet_window_number,
-                        event_hits_pet_sprite(event),
-                    )
-                    .then(|| Arc::clone(handler))
-                });
-                (suppressed, handler)
+        let Some((suppressed, open_handler, dismiss_handler)) =
+            CONTEXT_MENU_STATE.get().and_then(|state| {
+                state.lock().ok().map(|state| {
+                    let suppressed = state.suppressed_windows.contains(&window_number);
+                    let hits_pet_sprite = event_hits_pet_sprite(event);
+                    let open_handler = state.pet.as_ref().and_then(|pet| {
+                        should_open_pet_context_menu(
+                            event_type,
+                            window_number,
+                            pet.window_number,
+                            hits_pet_sprite,
+                        )
+                        .then(|| Arc::clone(&pet.open))
+                    });
+                    let dismiss_handler = state.pet.as_ref().and_then(|pet| {
+                        should_dismiss_pet_context_menu(
+                            event_type,
+                            window_number,
+                            pet.window_number,
+                            hits_pet_sprite,
+                        )
+                        .then(|| Arc::clone(&pet.dismiss))
+                    });
+                    (suppressed, open_handler, dismiss_handler)
+                })
             })
-        }) else {
+        else {
             return event as *const NSEvent as *mut NSEvent;
         };
+        if let Some(handler) = dismiss_handler {
+            handler();
+        }
+        if event_type == NSEventType::LeftMouseDown {
+            return event as *const NSEvent as *mut NSEvent;
+        }
         if !suppressed {
             return event as *const NSEvent as *mut NSEvent;
         }
-        if let Some(handler) = handler {
+        if let Some(handler) = open_handler {
             let location = NSEvent::mouseLocation();
             handler(ContextMenuEvent {
                 screen_x: location.x,
@@ -484,7 +514,8 @@ fn install_context_menu_monitor() {
         }
         std::ptr::null_mut()
     });
-    let mask = NSEventMask::RightMouseDown
+    let mask = NSEventMask::LeftMouseDown
+        | NSEventMask::RightMouseDown
         | NSEventMask::RightMouseUp
         | NSEventMask::MouseMoved
         | NSEventMask::LeftMouseDragged
@@ -545,6 +576,17 @@ fn should_open_pet_context_menu(
     event_type == NSEventType::RightMouseUp && window_number == pet_window_number && hits_pet_sprite
 }
 
+fn should_dismiss_pet_context_menu(
+    event_type: NSEventType,
+    window_number: isize,
+    pet_window_number: isize,
+    hits_pet_sprite: bool,
+) -> bool {
+    event_type == NSEventType::LeftMouseDown
+        && window_number == pet_window_number
+        && hits_pet_sprite
+}
+
 fn event_hits_pet_sprite(event: &NSEvent) -> bool {
     let location = event.locationInWindow();
     pet_sprite_contains(location.x, location.y)
@@ -563,7 +605,7 @@ mod tests {
 
     use super::{
         native_top_left_point, pet_sprite_contains, screen_point_to_tauri_with_display_height,
-        should_open_pet_context_menu,
+        should_dismiss_pet_context_menu, should_open_pet_context_menu,
     };
 
     #[test]
@@ -591,6 +633,34 @@ mod tests {
         ));
         assert!(!should_open_pet_context_menu(
             NSEventType::RightMouseUp,
+            7,
+            7,
+            false
+        ));
+    }
+
+    #[test]
+    fn left_mouse_down_on_the_pet_dismisses_the_context_menu() {
+        assert!(should_dismiss_pet_context_menu(
+            NSEventType::LeftMouseDown,
+            7,
+            7,
+            true
+        ));
+        assert!(!should_dismiss_pet_context_menu(
+            NSEventType::LeftMouseUp,
+            7,
+            7,
+            true
+        ));
+        assert!(!should_dismiss_pet_context_menu(
+            NSEventType::LeftMouseDown,
+            8,
+            7,
+            true
+        ));
+        assert!(!should_dismiss_pet_context_menu(
+            NSEventType::LeftMouseDown,
             7,
             7,
             false
