@@ -373,6 +373,16 @@ command = "echo unsafe"
             file.actions[2].trigger,
             InteractionTrigger::NotificationActivate
         );
+        let notification_action = &file.actions[2];
+        assert_eq!(notification_action.filters, EventFilterV1::default());
+        assert_eq!(notification_action.timeout_ms, DEFAULT_ACTION_TIMEOUT_MS);
+        assert_eq!(notification_action.debounce_ms, DEFAULT_ACTION_DEBOUNCE_MS);
+        assert_eq!(notification_action.concurrency, ConcurrencyV1::default());
+        assert_eq!(
+            notification_action.working_directory,
+            WorkingDirectoryV1::default()
+        );
+        assert_eq!(notification_action.environment, EnvironmentV1::default());
     }
 
     #[test]
@@ -436,5 +446,26 @@ command = "echo unsafe"
             decode_interaction_context(&vec![b'x'; MAX_INTERACTION_CONTEXT_BYTES + 1]),
             Err(InteractionContextError::TooLarge)
         );
+    }
+
+    #[test]
+    fn documented_notification_context_matches_the_version_1_schema() {
+        let documentation = include_str!("../../docs/configuration.md");
+        let (_, fixture_section) = documentation
+            .split_once("<!-- interaction-context-v1-fixture-start -->")
+            .unwrap();
+        let (_, json) = fixture_section.split_once("```json\n").unwrap();
+        let (json, _) = json.split_once("\n```").unwrap();
+
+        assert!(json.len() <= MAX_INTERACTION_CONTEXT_BYTES);
+        let context = decode_interaction_context(json.as_bytes()).unwrap();
+        assert_eq!(context.version, INTERACTION_CONTEXT_VERSION);
+        assert_eq!(context.trigger, InteractionTrigger::NotificationActivate);
+        let notification = context.notification.unwrap();
+        assert_eq!(notification.provider, "codex");
+        assert_eq!(notification.session_id, "session-id");
+        assert_eq!(notification.turn_id, None);
+        assert_eq!(notification.project_label, None);
+        assert_eq!(notification.summary, None);
     }
 }

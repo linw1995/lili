@@ -410,8 +410,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ActionLoadContext, InteractionTrigger, PetLifecycleSnapshotV1, PetSnapshotV1,
-        load_actions_str,
+        ActionLoadContext, InteractionTrigger, NotificationFilterKind, NotificationSnapshotV1,
+        PetLifecycleSnapshotV1, PetSnapshotV1, decode_interaction_context, load_actions_str,
     };
 
     fn load_action(command: &str, environment: &str) -> crate::LoadedAction {
@@ -446,6 +446,29 @@ command = [{command}]
         .unwrap()
     }
 
+    fn notification_interaction() -> InteractionContextV1 {
+        InteractionContextV1::for_notification(
+            Uuid::nil(),
+            42,
+            PetSnapshotV1 {
+                pet_id: "lili".to_owned(),
+                label: "Lili".to_owned(),
+                lifecycle: PetLifecycleSnapshotV1::Review,
+            },
+            NotificationSnapshotV1 {
+                notification_id: "notification-1".to_owned(),
+                event_id: "event-1".to_owned(),
+                provider: "codex".to_owned(),
+                session_id: "session-1".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
+                kind: NotificationFilterKind::Completion,
+                occurred_at_ms: 40,
+                project_label: Some("workspace".to_owned()),
+                summary: None,
+            },
+        )
+    }
+
     #[tokio::test]
     async fn child_receives_context_only_on_standard_input() {
         let cat = if Path::new("/bin/cat").is_file() {
@@ -472,6 +495,28 @@ command = [{command}]
         assert_eq!(received["pet"]["label"], context.pet.label);
         assert_eq!(action.arguments().len(), 0);
         assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn inert_child_receives_the_immutable_notification_context() {
+        let cat = if Path::new("/bin/cat").is_file() {
+            "/bin/cat"
+        } else {
+            "/usr/bin/cat"
+        };
+        let action = load_action(&format!("{cat:?}"), "");
+        let context = notification_interaction();
+        let output = spawn_action(&action, &context)
+            .await
+            .unwrap()
+            .into_child()
+            .wait_with_output()
+            .await
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(action.arguments().len(), 0);
+        assert_eq!(decode_interaction_context(&output.stdout).unwrap(), context);
     }
 
     #[tokio::test]

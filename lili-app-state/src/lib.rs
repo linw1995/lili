@@ -1551,7 +1551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn action_failure_feedback_does_not_mutate_session_or_notification_state() {
+    async fn action_outcomes_do_not_mutate_session_or_notification_state() {
         let state = AppState::default();
         let event = normalize_provider_input(ProviderInputV1 {
             version: 1,
@@ -1569,31 +1569,42 @@ mod tests {
         .unwrap();
         state.apply_session_event(event).await;
         let before = state.snapshot().await;
-        let result = ActionExecutionResult {
-            action_id: "open-session".to_owned(),
-            interaction_id: Uuid::nil(),
-            trigger: InteractionTrigger::NotificationActivate,
-            event_id: Some("event-action-feedback".to_owned()),
-            started_at_ms: 11,
-            finished_at_ms: 12,
-            outcome: ActionExecutionOutcome::SpawnFailed,
-            exit_code: None,
-            stdout: lili_actions::CapturedOutput::default(),
-            stderr: lili_actions::CapturedOutput::default(),
-        };
-        assert!(state.publish_action_result(&result).await);
+        for (index, outcome) in [
+            ActionExecutionOutcome::Succeeded,
+            ActionExecutionOutcome::NonZeroExit,
+            ActionExecutionOutcome::TimedOut,
+            ActionExecutionOutcome::SpawnFailed,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result = ActionExecutionResult {
+                action_id: "open-session".to_owned(),
+                interaction_id: Uuid::nil(),
+                trigger: InteractionTrigger::NotificationActivate,
+                event_id: Some("event-action-feedback".to_owned()),
+                started_at_ms: 11,
+                finished_at_ms: 12 + index as u64,
+                outcome,
+                exit_code: (outcome == ActionExecutionOutcome::NonZeroExit).then_some(7),
+                stdout: lili_actions::CapturedOutput::default(),
+                stderr: lili_actions::CapturedOutput::default(),
+            };
+            assert!(state.publish_action_result(&result).await);
 
-        let after = state.snapshot().await;
-        assert!(after.revision > before.revision);
-        assert_eq!(after.session_state.revision, before.session_state.revision);
-        assert_eq!(
-            after.session_state.sessions[0].phase,
-            before.session_state.sessions[0].phase
-        );
-        assert_eq!(
-            after.session_state.notifications[0].state,
-            NotificationState::Unread
-        );
+            let after = state.snapshot().await;
+            assert!(after.revision > before.revision);
+            assert_eq!(after.session_state.revision, before.session_state.revision);
+            assert_eq!(
+                after.session_state.sessions[0].phase,
+                before.session_state.sessions[0].phase
+            );
+            assert_eq!(
+                after.session_state.notifications[0].state,
+                NotificationState::Unread
+            );
+        }
+
         let presentation = state.pet_presentation().await;
         let feedback = presentation.action_feedback.unwrap();
         assert_eq!(feedback.action_id, "open-session");
@@ -1660,12 +1671,7 @@ version = 1
 [[action]]
 id = "open-completion"
 trigger = "notification_activate"
-command = ["/bin/sh", "-c", "exit 0"]
-debounce_ms = 0
-
-[action.filters]
-notification_kinds = ["completion"]
-providers = ["codex"]
+command = ["/bin/cat"]
 "#,
         );
         assert!(state.configure_actions(loaded, 1).await);
@@ -1718,7 +1724,67 @@ providers = ["codex"]
         assert_eq!(dispatch.action_count, 1);
         let audit = wait_for_action_audit(&state, 1).await;
         assert_eq!(audit[0].event_id.as_deref(), Some("event-clicked-dispatch"));
+        assert_eq!(audit[0].outcome, ActionExecutionOutcome::Succeeded);
         assert_eq!(state.pet_presentation().await.unread_notification_count, 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn notification_action_defaults_debounce_without_mutating_state() {
+        let state = AppState::default();
+        let loaded = test_actions(
+            r#"
+version = 1
+
+[[action]]
+id = "open-session-context"
+trigger = "notification_activate"
+command = ["/bin/cat"]
+"#,
+        );
+        assert!(state.configure_actions(loaded, 1).await);
+        let event = normalize_provider_input(ProviderInputV1 {
+            version: 1,
+            provider: Some("codex".to_owned()),
+            event_type: Some("turn_completed".to_owned()),
+            event_id: Some("event-default-action".to_owned()),
+            session_id: Some("session-default-action".to_owned()),
+            turn_id: Some("turn-default-action".to_owned()),
+            occurred_at_ms: Some(10),
+            project: None,
+            summary: None,
+            capabilities: ProviderCapabilitiesInputV1::default(),
+            source_discriminator: None,
+        })
+        .unwrap();
+        state.apply_session_event(event).await;
+        let before = state.snapshot().await.session_state;
+        let notification_id = before.notifications[0].id.clone();
+
+        for interaction_id in [Uuid::new_v4(), Uuid::new_v4()] {
+            let context = state
+                .bind_interaction(
+                    interaction_id,
+                    11,
+                    InteractionTrigger::NotificationActivate,
+                    Some(&notification_id),
+                )
+                .await
+                .unwrap();
+            let receipt = state.dispatch_interaction(context).await;
+            assert!(receipt.accepted);
+            assert_eq!(receipt.action_count, 1);
+            wait_for_action_audit(&state, 1).await;
+        }
+
+        let audit = wait_for_action_audit(&state, 2).await;
+        assert_eq!(audit[0].outcome, ActionExecutionOutcome::Succeeded);
+        assert_eq!(audit[1].outcome, ActionExecutionOutcome::Debounced);
+        let after = state.snapshot().await.session_state;
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.sessions, before.sessions);
+        assert_eq!(after.notifications, before.notifications);
+        assert_eq!(after.notifications[0].state, NotificationState::Unread);
     }
 
     #[cfg(unix)]

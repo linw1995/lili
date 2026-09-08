@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use lili_actions::ActionExecutionOutcome;
+use lili_actions::{ActionExecutionOutcome, InteractionTrigger, decode_interaction_context};
 use lili_app_state::AppState;
 use lili_core::PetId;
 use lili_storage::ApplicationPaths;
@@ -92,11 +92,17 @@ pub struct BrowserAcceptanceReport {
 pub struct DesktopAcceptanceState {
     application_paths: Mutex<Option<ApplicationPaths>>,
     app_state: Mutex<Option<AppState>>,
+    action_only: AtomicBool,
     completed: AtomicBool,
 }
 
 impl DesktopAcceptanceState {
-    pub fn configure(&self, application_paths: ApplicationPaths, app_state: AppState) {
+    pub fn configure(
+        &self,
+        application_paths: ApplicationPaths,
+        app_state: AppState,
+        action_only: bool,
+    ) {
         *self
             .application_paths
             .lock()
@@ -105,6 +111,7 @@ impl DesktopAcceptanceState {
             .app_state
             .lock()
             .expect("desktop acceptance state must not be poisoned") = Some(app_state);
+        self.action_only.store(action_only, Ordering::Release);
     }
 }
 
@@ -131,11 +138,49 @@ pub async fn complete_desktop_acceptance(
         None => Vec::new(),
     };
     let expected_action_id = expected_action_id();
-    let action_contract = action_audit.as_slice().first().is_some_and(|entry| {
-        action_audit.len() == 1
-            && entry.action_id == expected_action_id
-            && entry.outcome == ActionExecutionOutcome::TimedOut
-    });
+    let action_contract = if cfg!(target_os = "macos") {
+        action_audit.len() == 2
+            && action_audit.iter().any(|entry| {
+                entry.action_id == "open-session-context"
+                    && entry.outcome == ActionExecutionOutcome::Succeeded
+            })
+            && action_audit.iter().any(|entry| {
+                entry.action_id == expected_action_id
+                    && entry.outcome == ActionExecutionOutcome::TimedOut
+            })
+    } else {
+        action_audit.as_slice().first().is_some_and(|entry| {
+            action_audit.len() == 1
+                && entry.action_id == expected_action_id
+                && entry.outcome == ActionExecutionOutcome::TimedOut
+        })
+    };
+    let recorded_context_contract = if cfg!(target_os = "macos") {
+        application_paths.as_ref().is_some_and(|paths| {
+            std::fs::read(paths.root().join("desktop-acceptance-action-context.json"))
+                .ok()
+                .and_then(|input| decode_interaction_context(&input).ok())
+                .is_some_and(|context| {
+                    context.trigger == InteractionTrigger::NotificationActivate
+                        && context.notification.is_some_and(|notification| {
+                            notification.provider == "codex"
+                                && notification.session_id == "01912f9d-3109-722d-a391-8e7b42ab1d31"
+                        })
+                })
+        })
+    } else {
+        true
+    };
+    let notification_state_contract = match app_state.as_ref() {
+        Some(state) => state
+            .snapshot()
+            .await
+            .session_state
+            .notifications
+            .iter()
+            .any(|notification| notification.state == lili_session::NotificationState::Unread),
+        None => false,
+    };
     eprintln!(
         "desktop acceptance browser={report:?} audit={}",
         serde_json::to_string(&action_audit).unwrap_or_else(|_| "unavailable".to_owned())
@@ -190,19 +235,24 @@ pub async fn complete_desktop_acceptance(
         _ => false,
     };
     eprintln!(
-        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} appearanceSelection={appearance_selection_contract} selectedPet={selected_pet_contract}"
+        "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} actionContext={recorded_context_contract} notificationState={notification_state_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} appearanceSelection={appearance_selection_contract} selectedPet={selected_pet_contract}"
     );
-    let passed = cfg!(any(
+    let action_only = state.action_only.load(Ordering::Acquire);
+    let action_boundary_passed = cfg!(any(
         target_os = "macos",
         target_os = "windows",
         target_os = "linux"
-    )) && report.transparent
-        && report.pinned_content
-        && report.hydrated
+    )) && report.hydrated
         && report.hook_delivered
         && report.action_timed_out
         && report.feedback_action_id.as_deref() == Some(expected_action_id)
         && action_contract
+        && recorded_context_contract
+        && notification_state_contract;
+    let full_acceptance_passed = action_boundary_passed
+        && report.transparent
+        && report.pinned_content
+        && report.hydrated
         && window_contract
         && dpi_contract
         && tray_contract
@@ -214,6 +264,11 @@ pub async fn complete_desktop_acceptance(
         && appearance_window_contract
         && appearance_selection_contract
         && selected_pet_contract;
+    let passed = if action_only {
+        action_boundary_passed
+    } else {
+        full_acceptance_passed
+    };
     let result_recorded = match application_paths {
         Some(application_paths) => std::fs::write(
             application_paths.root().join("desktop-acceptance-result"),
