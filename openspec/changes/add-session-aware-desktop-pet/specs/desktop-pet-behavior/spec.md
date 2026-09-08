@@ -97,6 +97,14 @@ The system SHALL render pet-anchored notification cards in a separate transparen
 - **WHEN** the non-activating Pet panel has received no prior left click or DOM pointer movement and the user right-clicks the visible sprite
 - **THEN** native event coordinates match the sprite hit region and open the Lili context menu on that first gesture
 
+#### Scenario: User left-clicks the Pet while its context menu is open
+- **WHEN** the Lili context menu is visible and the user presses the primary button on the Pet sprite
+- **THEN** the context menu closes and the primary-button event continues to the Pet for its normal click or drag behavior
+
+#### Scenario: User dismisses a queued context menu
+- **WHEN** a Pet context-menu request is waiting for the menu WebView to finish loading and the user presses the primary button on the Pet sprite
+- **THEN** the pending request is cancelled and the menu remains closed after the WebView becomes ready
+
 #### Scenario: Pet moves while notifications are visible
 - **WHEN** the pet window moves within or between display work areas
 - **THEN** the notification window remains anchored above the pet, falls below it with cards top-aligned when the upper edge has insufficient space, preserves the 4 pixel visual gap, and stays fully inside the selected work area
