@@ -124,12 +124,14 @@ After installation, restart Codex and start a new Session so it reads the update
 
 ## 5. Configure interaction actions
 
-Native actions are optional and are loaded from `$LILI_DATA/config/actions.toml` when Lili starts. Copy the release example, then replace every placeholder executable path:
+Native actions are optional and are loaded from `$LILI_DATA/config/actions.toml` when Lili starts. If the file does not exist, copy the release example and then replace every placeholder executable path:
 
 ```text
 mkdir -p "$LILI_DATA/config"
 cp "$LILI_RELEASE/examples/actions.toml" "$LILI_DATA/config/actions.toml"
 ```
+
+If `actions.toml` already exists, do not overwrite it. Review the release example and add only the intended `[[action]]` entry with a unique `id`, preserving every unrelated action exactly.
 
 The three supported triggers are:
 
@@ -204,7 +206,23 @@ The action context does not contain the original cwd, a workspace identity, proc
 
 Pet interactions use the same envelope with `notification: null`. The configured executable decides how to parse the JSON and what local operation to perform. Lili bounds runtime, output capture, concurrency, and process-tree cleanup, but the executable still has the current operating-system user's authority.
 
-Restart Lili after editing `actions.toml`. Invalid entries are disabled independently; valid entries continue to load. Review the effective redacted action configuration and diagnostic codes from the diagnostics endpoint.
+### Install and verify a notification action
+
+1. Install and review the user-owned executable independently. Confirm its absolute path, expected stdin contract, external permissions, state files, and cleanup procedure before referencing it from Lili.
+2. Copy or merge the minimal `open-session-context` entry, replace `/absolute/path/to/user-owned-action`, and inspect the complete `actions.toml`. Do not add a provider filter when the executable is expected to inspect `notification.provider` itself.
+3. Before enabling the Lili action, save the canonical JSON above to a reviewed temporary file and invoke the executable directly:
+
+   ```text
+   /absolute/path/to/user-owned-action < /absolute/path/to/reviewed-context.json
+   ```
+
+   This checks only the executable's own stdin handling. It does not prove Lili delivery or any external effect.
+4. Restart Lili so it reloads `actions.toml`. Open the tray **Diagnostics** view and confirm `open-session-context` is enabled with an empty filter, the expected resolved executable, and no action diagnostic. Invalid entries are disabled independently; other valid actions remain available.
+5. Produce one real Session completion or attention notification, activate that exact card once, and confirm the action audit identifies `open-session-context` with the expected outcome. The executable must use `notification.provider` to decide whether it supports the source.
+
+If the action is disabled, confirm that the executable path is absolute, exists, and is executable, the `id` is unique, and the TOML contains no unsupported fields. If it starts but fails, review the bounded action outcome for spawn, nonzero-exit, timeout, output-overflow, debounce, or concurrency rejection. Remember that the inherited environment is cleared, the default Unix `PATH` is only `/usr/bin:/bin`, and the default working directory is the Lili application directory. Lili cannot diagnose workspace or desktop behavior implemented by the external executable.
+
+To roll back this recipe, remove only the `[[action]]` entry whose `id` is `open-session-context`, preserve all other entries byte-for-byte, restart Lili, and confirm in **Diagnostics** that the action is absent while other actions and Session delivery remain available. Do not remove hooks, change trust, uninstall the plugin, delete Lili application data, or clean up external state as part of this action-only rollback. Follow the external executable's own cleanup procedure separately.
 
 ## 6. Verify and troubleshoot
 
