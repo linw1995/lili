@@ -230,19 +230,23 @@ pub async fn complete_desktop_acceptance(
     eprintln!(
         "desktop acceptance native alwaysOnTop={always_on_top_contract} undecorated={undecorated_contract} placement={placement_contract} nativeWindow={pet_native_window_contract} notificationWindow={notification_window_contract} dpi={dpi_contract} tray={tray_contract} hide={hide_contract} hidden={hidden_contract} show={show_contract} shown={shown_contract} transport={transport_contract} actionContext={recorded_context_contract} notificationState={notification_state_contract} absolutePosition={absolute_position_contract} contextSettings={context_menu_settings_contract} traySettings={tray_settings_contract} appearanceWindow={appearance_window_contract} appearanceSelection={appearance_selection_contract} selectedPet={selected_pet_contract}"
     );
-    let passed = cfg!(any(
+    let action_only = std::env::var_os("LILI_ACTION_ONLY_ACCEPTANCE").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
+    let action_boundary_passed = cfg!(any(
         target_os = "macos",
         target_os = "windows",
         target_os = "linux"
-    )) && report.transparent
-        && report.pinned_content
-        && report.hydrated
+    )) && report.hydrated
         && report.hook_delivered
         && report.action_timed_out
         && report.feedback_action_id.as_deref() == Some(expected_action_id)
         && action_contract
         && recorded_context_contract
-        && notification_state_contract
+        && notification_state_contract;
+    let full_acceptance_passed = action_boundary_passed
+        && report.transparent
+        && report.pinned_content
+        && report.hydrated
         && window_contract
         && dpi_contract
         && tray_contract
@@ -254,6 +258,11 @@ pub async fn complete_desktop_acceptance(
         && appearance_window_contract
         && appearance_selection_contract
         && selected_pet_contract;
+    let passed = if action_only {
+        action_boundary_passed
+    } else {
+        full_acceptance_passed
+    };
     let result_recorded = match application_paths {
         Some(application_paths) => std::fs::write(
             application_paths.root().join("desktop-acceptance-result"),

@@ -1,13 +1,12 @@
 #[cfg(target_os = "macos")]
 fn main() {
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--record-action")) {
-        if let Err(error) = macos::record_action() {
-            eprintln!("macOS action fixture failed: {error}");
-            std::process::exit(1);
-        }
-        return;
-    }
-    if let Err(error) = macos::run() {
+    let mode = std::env::args_os().nth(1);
+    let result = match mode.as_deref() {
+        Some(mode) if mode == "--record-action" => macos::record_action(),
+        Some(mode) if mode == "--direct-hook" => macos::run_direct_hook_acceptance(),
+        _ => macos::run(),
+    };
+    if let Err(error) = result {
         eprintln!("macOS acceptance failed: {error}");
         std::process::exit(1);
     }
@@ -23,7 +22,7 @@ fn main() {
 mod macos {
     use std::{
         fs,
-        io::Read as _,
+        io::{Read as _, Write as _},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         thread,
@@ -113,7 +112,7 @@ mod macos {
             &hook_binary,
             MACOS_ARM64,
         )?;
-        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home())?;
+        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home(), false)?;
         let credential_path = workspace.application_paths().credentials_path();
         if !wait_for_file(&credential_path, Duration::from_secs(30)) {
             terminate(&mut app);
@@ -132,13 +131,100 @@ mod macos {
             return Err(error);
         }
 
+        wait_for_completion(&mut app, "marketplace")
+    }
+
+    pub fn run_direct_hook_acceptance() -> Result<(), String> {
+        let mut arguments = std::env::args_os().skip(2);
+        let app_binary = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing packaged app binary path".to_owned())?;
+        let hook_binary = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing hook binary path".to_owned())?;
+        let app_bundle = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| "missing packaged app bundle path".to_owned())?;
+        if arguments.next().is_some()
+            || !app_binary.is_file()
+            || !hook_binary.is_file()
+            || !app_bundle.is_dir()
+            || app_bundle.extension().and_then(|value| value.to_str()) != Some("app")
+            || !app_binary
+                .canonicalize()
+                .map_err(|error| format!("packaged app binary could not be resolved: {error}"))?
+                .starts_with(
+                    app_bundle
+                        .canonicalize()
+                        .map_err(|error| format!("app bundle could not be resolved: {error}"))?,
+                )
+        {
+            return Err("acceptance binary paths are invalid".to_owned());
+        }
+
+        let workspace = AcceptanceWorkspace::new()?;
+        workspace.write_action_config()?;
+        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home(), true)?;
+        let credential_path = workspace.application_paths().credentials_path();
+        if !wait_for_file(&credential_path, Duration::from_secs(30)) {
+            terminate(&mut app);
+            return Err("packaged app did not publish forwarding credentials".to_owned());
+        }
+        if let Err(error) = invoke_direct_hook(&hook_binary, &workspace) {
+            terminate(&mut app);
+            return Err(error);
+        }
+        wait_for_completion(&mut app, "direct-hook")
+    }
+
+    fn invoke_direct_hook(
+        hook_binary: &Path,
+        workspace: &AcceptanceWorkspace,
+    ) -> Result<(), String> {
+        let mut child = Command::new(hook_binary)
+            .args(["--plugin-hook", "--json-stdin"])
+            .env(
+                "PLUGIN_DATA",
+                workspace
+                    .path()
+                    .join("plugins")
+                    .join("data")
+                    .join("lili-lili-local"),
+            )
+            .env("LILI_PLUGIN_CODEX_HOME", workspace.path())
+            .env("HOME", workspace.home())
+            .env("XDG_STATE_HOME", workspace.home().join("state"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("direct packaged hook could not start: {error}"))?;
+        child
+            .stdin
+            .take()
+            .expect("piped hook stdin is available")
+            .write_all(PAYLOAD)
+            .map_err(|error| format!("direct packaged hook input failed: {error}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|error| format!("direct packaged hook wait failed: {error}"))?;
+        if !output.status.success() || !output.stdout.is_empty() || !output.stderr.is_empty() {
+            return Err("direct packaged hook did not complete silently".to_owned());
+        }
+        Ok(())
+    }
+
+    fn wait_for_completion(app: &mut Child, delivery: &str) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match app.try_wait() {
                 Ok(Some(status)) if status.success() => {
                     println!(
-                        "{{\"macosAcceptance\":\"passed\",\"marketplace\":\"lili-local\",\"target\":\"{}\"}}",
-                        MACOS_ARM64.triple
+                        "{{\"macosAcceptance\":\"passed\",\"delivery\":{delivery:?},\"target\":\"{}\"}}",
+                        MACOS_ARM64.triple,
                     );
                     return Ok(());
                 }
@@ -149,7 +235,7 @@ mod macos {
                     thread::sleep(Duration::from_millis(50));
                 }
                 Ok(None) => {
-                    terminate(&mut app);
+                    terminate(app);
                     return Err("packaged app did not quit cleanly".to_owned());
                 }
                 Err(error) => return Err(format!("packaged app could not be observed: {error}")),
@@ -161,12 +247,18 @@ mod macos {
         binary: &Path,
         codex_home: &Path,
         application_home: &Path,
+        action_only: bool,
     ) -> Result<Child, String> {
-        Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .arg("--desktop-acceptance")
             .env("CODEX_HOME", codex_home)
             .env("HOME", application_home)
-            .env("XDG_STATE_HOME", application_home.join("state"))
+            .env("XDG_STATE_HOME", application_home.join("state"));
+        if action_only {
+            command.env("LILI_ACTION_ONLY_ACCEPTANCE", "1");
+        }
+        command
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
