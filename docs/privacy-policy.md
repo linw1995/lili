@@ -38,6 +38,8 @@ Lili and its plugin do not send session data, diagnostics, or telemetry to Jade 
 
 Optional native actions receive a bounded local interaction context only after the user configures the executable and activates the matching interaction. That executable runs with the current operating-system user's authority and may have its own data practices. Lili does not control what a user-selected executable does after launch.
 
+Lili does not provide or retain external Session-to-workspace mappings, application or process inspection results, window metadata, or desktop-automation state for user-selected actions. Any such data belongs to the external executable and is governed by its own storage, privacy, and cleanup behavior.
+
 Visiting GitHub pages, downloading a release, opening a support issue, or using OpenAI products communicates with those third parties under their policies. Information the user voluntarily posts to a support issue is received by GitHub and the repository maintainers.
 
 ## Retention

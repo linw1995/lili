@@ -206,6 +206,12 @@ The action context does not contain the original cwd, a workspace identity, proc
 
 Pet interactions use the same envelope with `notification: null`. The configured executable decides how to parse the JSON and what local operation to perform. Lili bounds runtime, output capture, concurrency, and process-tree cleanup, but the executable still has the current operating-system user's authority.
 
+### External executable ownership
+
+`/absolute/path/to/user-owned-action` is a placeholder; Lili releases do not include or install that executable. Lili does not create a Session registry, map Session identities to workspaces, inspect applications or processes, discover terminal or window identities, or control desktop focus for this recipe. Those behaviors, any external state they require, their compatibility guarantees, and their cleanup procedure belong entirely to the executable selected by the operator.
+
+The action audit reports only Lili's supervised process outcome. A successful exit does not mean that an external workspace or desktop operation succeeded, selected the intended target, or was safe. Review and test the executable independently before adding it to `actions.toml`.
+
 ### Install and verify a notification action
 
 1. Install and review the user-owned executable independently. Confirm its absolute path, expected stdin contract, external permissions, state files, and cleanup procedure before referencing it from Lili.
