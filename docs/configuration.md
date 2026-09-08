@@ -210,6 +210,10 @@ Lili writes one `InteractionContextV1` JSON document of at most 16 KiB to the ac
 
 `version`, `interactionId`, `acceptedAtMs`, `trigger`, `pet`, and `notification` are required for a notification activation. Every shown field inside `pet` and every non-nullable field inside `notification` is also required. `turnId`, `projectLabel`, and `summary` may be omitted or null; when `summary` is present, its `text`, `truncated`, and `redacted` fields are required. A `notification_activate` context requires a non-null `notification` object.
 
+For notification actions, `notification.provider` identifies the normalized event provider and `notification.sessionId` is the stable provider-local Session identity. The executable can inspect `provider` itself instead of requiring a provider filter in `actions.toml`. This field is not hook attribution: plugin, legacy-notify, and delivery-path details are intentionally absent from the action context.
+
+The action context does not contain the original cwd, a workspace identity, process or terminal identity, window metadata, or desktop-focus semantics. Lili does not discover or guarantee those values. An executable that needs them must establish and document its own external integration without reading private Lili or Codex state.
+
 Pet interactions use the same envelope with `notification: null`. The configured executable decides how to parse the JSON and what local operation to perform. Lili bounds runtime, output capture, concurrency, and process-tree cleanup, but the executable still has the current operating-system user's authority.
 
 Restart Lili after editing `actions.toml`. Invalid entries are disabled independently; valid entries continue to load. Review the effective redacted action configuration and diagnostic codes from the diagnostics endpoint.
