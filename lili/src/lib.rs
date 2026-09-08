@@ -753,11 +753,7 @@ fn configure_desktop_companion_window(
     macos_panel::configure(
         window,
         move |event| open_pet_context_menu_from_native(&open_app, event),
-        move || {
-            if let Some(window) = app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
-                let _ = window.hide();
-            }
-        },
+        move || dismiss_pet_context_menu(&app),
     )
 }
 
@@ -1793,6 +1789,25 @@ fn queue_context_menu_until_ready(
     Ok(should_queue)
 }
 
+fn clear_pending_context_menu_request(
+    pending_position: &std::sync::Mutex<Option<ContextMenuRequest>>,
+) -> Result<bool, String> {
+    let mut pending = pending_position
+        .lock()
+        .map_err(|_| "pet context menu pending position is unavailable")?;
+    Ok(pending.take().is_some())
+}
+
+fn dismiss_pet_context_menu(app: &tauri::AppHandle) {
+    let navigation = app.state::<ContextMenuNavigation>();
+    if clear_pending_context_menu_request(&navigation.pending_position).is_err() {
+        diagnostics::warn("context_menu", "dismiss", "pending_request_unavailable");
+    }
+    if let Some(window) = app.get_webview_window(CONTEXT_MENU_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
 fn show_context_menu_request(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
@@ -2716,6 +2731,19 @@ mod tests {
         assert!(!is_recent_native_context_menu_event(Some(
             Duration::from_millis(251)
         )));
+    }
+
+    #[test]
+    fn dismissing_the_context_menu_clears_a_pending_open_request() {
+        let pending = std::sync::Mutex::new(Some(ContextMenuRequest {
+            position: tauri::PhysicalPosition::new(100, 200),
+            scale_factor: 2.0,
+            native_event_time_us: Some(7),
+        }));
+
+        assert!(clear_pending_context_menu_request(&pending).unwrap());
+        assert!(pending.lock().unwrap().is_none());
+        assert!(!clear_pending_context_menu_request(&pending).unwrap());
     }
 
     #[test]
