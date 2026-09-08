@@ -6,7 +6,7 @@
 
 ## 2. Configuration Recipe
 
-- [ ] 2.1 Add a minimal `notification_activate` example containing only `id`, `trigger`, and an absolute user-executable `command`, with no filter or concurrency blocks; verify the unchanged action parser enables it with empty filters and the stable default timeout, debounce, reject mode, one parallel execution, and zero queue.
+- [x] 2.1 Add a minimal `notification_activate` example containing only `id`, `trigger`, and an absolute user-executable `command`, with no filter or concurrency blocks; verify the unchanged action parser enables it with empty filters and the stable default timeout, debounce, reject mode, one parallel execution, and zero queue.
 - [ ] 2.2 Add copy, path-substitution, restart, effective-configuration inspection, synthetic invocation, real-notification verification, troubleshooting, and action-only rollback instructions; verify every state-changing step is explicitly user-run and preserves unrelated actions, hooks, trust, plugin state, and application data.
 - [ ] 2.3 Explain that any Session registry, workspace resolution, application inspection, or desktop focus belongs to the external executable and requires its own documentation and cleanup; verify the recipe neither ships nor implies a supported implementation.
 

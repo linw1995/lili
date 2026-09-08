@@ -33,18 +33,4 @@ policy = "application_data"
 [[action]]
 id = "open-session-context"
 trigger = "notification_activate"
-command = ["/absolute/path/to/lili-action", "notification"]
-timeout_ms = 5000
-debounce_ms = 400
-
-[action.filters]
-providers = ["codex"]
-notification_kinds = ["attention", "failure", "completion"]
-
-[action.concurrency]
-mode = "reject"
-max_parallel = 1
-queue_capacity = 0
-
-[action.working_directory]
-policy = "application_data"
+command = ["/absolute/path/to/user-owned-action"]

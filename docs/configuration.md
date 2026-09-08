@@ -147,22 +147,10 @@ version = 1
 [[action]]
 id = "open-session-context"
 trigger = "notification_activate"
-command = ["/absolute/path/to/lili-action", "notification"]
-timeout_ms = 5000
-debounce_ms = 400
-
-[action.filters]
-providers = ["codex"]
-notification_kinds = ["attention", "failure", "completion"]
-
-[action.concurrency]
-mode = "reject"
-max_parallel = 1
-queue_capacity = 0
-
-[action.working_directory]
-policy = "application_data"
+command = ["/absolute/path/to/user-owned-action"]
 ```
+
+This minimal entry uses empty filters and the stable defaults: a 10-second timeout, a 250-millisecond debounce window, reject concurrency, one parallel execution, zero queued executions, the application working directory, and no additional environment values. The executable reads `notification.provider` from standard input when it needs to distinguish providers.
 
 Filters support `providers`, `notification_kinds`, and `project_labels`. They require a notification context, so omit `[action.filters]` from pet click and pet double-click actions.
 

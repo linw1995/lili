@@ -373,6 +373,16 @@ command = "echo unsafe"
             file.actions[2].trigger,
             InteractionTrigger::NotificationActivate
         );
+        let notification_action = &file.actions[2];
+        assert_eq!(notification_action.filters, EventFilterV1::default());
+        assert_eq!(notification_action.timeout_ms, DEFAULT_ACTION_TIMEOUT_MS);
+        assert_eq!(notification_action.debounce_ms, DEFAULT_ACTION_DEBOUNCE_MS);
+        assert_eq!(notification_action.concurrency, ConcurrencyV1::default());
+        assert_eq!(
+            notification_action.working_directory,
+            WorkingDirectoryV1::default()
+        );
+        assert_eq!(notification_action.environment, EnvironmentV1::default());
     }
 
     #[test]
