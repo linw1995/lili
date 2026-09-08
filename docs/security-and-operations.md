@@ -78,9 +78,11 @@ Plugin removal and migration rollback invoke only the supported `codex plugin re
 
 Actions are opt-in native programs configured in `<LILI_DATA>/config/actions.toml`.
 
-Lili resolves an executable, passes argv directly without a shell, clears the inherited environment, adds a minimal platform environment plus explicit configured values, and sends one bounded `InteractionContextV1` JSON document on standard input. Event text is never interpolated into argv. Timeouts, debounce, concurrency, queue capacity, output capture, and process-tree termination are bounded.
+Lili resolves an executable, passes argv directly without a shell, applies the configured working-directory policy, clears the inherited environment, adds a minimal platform environment plus explicit configured values, and sends one bounded `InteractionContextV1` JSON document on standard input. Event text is never interpolated into argv. Timeouts, debounce, global and per-action concurrency, queue capacity, stdout and stderr capture, process-tree termination, and the execution audit are bounded.
 
 These controls prevent shell interpretation and accidental ambient environment leakage. They do not restrict what the selected executable can do with the current user's operating-system permissions. A configured action may read files, use the network, or modify data if that executable could do so when launched directly by the user. Review the executable path, argv, working directory, and explicit environment values before enabling an action.
+
+Lili owns process supervision but does not interpret or guarantee the executable's program logic or external side effects after startup. Workspace routing, application inspection, desktop automation, external state, and cleanup performed by that program remain operator-owned. A successful action outcome means only that the supervised process exited successfully; it does not attest that an external operation was correct or safe.
 
 An action result cannot acknowledge a Codex permission, change source session state, or dismiss its notification.
 

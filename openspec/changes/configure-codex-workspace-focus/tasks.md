@@ -2,7 +2,7 @@
 
 - [x] 1.1 Audit the current `InteractionContextV1` Rust type, serializer, input-size bound, and immutable notification binding, then document the canonical version 1 notification JSON with required and nullable fields; verify the documented fixture deserializes through the existing action context decoder.
 - [x] 1.2 Document that stdin supplies the source as `notification.provider` and the stable Session routing identity as `notification.sessionId`, while cwd, workspace, process, terminal, window, and focus semantics are absent; verify no documentation claims Lili discovers or guarantees those values.
-- [ ] 1.3 Document the existing action authority boundary: fixed direct argv, JSON stdin, minimal environment, working-directory policy, timeout, output cap, debounce, concurrency, audit, and failure isolation; verify the security documentation identifies all post-spawn behavior as operator-owned.
+- [x] 1.3 Document the existing action authority boundary: fixed direct argv, JSON stdin, minimal environment, working-directory policy, timeout, output cap, debounce, concurrency, audit, and failure isolation; verify the security documentation identifies all post-spawn behavior as operator-owned.
 
 ## 2. Configuration Recipe
 
