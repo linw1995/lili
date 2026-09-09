@@ -22,6 +22,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+lili-storage = { path = "../lili-storage" }
 http.workspace = true
 lili-pet = { path = "../lili-pet" }
 tower.workspace = true

@@ -72,7 +72,7 @@ pub struct AppState {
     pet_state: Arc<RwLock<PetRuntimeState>>,
     pet_selection_lock: Arc<Mutex<()>>,
     ingestion_diagnostics: Arc<RwLock<IngestionDiagnostics>>,
-    action_feedback: Arc<RwLock<Option<PetActionFeedbackPresentation>>>,
+    action_feedback: Arc<RwLock<Option<Arc<PetActionFeedbackPresentation>>>>,
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
@@ -430,7 +430,7 @@ impl AppState {
         presentation_from_view(
             &snapshot,
             self.settings.read().await.reduced_motion,
-            self.action_feedback.read().await.clone(),
+            self.action_feedback.read().await.as_deref().cloned(),
         )
     }
 
@@ -599,12 +599,6 @@ impl AppState {
 
     pub async fn publish_action_result(&self, result: &ActionExecutionResult) -> bool {
         let feedback = match result.outcome {
-            ActionExecutionOutcome::Succeeded => PetActionFeedbackPresentation {
-                action_id: result.action_id.clone(),
-                kind: PetActionFeedbackKind::Success,
-                message: "Action completed".to_owned(),
-                occurred_at_ms: result.finished_at_ms,
-            },
             ActionExecutionOutcome::Saturated => PetActionFeedbackPresentation {
                 action_id: result.action_id.clone(),
                 kind: PetActionFeedbackKind::Busy,
@@ -620,13 +614,59 @@ impl AppState {
             ActionExecutionOutcome::OutputOverflow => {
                 action_failure(result, "Action output limit exceeded")
             }
-            ActionExecutionOutcome::Debounced
+            ActionExecutionOutcome::Succeeded
+            | ActionExecutionOutcome::Debounced
             | ActionExecutionOutcome::NotMatched
             | ActionExecutionOutcome::UnknownAction => return false,
         };
-        *self.action_feedback.write().await = Some(feedback);
-        self.publish_presentation().await;
+        self.set_action_feedback(feedback).await;
         true
+    }
+
+    async fn set_action_feedback(&self, feedback: PetActionFeedbackPresentation) {
+        let feedback = Arc::new(feedback);
+        *self.action_feedback.write().await = Some(feedback.clone());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        self.publish_presentation().await;
+        let state = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let mut current = state.action_feedback.write().await;
+            // Equal action results can still belong to different activations.
+            if current
+                .as_ref()
+                .is_some_and(|value| Arc::ptr_eq(value, &feedback))
+            {
+                *current = None;
+                drop(current);
+                state.publish_presentation().await;
+            }
+        });
+    }
+
+    async fn complete_notification_action(
+        &self,
+        context: &InteractionContextV1,
+        result: &ActionExecutionResult,
+        store: Option<&AppStateStore>,
+    ) -> Result<(), PersistenceError> {
+        if result.outcome != ActionExecutionOutcome::Succeeded
+            || context.trigger != InteractionTrigger::NotificationActivate
+        {
+            return Ok(());
+        }
+        let Some(notification) = &context.notification else {
+            return Ok(());
+        };
+        let Ok(id) = NotificationId::parse(notification.notification_id.clone()) else {
+            return Ok(());
+        };
+        if let Some(store) = store {
+            self.acknowledge_notification_persisted(&id, store).await?;
+        } else {
+            self.acknowledge_notification(&id).await;
+        }
+        Ok(())
     }
 
     pub async fn configure_actions(
@@ -663,6 +703,15 @@ impl AppState {
         &self,
         context: InteractionContextV1,
     ) -> InteractionDispatchReceipt {
+        self.dispatch_interaction_with_persistence(context, None)
+            .await
+    }
+
+    pub async fn dispatch_interaction_with_persistence(
+        &self,
+        context: InteractionContextV1,
+        store: Option<AppStateStore>,
+    ) -> InteractionDispatchReceipt {
         if !self
             .dispatched_interactions
             .lock()
@@ -687,8 +736,22 @@ impl AppState {
             let state = self.clone();
             let supervisor = supervisor.clone();
             let context = context.clone();
+            let store = store.clone();
             tokio::spawn(async move {
                 let result = supervisor.execute(&action_id, &context).await;
+                if state
+                    .complete_notification_action(&context, &result, store.as_ref())
+                    .await
+                    .is_err()
+                {
+                    state
+                        .set_action_feedback(action_failure(
+                            &result,
+                            "Action completed, but notification could not be dismissed",
+                        ))
+                        .await;
+                    return;
+                }
                 state.publish_action_result(&result).await;
             });
         }
@@ -722,7 +785,7 @@ impl AppState {
     async fn publish_presentation(&self) {
         let session_state = self.session_reducer.lock().await.snapshot();
         let reduced_motion = self.settings.read().await.reduced_motion;
-        let action_feedback = self.action_feedback.read().await.clone();
+        let action_feedback = self.action_feedback.read().await.as_deref().cloned();
         let presentation = {
             let mut snapshot = self.snapshot.write().await;
             snapshot.session_state = session_state;
@@ -964,6 +1027,43 @@ mod tests {
             source,
             &lili_actions::ActionLoadContext::new("/", "/", Vec::new()),
         )
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_notification_acknowledgement(state: &AppState, id: &NotificationId) {
+        let mut presentations = state.subscribe_pet_presentation();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                presentations.borrow_and_update();
+                if state.notification_context(id).await.is_none() {
+                    break;
+                }
+                presentations.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn feedback_expires_without_clearing_a_newer_identical_result() {
+        let state = AppState::default();
+        let feedback = PetActionFeedbackPresentation {
+            action_id: "open-session".to_owned(),
+            kind: PetActionFeedbackKind::Busy,
+            message: "Action is busy".to_owned(),
+            occurred_at_ms: 10,
+        };
+        state.set_action_feedback(feedback.clone()).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        state.set_action_feedback(feedback).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(state.pet_presentation().await.action_feedback.is_some());
+        let mut presentations = state.subscribe_pet_presentation();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::task::yield_now().await;
+        assert!(state.pet_presentation().await.action_feedback.is_none());
+        assert!(presentations.borrow_and_update().action_feedback.is_none());
     }
 
     #[cfg(unix)]
@@ -1551,7 +1651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn action_outcomes_do_not_mutate_session_or_notification_state() {
+    async fn failed_actions_preserve_notifications_and_success_is_durable() {
         let state = AppState::default();
         let event = normalize_provider_input(ProviderInputV1 {
             version: 1,
@@ -1569,8 +1669,16 @@ mod tests {
         .unwrap();
         state.apply_session_event(event).await;
         let before = state.snapshot().await;
+        let context = state
+            .bind_interaction(
+                Uuid::nil(),
+                11,
+                InteractionTrigger::NotificationActivate,
+                Some(&before.session_state.notifications[0].id),
+            )
+            .await
+            .unwrap();
         for (index, outcome) in [
-            ActionExecutionOutcome::Succeeded,
             ActionExecutionOutcome::NonZeroExit,
             ActionExecutionOutcome::TimedOut,
             ActionExecutionOutcome::SpawnFailed,
@@ -1590,6 +1698,10 @@ mod tests {
                 stdout: lili_actions::CapturedOutput::default(),
                 stderr: lili_actions::CapturedOutput::default(),
             };
+            state
+                .complete_notification_action(&context, &result, None)
+                .await
+                .unwrap();
             assert!(state.publish_action_result(&result).await);
 
             let after = state.snapshot().await;
@@ -1610,6 +1722,56 @@ mod tests {
         assert_eq!(feedback.action_id, "open-session");
         assert_eq!(feedback.kind, PetActionFeedbackKind::Failure);
         assert_eq!(feedback.message, "Action could not start");
+
+        let paths = ApplicationPaths::from_root(
+            std::env::temp_dir().join(format!("lili-action-completion-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let result = ActionExecutionResult {
+            action_id: "open-session".to_owned(),
+            interaction_id: context.interaction_id,
+            trigger: context.trigger,
+            event_id: Some("event-action-feedback".to_owned()),
+            started_at_ms: 11,
+            finished_at_ms: 20,
+            outcome: ActionExecutionOutcome::Succeeded,
+            exit_code: Some(0),
+            stdout: lili_actions::CapturedOutput::default(),
+            stderr: lili_actions::CapturedOutput::default(),
+        };
+        let previous_feedback = state.pet_presentation().await.action_feedback;
+        assert!(!state.publish_action_result(&result).await);
+        assert_eq!(
+            state.pet_presentation().await.action_feedback,
+            previous_feedback
+        );
+        std::fs::write(paths.root(), b"not a directory").unwrap();
+        assert!(
+            state
+                .complete_notification_action(&context, &result, Some(&store))
+                .await
+                .is_err()
+        );
+        assert_eq!(state.snapshot().await.session_state, before.session_state);
+        std::fs::remove_file(paths.root()).unwrap();
+        state
+            .complete_notification_action(&context, &result, Some(&store))
+            .await
+            .unwrap();
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 0);
+        assert_eq!(
+            state.snapshot().await.session_state.sessions,
+            before.session_state.sessions
+        );
+        let restored =
+            AppState::with_persistent_state(PetCatalog::default(), store.load().unwrap().unwrap())
+                .unwrap();
+        assert_eq!(
+            restored.pet_presentation().await.unread_notification_count,
+            0
+        );
+        std::fs::remove_dir_all(paths.root()).unwrap();
     }
 
     #[cfg(unix)]
@@ -1725,12 +1887,22 @@ command = ["/bin/cat"]
         let audit = wait_for_action_audit(&state, 1).await;
         assert_eq!(audit[0].event_id.as_deref(), Some("event-clicked-dispatch"));
         assert_eq!(audit[0].outcome, ActionExecutionOutcome::Succeeded);
-        assert_eq!(state.pet_presentation().await.unread_notification_count, 2);
+        wait_for_notification_acknowledgement(&state, &notification_id).await;
+        let notifications = state.snapshot().await.session_state.notifications;
+        assert_eq!(
+            notifications
+                .iter()
+                .find(|n| n.id == notification_id)
+                .unwrap()
+                .state,
+            NotificationState::Acknowledged
+        );
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 1);
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn notification_action_defaults_debounce_without_mutating_state() {
+    async fn notification_action_defaults_debounce_and_dismisses_on_success() {
         let state = AppState::default();
         let loaded = test_actions(
             r#"
@@ -1761,16 +1933,18 @@ command = ["/bin/cat"]
         let before = state.snapshot().await.session_state;
         let notification_id = before.notifications[0].id.clone();
 
+        let context = state
+            .bind_interaction(
+                Uuid::new_v4(),
+                11,
+                InteractionTrigger::NotificationActivate,
+                Some(&notification_id),
+            )
+            .await
+            .unwrap();
         for interaction_id in [Uuid::new_v4(), Uuid::new_v4()] {
-            let context = state
-                .bind_interaction(
-                    interaction_id,
-                    11,
-                    InteractionTrigger::NotificationActivate,
-                    Some(&notification_id),
-                )
-                .await
-                .unwrap();
+            let mut context = context.clone();
+            context.interaction_id = interaction_id;
             let receipt = state.dispatch_interaction(context).await;
             assert!(receipt.accepted);
             assert_eq!(receipt.action_count, 1);
@@ -1780,16 +1954,19 @@ command = ["/bin/cat"]
         let audit = wait_for_action_audit(&state, 2).await;
         assert_eq!(audit[0].outcome, ActionExecutionOutcome::Succeeded);
         assert_eq!(audit[1].outcome, ActionExecutionOutcome::Debounced);
+        wait_for_notification_acknowledgement(&state, &notification_id).await;
         let after = state.snapshot().await.session_state;
-        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.revision, before.revision + 1);
         assert_eq!(after.sessions, before.sessions);
-        assert_eq!(after.notifications, before.notifications);
-        assert_eq!(after.notifications[0].state, NotificationState::Unread);
+        assert_eq!(
+            after.notifications[0].state,
+            NotificationState::Acknowledged
+        );
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn rapid_click_debounce_emits_only_one_ui_result() {
+    async fn successful_and_debounced_clicks_do_not_emit_ui_results() {
         let state = AppState::default();
         let loaded = test_actions(
             r#"
@@ -1803,20 +1980,15 @@ debounce_ms = 1000
 "#,
         );
         assert!(state.configure_actions(loaded, 1).await);
-        let mut presentations = state.subscribe_pet_presentation();
+        let presentations = state.subscribe_pet_presentation();
         let first = state
             .bind_interaction(Uuid::new_v4(), 1, InteractionTrigger::PetClick, None)
             .await
             .unwrap();
         assert!(state.dispatch_interaction(first).await.accepted);
         wait_for_action_audit(&state, 1).await;
-        presentations.changed().await.unwrap();
-        let first_feedback = presentations
-            .borrow_and_update()
-            .action_feedback
-            .clone()
-            .unwrap();
-        assert_eq!(first_feedback.kind, PetActionFeedbackKind::Success);
+        assert!(state.pet_presentation().await.action_feedback.is_none());
+        assert!(!presentations.has_changed().unwrap());
 
         let second = state
             .bind_interaction(Uuid::new_v4(), 2, InteractionTrigger::PetClick, None)

@@ -2817,6 +2817,7 @@ dependencies = [
  "lili-core",
  "lili-pet",
  "lili-session",
+ "lili-storage",
  "lili-ui",
  "serde",
  "serde_json",
