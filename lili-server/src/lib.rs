@@ -611,7 +611,13 @@ async fn interaction(
         _ => None,
     };
     let accepted = match binding {
-        Some(context) => state.app.dispatch_interaction(context).await.accepted,
+        Some(context) => {
+            state
+                .app
+                .dispatch_interaction_with_persistence(context, state.persistence_store.clone())
+                .await
+                .accepted
+        }
         None => false,
     };
     Json(InteractionResponse {
@@ -1389,7 +1395,17 @@ debounce_ms = 0
             &lili_actions::ActionLoadContext::new("/", "/", Vec::new()),
         );
         assert!(state.configure_actions(loaded, 1).await);
-        let router = build_router(state.clone(), None);
+        let paths = lili_storage::ApplicationPaths::from_root(
+            std::env::temp_dir().join(format!("lili-action-endpoint-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let store = AppStateStore::for_application(paths.clone());
+        let router = build_native_router_with_diagnostics_and_persistence(
+            state.clone(),
+            None,
+            None,
+            Some(store.clone()),
+        );
         let activation = serde_json::json!({
             "trigger": "notification_click",
             "notification_id": notification_id,
@@ -1406,13 +1422,24 @@ debounce_ms = 0
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         for _ in 0..100 {
-            if !state.action_audit().await.is_empty() {
+            if state.pet_presentation().await.unread_notification_count == 0 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(state.action_audit().await.len(), 1);
-        assert_eq!(state.pet_presentation().await.unread_notification_count, 1);
+        assert_eq!(state.pet_presentation().await.unread_notification_count, 0);
+        assert!(state.pet_presentation().await.action_feedback.is_none());
+        let restored = AppState::with_persistent_state(
+            lili_pet::PetCatalog::default(),
+            store.load().unwrap().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.pet_presentation().await.unread_notification_count,
+            0
+        );
+        std::fs::remove_dir_all(paths.root()).unwrap();
 
         let response = router
             .oneshot(

@@ -192,9 +192,9 @@ html[data-notification-placement="below"] .notification-more-bottom {
 
 .action-feedback-region {
   position: absolute;
-  right: 12px;
-  bottom: 10px;
-  left: 12px;
+  right: 32px;
+  bottom: 40px;
+  left: 32px;
   z-index: 3;
   pointer-events: none;
 }

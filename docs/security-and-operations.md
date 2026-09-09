@@ -84,7 +84,7 @@ These controls prevent shell interpretation and accidental ambient environment l
 
 Lili owns process supervision but does not interpret or guarantee the executable's program logic or external side effects after startup. Workspace routing, application inspection, desktop automation, external state, and cleanup performed by that program remain operator-owned. A successful action outcome means only that the supervised process exited successfully; it does not attest that an external operation was correct or safe.
 
-An action result cannot acknowledge a Codex permission, change source session state, or dismiss its notification.
+A successful notification action dismisses only its bound notification and persists that acknowledgement. Failed actions leave the notification unread. Action results cannot acknowledge a Codex permission or change source session state. Successful actions do not display result feedback. Failure and busy feedback expires after five seconds.
 
 ## Backup, reset, and uninstall
 
