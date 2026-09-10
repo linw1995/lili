@@ -558,8 +558,15 @@ impl AnimationController {
 
     #[cfg(any(test, feature = "hydrate"))]
     fn hold_drag_velocity(&mut self, velocity_x: f64, now_ms: u64) {
-        self.set_drag_velocity(velocity_x, now_ms);
-        // Explicit-release gestures retain their direction even when pointer events pause.
+        let directional_velocity = if velocity_x > 0.0 {
+            DRAG_VELOCITY_PX_PER_MS
+        } else if velocity_x < 0.0 {
+            -DRAG_VELOCITY_PX_PER_MS
+        } else {
+            0.0
+        };
+        self.set_drag_velocity(directional_velocity, now_ms);
+        // Explicit-release gestures follow slow direction changes and retain direction at rest.
         self.drag_animation_expires_at_ms = None;
     }
 

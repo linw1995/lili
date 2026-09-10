@@ -1136,11 +1136,11 @@ mod tests {
                 assert_ne!(held_right.column, right.column);
                 preview.tick(Duration::from_secs(3), false);
                 assert_eq!(preview.animation(), AnimationState::RunningRight);
-                preview.move_to(-40.0, 0.0, 40, -40.0, 0.0);
+                preview.move_to(-40.0, 0.0, 4020, -40.0, 0.0);
                 let left = preview.tick(Duration::from_millis(16), false);
                 assert_eq!(preview.animation(), AnimationState::RunningLeft);
                 assert_eq!(left.row, 2);
-                preview.move_to(-40.0, 20.0, 60, -40.0, 20.0);
+                preview.move_to(-40.0, 20.0, 4040, -40.0, 20.0);
                 let held_left = preview.tick(Duration::from_millis(400), false);
                 assert_eq!(preview.animation(), AnimationState::RunningLeft);
                 assert_eq!(held_left.row, left.row);
