@@ -349,3 +349,63 @@ for (const [width, height] of [
     }
   });
 }
+
+
+test("pet preview supports idle interactions and isolated dragging in every scene", async ({ page }) => {
+  await openAppearance(page);
+  await page.evaluate(() => {
+    window.__previewNativeCalls = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: (...args) => {
+        window.__previewNativeCalls.push(args);
+        return Promise.resolve();
+      },
+    };
+  });
+  const requests = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET") requests.push(request.url());
+  });
+  const pet = page.locator("#appearance-pet");
+  const scene = page.locator("#appearance-scene");
+  const atlas = page.locator(".appearance-pet-atlas");
+  await expect(page.locator(".appearance-pet-tag")).toHaveCount(0);
+  await pet.hover({ position: { x: 180, y: 104 } });
+  await expect(atlas).toHaveAttribute("data-frame-row", /^(9|10)$/);
+  await pet.click();
+  await expect(scene).toHaveAttribute("data-animation", "waving");
+  await expect(scene).toHaveAttribute("data-animation", "idle");
+  await pet.dblclick();
+  await expect(scene).toHaveAttribute("data-animation", "jumping");
+  await expect(scene).toHaveAttribute("data-animation", "idle");
+  await pet.focus();
+  await page.keyboard.press("Space");
+  await expect(scene).toHaveAttribute("data-animation", "waving");
+
+  for (const state of ["idle", "running", "review", "attention", "failed", "waiting", "click"]) {
+    await page.locator(`.appearance-scene-button[data-scene='${state}']`).click();
+    const baseline = await scene.getAttribute("data-animation");
+    const box = await pet.boundingBox();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 80, y);
+    await expect(scene).toHaveAttribute("data-animation", "running-right");
+    const initialColumn = await atlas.getAttribute("data-frame-column");
+    // Hold beyond the live pet's velocity timeout without sending pointer events.
+    await page.waitForTimeout(400);
+    await expect(scene).toHaveAttribute("data-animation", "running-right");
+    await expect(atlas).not.toHaveAttribute("data-frame-column", initialColumn);
+    await page.mouse.move(x - 80, y);
+    await expect(scene).toHaveAttribute("data-animation", "running-left");
+    await page.waitForTimeout(400);
+    await expect(scene).toHaveAttribute("data-animation", "running-left");
+    expect(await pet.boundingBox()).toEqual(box);
+    await page.mouse.up();
+    await expect(scene).toHaveAttribute("data-animation", baseline);
+    await expect(scene).toHaveAttribute("data-scene", state);
+  }
+  expect(requests).toEqual([]);
+  expect(await page.evaluate(() => window.__previewNativeCalls)).toEqual([]);
+});

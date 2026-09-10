@@ -748,11 +748,23 @@ html:not([data-notification-placement="below"])
 }
 
 .appearance-pet {
+  cursor: grab;
+  touch-action: none;
   position: relative;
   width: 192px;
   height: 208px;
   margin: -4px 0;
   overflow: hidden;
+}
+
+.appearance-pet:active {
+  cursor: grabbing;
+}
+
+.appearance-pet:focus-visible {
+  outline: 2px solid var(--appearance-primary);
+  outline-offset: 4px;
+  border-radius: 12px;
 }
 
 .appearance-pet::after {
@@ -785,24 +797,6 @@ html:not([data-notification-placement="below"])
   -webkit-user-drag: none;
   -webkit-user-select: none;
   user-select: none;
-}
-
-.appearance-pet-tag {
-  position: absolute;
-  z-index: 1;
-  right: 0;
-  bottom: 5px;
-  left: 0;
-  width: max-content;
-  margin: auto;
-  padding: 3px 8px;
-  border: 1px solid light-dark(rgb(255 255 255 / 75%), rgb(255 255 255 / 16%));
-  border-radius: 7px;
-  background: light-dark(rgb(255 255 255 / 72%), rgb(14 20 30 / 74%));
-  color: var(--appearance-muted);
-  font-size: 10px;
-  font-weight: 700;
-  backdrop-filter: blur(8px);
 }
 
 .appearance-scene[data-placement="below"] .appearance-notifications {

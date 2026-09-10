@@ -557,6 +557,13 @@ impl AnimationController {
     }
 
     #[cfg(any(test, feature = "hydrate"))]
+    fn hold_drag_velocity(&mut self, velocity_x: f64, now_ms: u64) {
+        self.set_drag_velocity(velocity_x, now_ms);
+        // Explicit-release gestures retain their direction even when pointer events pause.
+        self.drag_animation_expires_at_ms = None;
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
     fn end_drag(&mut self, now_ms: u64) {
         self.drag_animation = None;
         self.drag_animation_expires_at_ms = None;
