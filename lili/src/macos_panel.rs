@@ -354,6 +354,19 @@ pub fn hide_dock_icon() {
     }
 }
 
+pub fn is_at_floating_level(window: &tauri::WebviewWindow) -> bool {
+    let Ok(raw_window) = window.ns_window() else {
+        return false;
+    };
+    if raw_window.is_null() {
+        return false;
+    }
+    let native_window = unsafe { &*raw_window.cast::<AnyObject>() };
+    let level: isize = unsafe { msg_send![native_window, level] };
+    // Compare the actual level, not the Core Graphics key used to look it up.
+    level == objc2_app_kit::NSFloatingWindowLevel
+}
+
 pub fn satisfies_desktop_companion_contract(window: &tauri::WebviewWindow) -> bool {
     let Ok(raw_window) = window.ns_window() else {
         return false;

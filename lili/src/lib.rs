@@ -27,7 +27,9 @@ use std::{
     },
 };
 
-use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
+use desktop_acceptance::{
+    DesktopAcceptanceState, complete_desktop_acceptance, mark_title_fallback_visible,
+};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
 use lili_actions::{ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, load_actions_file};
@@ -293,6 +295,7 @@ fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
             set_notification_hit_region,
             run_pet_context_action,
             complete_desktop_acceptance,
+            mark_title_fallback_visible,
             complete_desktop_smoke
         ])
         .build(tauri::generate_context!())
@@ -360,7 +363,7 @@ fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
     app.manage(signer);
     register_loopback_capability(&app, &origin, smoke, acceptance)
         .expect("failed to register loopback capability");
-    register_notification_window_capability(&app, &origin)
+    register_notification_window_capability(&app, &origin, acceptance)
         .expect("failed to register notification window capability");
     register_appearance_window_capability(&app, &origin)
         .expect("failed to register Appearance window capability");
@@ -481,6 +484,7 @@ fn register_context_menu_capability(app: &tauri::App, origin: &tauri::Url) -> ta
 fn register_notification_window_capability(
     app: &tauri::App,
     origin: &tauri::Url,
+    acceptance: bool,
 ) -> tauri::Result<()> {
     let capability = CapabilityBuilder::new("notification-window")
         .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
@@ -489,6 +493,11 @@ fn register_notification_window_capability(
         .permission("allow-sign-loopback-request")
         .permission("allow-focus-pet-window")
         .permission("allow-set-notification-hit-region");
+    let capability = if acceptance {
+        capability.permission("allow-mark-title-fallback-visible")
+    } else {
+        capability
+    };
     app.add_capability(capability)
 }
 

@@ -1280,6 +1280,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fixture_notification_validation_preserves_text_and_identity_bounds() {
+        let notification = lili_core::PetNotificationPresentation {
+            activation_id: "notification".into(),
+            kind: lili_core::PetNotificationKind::Completion,
+            title: Some("🦀".repeat(256)),
+            project_label: Some("Project".into()),
+            summary: "Summary".into(),
+            summary_truncated: false,
+            summary_redacted: false,
+            occurred_at_ms: 1,
+            unread: true,
+        };
+        let base = PetPresentationState {
+            notifications: vec![notification],
+            unread_notification_count: 1,
+            ..Default::default()
+        };
+        assert!(validate_fixture_presentation(&base).is_ok());
+        for title in ["x".repeat(257), "line\nbreak".into()] {
+            let mut invalid = base.clone();
+            invalid.notifications[0].title = Some(title);
+            assert!(validate_fixture_presentation(&invalid).is_err());
+        }
+        for field in ["id", "project", "summary"] {
+            let mut invalid = base.clone();
+            let value = "x".repeat(MAX_FIXTURE_TEXT_BYTES + 1);
+            match field {
+                "id" => invalid.notifications[0].activation_id = value,
+                "project" => invalid.notifications[0].project_label = Some(value),
+                _ => invalid.notifications[0].summary = value,
+            }
+            assert!(validate_fixture_presentation(&invalid).is_err());
+        }
+        let mut invalid = base.clone();
+        invalid.notifications[0].activation_id.clear();
+        assert!(validate_fixture_presentation(&invalid).is_err());
+        let mut invalid = base.clone();
+        invalid.notifications.push(invalid.notifications[0].clone());
+        invalid.unread_notification_count = 2;
+        assert!(validate_fixture_presentation(&invalid).is_err());
+        let mut invalid = base;
+        invalid.unread_notification_count = 0;
+        assert!(validate_fixture_presentation(&invalid).is_err());
+    }
+
     #[tokio::test]
     async fn fixture_router_replaces_only_bounded_presentation_state() {
         let router = build_fixture_router(None);

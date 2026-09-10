@@ -18,3 +18,6 @@ No live user action configuration was changed. No remote repository operation wa
 - Cancellation now explicitly terminates and awaits the child process before completing title shutdown; the regression checks that Unix `waitpid` reports no remaining child after shutdown returns.
 - The related action and application-state suites passed (84 tests), and workspace all-feature Clippy passed.
 - The packaged notification-action acceptance was rerun successfully with a strict result-file check in addition to the process exit code. Its notification-state assertion now reflects the successful activation action dismissing the notification.
+
+- CI follow-up added fixture title/identity boundary coverage, replaced timing assumptions with an explicit rendered-fallback handshake, and corrected native acceptance assertions to run on the main thread and await asynchronous position/visibility changes. macOS floating-level checks compare the actual AppKit level rather than a lookup key.
+- The full local packaged desktop acceptance now passes every native assertion, including window position and Appearance close/reopen, with the strict result-file check. Final workspace regression passed 440 tests; all-feature Clippy passed.

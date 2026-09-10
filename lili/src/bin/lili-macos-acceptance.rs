@@ -4,7 +4,8 @@ fn main() {
     let result = match mode.as_deref() {
         Some(mode) if mode == "--record-action" => macos::record_action(),
         Some(mode) if mode == "--title-action" => macos::title_action(),
-        Some(mode) if mode == "--direct-hook" => macos::run_direct_hook_acceptance(),
+        Some(mode) if mode == "--direct-hook" => macos::run_direct_hook_acceptance(true),
+        Some(mode) if mode == "--direct-hook-full" => macos::run_direct_hook_acceptance(false),
         _ => macos::run(),
     };
     if let Err(error) = result {
@@ -57,7 +58,13 @@ mod macos {
         {
             return Err("invalid title request fields".to_owned());
         }
-        std::thread::sleep(Duration::from_secs(3));
+        let marker = std::env::args_os()
+            .nth(2)
+            .map(PathBuf::from)
+            .ok_or("missing title marker")?;
+        if !wait_for_file(&marker, Duration::from_secs(15)) {
+            return Err("fallback was not rendered".to_owned());
+        }
         std::io::stdout()
             .write_all(br#"{"version":1,"title":"<b>Acceptance title</b>"}"#)
             .map_err(|_| "title stdout failed".to_owned())
@@ -166,7 +173,7 @@ mod macos {
         )
     }
 
-    pub fn run_direct_hook_acceptance() -> Result<(), String> {
+    pub fn run_direct_hook_acceptance(action_only: bool) -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(2);
         let app_binary = arguments
             .next()
@@ -199,7 +206,7 @@ mod macos {
 
         let workspace = AcceptanceWorkspace::new()?;
         workspace.write_action_config()?;
-        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home(), true)?;
+        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home(), action_only)?;
         let credential_path = workspace.application_paths().credentials_path();
         if !wait_for_file(&credential_path, Duration::from_secs(30)) {
             terminate(&mut app);
@@ -399,11 +406,13 @@ timeout_ms = 100
 [[action]]
 id = "acceptance-title"
 trigger = "session_title"
-command = [{}, "--title-action"]
+command = [{}, "--title-action", {}]
+timeout_ms = 20000
 "#,
                 toml_string(&fixture)?,
                 toml_string(&self.action_context_path())?,
                 toml_string(&fixture)?,
+                toml_string(&application_paths.root().join("title-fallback-visible"))?,
             );
             fs::write(application_paths.actions_path(), source)
                 .map_err(|error| format!("acceptance action config could not be written: {error}"))

@@ -67,7 +67,10 @@ window.addEventListener('DOMContentLoaded', () => {
     const label = document.querySelector('.notification-project');
     const titleRequired = __TITLE_REQUIRED__;
     if (hydrated && label && label.textContent !== '<b>Acceptance title</b>') {
-      localStorage.setItem('lili-acceptance-title-fallback', 'true');
+      if (localStorage.getItem('lili-acceptance-title-fallback') !== 'true') {
+        window.__TAURI_INTERNALS__.invoke('mark_title_fallback_visible');
+        localStorage.setItem('lili-acceptance-title-fallback', 'true');
+      }
     }
     const titleReady = !titleRequired || (label?.textContent === '<b>Acceptance title</b>'
       && label.childElementCount === 0
@@ -124,12 +127,23 @@ impl DesktopAcceptanceState {
 }
 
 #[tauri::command]
+pub fn mark_title_fallback_visible(
+    state: tauri::State<'_, DesktopAcceptanceState>,
+) -> Result<(), String> {
+    let paths = state
+        .application_paths
+        .lock()
+        .map_err(|_| "acceptance state unavailable")?;
+    let paths = paths.as_ref().ok_or("acceptance is not configured")?;
+    std::fs::write(paths.root().join("title-fallback-visible"), b"ready")
+        .map_err(|_| "acceptance marker could not be written".to_owned())
+}
+
+#[tauri::command]
 pub async fn complete_desktop_acceptance(
     app: AppHandle,
     window: WebviewWindow,
     state: tauri::State<'_, DesktopAcceptanceState>,
-    drag_state: tauri::State<'_, crate::WindowDragState>,
-    actions: tauri::State<'_, crate::PetContextActions>,
     report: BrowserAcceptanceReport,
 ) -> Result<(), String> {
     if state.completed.swap(true, Ordering::AcqRel) {
@@ -206,43 +220,102 @@ pub async fn complete_desktop_acceptance(
         "desktop acceptance browser={report:?} audit={}",
         serde_json::to_string(&action_audit).unwrap_or_else(|_| "unavailable".to_owned())
     );
-    let placement = crate::current_window_placement(&window);
-    let always_on_top_contract = window.is_always_on_top().is_ok_and(|enabled| enabled);
-    let undecorated_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
-    let placement_contract = placement.is_some();
-    let pet_native_window_contract = native_window_contract(&window);
-    let notification_window_contract = app
-        .get_webview_window(crate::NOTIFICATION_WINDOW_LABEL)
-        .is_some_and(|notification| {
-            notification.is_always_on_top().is_ok_and(|enabled| enabled)
-                && notification
-                    .is_decorated()
-                    .is_ok_and(|decorated| !decorated)
-                && native_window_contract(&notification)
-        });
-    let window_contract = always_on_top_contract
-        && undecorated_contract
-        && placement_contract
-        && pet_native_window_contract
-        && notification_window_contract;
-    let dpi_contract = placement.is_some_and(|placement| placement.scale_milli() >= 500);
-    let tray_contract = app.tray_by_id("lili-tray").is_some();
-    let hide_contract = window.hide().is_ok();
-    let hidden_contract = hide_contract && window.is_visible().is_ok_and(|visible| !visible);
-    let show_contract = hidden_contract && window.show().is_ok();
-    let shown_contract = show_contract && window.is_visible().is_ok_and(|visible| visible);
-    let visibility_contract = hide_contract && hidden_contract && show_contract && shown_contract;
-    let transport_contract = application_paths
-        .as_ref()
-        .is_some_and(private_transport_is_live);
-    let absolute_position_contract = absolute_position_contract(&window, &drag_state);
-    let context_menu_settings_contract =
-        crate::run_pet_context_action(app.clone(), actions, "settings".to_owned()).is_ok();
-    crate::handle_application_tray_action(&app, crate::TrayAction::Settings);
-    let tray_settings_contract = app
-        .get_webview_window(crate::APPEARANCE_WINDOW_LABEL)
-        .is_some_and(|appearance| appearance.is_visible().is_ok_and(|visible| visible));
-    let appearance_window_contract = appearance_window_contract(&app);
+    let (native_sender, native_receiver) = tokio::sync::oneshot::channel();
+    let native_app = app.clone();
+    let native_paths = application_paths.clone();
+    let native_window = window.clone();
+    app.run_on_main_thread(move || {
+        let app = native_app;
+        let window = native_window;
+        let application_paths = native_paths;
+        let placement = crate::current_window_placement(&window);
+        let always_on_top_contract = window_is_always_on_top(&window);
+        let undecorated_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
+        let placement_contract = placement.is_some();
+        let pet_native_window_contract = native_window_contract(&window);
+        let notification_window_contract = app
+            .get_webview_window(crate::NOTIFICATION_WINDOW_LABEL)
+            .is_some_and(|notification| {
+                window_is_always_on_top(&notification)
+                    && notification
+                        .is_decorated()
+                        .is_ok_and(|decorated| !decorated)
+                    && native_window_contract(&notification)
+            });
+        let window_contract = always_on_top_contract
+            && undecorated_contract
+            && placement_contract
+            && pet_native_window_contract
+            && notification_window_contract;
+        let dpi_contract = placement.is_some_and(|placement| placement.scale_milli() >= 500);
+        let tray_contract = app.tray_by_id("lili-tray").is_some();
+        let hide_contract = window.hide().is_ok();
+        let hidden_contract = hide_contract && window.is_visible().is_ok_and(|visible| !visible);
+        let show_contract = hidden_contract && window.show().is_ok();
+        let shown_contract = show_contract && window.is_visible().is_ok_and(|visible| visible);
+        let visibility_contract =
+            hide_contract && hidden_contract && show_contract && shown_contract;
+        let transport_contract = application_paths
+            .as_ref()
+            .is_some_and(private_transport_is_live);
+        let context_menu_settings_contract = crate::run_pet_context_action(
+            app.clone(),
+            app.state::<crate::PetContextActions>(),
+            "settings".to_owned(),
+        )
+        .is_ok();
+        crate::handle_application_tray_action(&app, crate::TrayAction::Settings);
+        let tray_settings_contract = app
+            .get_webview_window(crate::APPEARANCE_WINDOW_LABEL)
+            .is_some_and(|appearance| appearance.is_visible().is_ok_and(|visible| visible));
+        let appearance_window_contract = appearance_window_contract(&app);
+
+        let _ = native_sender.send((
+            always_on_top_contract,
+            undecorated_contract,
+            placement_contract,
+            pet_native_window_contract,
+            notification_window_contract,
+            window_contract,
+            dpi_contract,
+            tray_contract,
+            hide_contract,
+            hidden_contract,
+            show_contract,
+            shown_contract,
+            visibility_contract,
+            transport_contract,
+            context_menu_settings_contract,
+            tray_settings_contract,
+            appearance_window_contract,
+        ));
+    })
+    .map_err(|error| error.to_string())?;
+    let (
+        always_on_top_contract,
+        undecorated_contract,
+        placement_contract,
+        pet_native_window_contract,
+        notification_window_contract,
+        window_contract,
+        dpi_contract,
+        tray_contract,
+        hide_contract,
+        hidden_contract,
+        show_contract,
+        shown_contract,
+        visibility_contract,
+        transport_contract,
+        context_menu_settings_contract,
+        tray_settings_contract,
+        appearance_window_contract,
+    ) = native_receiver
+        .await
+        .map_err(|_| "native checks did not complete")?;
+    let absolute_position_contract =
+        absolute_position_contract(&window, &app.state::<crate::WindowDragState>()).await;
+    let appearance_window_contract =
+        appearance_window_contract && appearance_visibility_contract(&app).await;
     let appearance_selection_contract = match (app_state.as_ref(), application_paths.as_ref()) {
         (Some(state), Some(application_paths)) => {
             appearance_selection_contract(&app, state, application_paths).await
@@ -315,29 +388,44 @@ fn appearance_window_contract(app: &AppHandle) -> bool {
     let route_contract = window.url().is_ok_and(|url| url.path() == "/appearance");
     let custom_frame_contract = window.is_decorated().is_ok_and(|decorated| !decorated);
     let native_panel_contract = appearance_native_panel_contract(&window);
-    let always_on_top_contract = window.is_always_on_top().is_ok_and(|enabled| enabled);
+    let always_on_top_contract = window_is_always_on_top(&window);
     let size_contract = window
         .inner_size()
         .is_ok_and(|size| size.width > 0 && size.height > 0);
-    let opened = crate::open_appearance_window(app).unwrap_or(false);
-    let focused = opened && window.set_focus().is_ok();
-    let closed = focused && window.close().is_ok();
-    let hidden_after_close = closed && window.is_visible().is_ok_and(|visible| !visible);
-    let reopened = hidden_after_close
-        && crate::open_appearance_window(app).unwrap_or(false)
-        && window.is_visible().is_ok_and(|visible| visible);
-    let cleaned_up = window.hide().is_ok() && window.is_visible().is_ok_and(|visible| !visible);
     route_contract
         && custom_frame_contract
         && native_panel_contract
         && always_on_top_contract
         && size_contract
-        && opened
-        && focused
-        && closed
-        && hidden_after_close
-        && reopened
-        && cleaned_up
+}
+
+async fn appearance_visibility_contract(app: &AppHandle) -> bool {
+    let Some(window) = app.get_webview_window(crate::APPEARANCE_WINDOW_LABEL) else {
+        return false;
+    };
+    let opened = crate::open_appearance_window(app).unwrap_or(false)
+        && wait_for_window_visibility(&window, true).await;
+    let focused = opened && window.set_focus().is_ok();
+    let closed = focused && window.close().is_ok();
+    let hidden = closed && wait_for_window_visibility(&window, false).await;
+    let reopened = hidden
+        && crate::open_appearance_window(app).unwrap_or(false)
+        && wait_for_window_visibility(&window, true).await;
+    let cleaned_up = window.hide().is_ok() && wait_for_window_visibility(&window, false).await;
+    opened && focused && closed && hidden && reopened && cleaned_up
+}
+
+async fn wait_for_window_visibility(window: &WebviewWindow, visible: bool) -> bool {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if window.is_visible().is_ok_and(|actual| actual == visible) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -433,27 +521,72 @@ fn expected_action_id() -> &'static str {
     }
 }
 
-fn absolute_position_contract(window: &WebviewWindow, state: &crate::WindowDragState) -> bool {
+async fn absolute_position_contract(
+    window: &WebviewWindow,
+    state: &crate::WindowDragState,
+) -> bool {
     let Ok(original) = window.outer_position() else {
         return false;
     };
     let Ok(scale) = window.scale_factor() else {
         return false;
     };
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return false;
+    };
+    let dx = if original.x < monitor.position().x + monitor.size().width as i32 / 2 {
+        17
+    } else {
+        -17
+    };
+    let dy = if original.y < monitor.position().y + monitor.size().height as i32 / 2 {
+        11
+    } else {
+        -11
+    };
     let expected = tauri::PhysicalPosition::new(
-        original.x.saturating_add((17.0 * scale).round() as i32),
-        original.y.saturating_sub((11.0 * scale).round() as i32),
+        original
+            .x
+            .saturating_add((f64::from(dx) * scale).round() as i32),
+        original
+            .y
+            .saturating_add((f64::from(dy) * scale).round() as i32),
     );
     let moved = crate::begin_window_drag_from(window, state, 1_000, 1_000).is_ok()
-        && crate::move_window_to_from(window, state, 1_017, 989).is_ok()
-        && window
-            .outer_position()
-            .is_ok_and(|position| position == expected);
-    let restored = window.set_position(original).is_ok()
-        && window
-            .outer_position()
-            .is_ok_and(|position| position == original);
+        && crate::move_window_to_from(window, state, 1_000 + dx, 1_000 + dy).is_ok()
+        && wait_for_window_position(window, expected).await;
+    let restored =
+        window.set_position(original).is_ok() && wait_for_window_position(window, original).await;
     moved && restored
+}
+
+async fn wait_for_window_position(
+    window: &WebviewWindow,
+    expected: tauri::PhysicalPosition<i32>,
+) -> bool {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if window
+                .outer_position()
+                .is_ok_and(|position| position == expected)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn window_is_always_on_top(window: &WebviewWindow) -> bool {
+    crate::macos_panel::is_at_floating_level(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn window_is_always_on_top(window: &WebviewWindow) -> bool {
+    window.is_always_on_top().is_ok_and(|enabled| enabled)
 }
 
 #[cfg(target_os = "macos")]
