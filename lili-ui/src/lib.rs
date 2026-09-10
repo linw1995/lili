@@ -557,6 +557,20 @@ impl AnimationController {
     }
 
     #[cfg(any(test, feature = "hydrate"))]
+    fn hold_drag_velocity(&mut self, velocity_x: f64, now_ms: u64) {
+        let directional_velocity = if velocity_x > 0.0 {
+            DRAG_VELOCITY_PX_PER_MS
+        } else if velocity_x < 0.0 {
+            -DRAG_VELOCITY_PX_PER_MS
+        } else {
+            0.0
+        };
+        self.set_drag_velocity(directional_velocity, now_ms);
+        // Explicit-release gestures follow slow direction changes and retain direction at rest.
+        self.drag_animation_expires_at_ms = None;
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
     fn end_drag(&mut self, now_ms: u64) {
         self.drag_animation = None;
         self.drag_animation_expires_at_ms = None;

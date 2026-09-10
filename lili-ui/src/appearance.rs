@@ -1,15 +1,20 @@
 #[cfg(any(test, feature = "hydrate"))]
 use std::time::Duration;
 
+use super::AtlasFrame;
 use leptos::prelude::*;
 #[cfg(feature = "hydrate")]
 use lili_core::AppearanceSelectionRequest;
 #[cfg(feature = "hydrate")]
 use lili_core::PetId;
 use lili_core::{AppearanceView, PetNotificationKind, PetNotificationPresentation};
-use lili_pet::{AnimationScheduler, FrameDescriptor, PreviewScene};
+use lili_pet::{AnimationScheduler, PreviewScene};
 
 use super::notification_carousel::NotificationPreviewCard;
+#[cfg(any(test, feature = "hydrate"))]
+use super::{
+    AnimationController, ClickDecision, ClickDisambiguator, PointerTracker, PointerUpdate,
+};
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
@@ -110,6 +115,28 @@ fn close_appearance_window() {}
 #[cfg(feature = "hydrate")]
 pub(crate) fn install_appearance_selection_boundary() {
     install_appearance_selection_boundary_js();
+}
+
+#[cfg(feature = "hydrate")]
+fn preview_gaze_offset(event: &web_sys::PointerEvent) -> (f64, f64) {
+    use wasm_bindgen::JsCast;
+
+    event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .map(|target| {
+            let bounds = target.get_bounding_client_rect();
+            // Convert transformed viewport coordinates back to atlas coordinates.
+            (
+                (f64::from(event.client_x()) - bounds.left()) / bounds.width().max(1.0)
+                    * f64::from(lili_pet::CELL_WIDTH)
+                    - super::PET_CENTER_X,
+                (f64::from(event.client_y()) - bounds.top()) / bounds.height().max(1.0)
+                    * f64::from(lili_pet::CELL_HEIGHT)
+                    - super::PET_CENTER_Y,
+            )
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(feature = "hydrate")]
@@ -308,7 +335,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                     id="appearance-scene"
                                     data-placement=move || scene_placement(preview.get().scene())
                                     data-scene=move || scene_token(preview.get().scene())
-                                    data-animation=move || animation_token(preview.get().scene().spec().animation())
+                                    data-animation=move || animation_token(preview.get().animation())
                                 >
                                     <div class="appearance-notifications" id="appearance-notifications">
                                         <Show
@@ -330,21 +357,92 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                             }}
                                         </Show>
                                     </div>
-                                    <div class="appearance-pet" id="appearance-pet">
+                                    <div
+                                        class="appearance-pet"
+                                        id="appearance-pet"
+                                        role="button"
+                                        tabindex="0"
+                                        aria-label="Pet preview: click to wave, double-click to jump, drag to run"
+                                        aria-keyshortcuts="Enter Space"
+                                        on:pointerdown=move |event| {
+                                            #[cfg(feature = "hydrate")]
+                                            if event.is_primary() && event.button() == 0 {
+                                                event.prevent_default();
+                                                super::capture_pointer(&event);
+                                                preview.update(|preview| preview.press(
+                                                    f64::from(event.client_x()),
+                                                    f64::from(event.client_y()),
+                                                    event.time_stamp().max(0.0) as u64,
+                                                ));
+                                            }
+                                            #[cfg(not(feature = "hydrate"))]
+                                            let _ = event;
+                                        }
+                                        on:pointermove=move |event| {
+                                            #[cfg(feature = "hydrate")]
+                                            if event.is_primary() {
+                                                let (gaze_x, gaze_y) = preview_gaze_offset(&event);
+                                                preview.update(|preview| preview.move_to(
+                                                    f64::from(event.client_x()),
+                                                    f64::from(event.client_y()),
+                                                    event.time_stamp().max(0.0) as u64,
+                                                    gaze_x,
+                                                    gaze_y,
+                                                ));
+                                            }
+                                            #[cfg(not(feature = "hydrate"))]
+                                            let _ = event;
+                                        }
+                                        on:pointerup=move |event| {
+                                            #[cfg(feature = "hydrate")]
+                                            if event.is_primary() {
+                                                preview.update(|preview| preview.release(false));
+                                                super::release_pointer(&event);
+                                            }
+                                            #[cfg(not(feature = "hydrate"))]
+                                            let _ = event;
+                                        }
+                                        on:pointercancel=move |event| {
+                                            #[cfg(feature = "hydrate")]
+                                            if event.is_primary() {
+                                                preview.update(|preview| preview.release(true));
+                                                super::release_pointer(&event);
+                                            }
+                                            #[cfg(not(feature = "hydrate"))]
+                                            let _ = event;
+                                        }
+                                        on:lostpointercapture=move |_| {
+                                            #[cfg(feature = "hydrate")]
+                                            preview.update(|preview| preview.release(true));
+                                        }
+                                        on:pointerleave=move |_| {
+                                            #[cfg(feature = "hydrate")]
+                                            preview.update(|preview| preview.gaze = None);
+                                        }
+                                        on:keydown=move |event| {
+                                            #[cfg(feature = "hydrate")]
+                                            if matches!(event.key().as_str(), "Enter" | " ") {
+                                                event.prevent_default();
+                                                preview.update(|preview| {
+                                                    preview.clicks = ClickDisambiguator::default();
+                                                    preview.interaction.trigger_wave(preview.now_ms);
+                                                });
+                                            }
+                                            #[cfg(not(feature = "hydrate"))]
+                                            let _ = event;
+                                        }
+                                    >
                                         <img
                                             class="appearance-pet-atlas"
                                             src=selected_asset_url
                                             alt=""
                                             aria-hidden="true"
                                             draggable="false"
-                                            data-frame-row=move || preview_frame.get().row()
-                                            data-frame-column=move || preview_frame.get().column()
+                                            data-frame-row=move || preview_frame.get().row
+                                            data-frame-column=move || preview_frame.get().column
                                             style:animation="none"
                                             style:transform=move || frame_transform(preview_frame.get())
                                         />
-                                        <span class="appearance-pet-tag">
-                                            {move || scene_label(preview.get().scene())}
-                                        </span>
                                         </div>
                                     </div>
                             </div>
@@ -411,7 +509,7 @@ fn appearance_pet_item_static(pet: lili_core::AppearancePetView, selected: bool)
 fn appearance_scene_button(
     scene: PreviewScene,
     preview: RwSignal<AppearancePreviewController>,
-    preview_frame: RwSignal<FrameDescriptor>,
+    preview_frame: RwSignal<AtlasFrame>,
 ) -> impl IntoView {
     view! {
         <button
@@ -432,10 +530,21 @@ fn appearance_scene_button(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct AppearancePreviewController {
     scene: PreviewScene,
     scheduler: AnimationScheduler,
+    #[cfg(any(test, feature = "hydrate"))]
+    interaction: AnimationController,
+    #[cfg(any(test, feature = "hydrate"))]
+    pointer: PointerTracker,
+    #[cfg(any(test, feature = "hydrate"))]
+    clicks: ClickDisambiguator,
+    #[cfg(any(test, feature = "hydrate"))]
+    gaze: Option<lili_pet::LookFrame>,
+    #[cfg(any(test, feature = "hydrate"))]
+    now_ms: u64,
+    animation: lili_pet::AnimationState,
 }
 
 impl AppearancePreviewController {
@@ -443,6 +552,17 @@ impl AppearancePreviewController {
         Self {
             scene,
             scheduler: AnimationScheduler::new(scene.spec().animation()),
+            #[cfg(any(test, feature = "hydrate"))]
+            interaction: AnimationController::new(lili_core::PetLifecycleState::Idle, 0),
+            #[cfg(any(test, feature = "hydrate"))]
+            pointer: PointerTracker::default(),
+            #[cfg(any(test, feature = "hydrate"))]
+            clicks: ClickDisambiguator::default(),
+            #[cfg(any(test, feature = "hydrate"))]
+            gaze: None,
+            #[cfg(any(test, feature = "hydrate"))]
+            now_ms: 0,
+            animation: scene.spec().animation(),
         }
     }
 
@@ -450,36 +570,94 @@ impl AppearancePreviewController {
         self.scene
     }
 
-    fn frame(self) -> FrameDescriptor {
-        self.scheduler.current_frame()
+    fn frame(self) -> AtlasFrame {
+        self.scheduler.current_frame().into()
     }
 
-    fn select(&mut self, scene: PreviewScene) -> FrameDescriptor {
-        self.scene = scene;
-        self.scheduler = AnimationScheduler::new(scene.spec().animation());
+    fn select(&mut self, scene: PreviewScene) -> AtlasFrame {
+        *self = Self::new(scene);
         self.frame()
     }
 
     #[cfg(any(test, feature = "hydrate"))]
-    fn advance(&mut self, delta: Duration) -> FrameDescriptor {
-        self.scheduler.advance(delta)
+    fn advance(&mut self, delta: Duration) -> AtlasFrame {
+        self.scheduler.advance(delta).into()
+    }
+
+    fn animation(self) -> lili_pet::AnimationState {
+        self.animation
     }
 
     #[cfg(any(test, feature = "hydrate"))]
-    fn tick(&mut self, delta: Duration, reduced_motion: bool) -> FrameDescriptor {
+    fn press(&mut self, x: f64, y: f64, at_ms: u64) {
+        self.pointer.press(x, y, at_ms);
+        self.gaze = None;
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn move_to(&mut self, x: f64, y: f64, at_ms: u64, gaze_x: f64, gaze_y: f64) {
+        match self.pointer.move_to(x, y, at_ms, gaze_x, gaze_y) {
+            PointerUpdate::Gaze(gaze) => self.gaze = gaze,
+            PointerUpdate::DragVelocity(velocity) => {
+                self.gaze = None;
+                if velocity.window_target.is_some() {
+                    self.clicks = ClickDisambiguator::default();
+                    self.interaction.hold_drag_velocity(velocity.x, self.now_ms);
+                }
+            }
+        }
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn release(&mut self, cancelled: bool) {
+        if !self.pointer.pressed() {
+            return;
+        }
+        let dragged = self.pointer.release();
+        self.interaction.end_drag(self.now_ms);
+        self.gaze = None;
+        if cancelled || dragged {
+            self.clicks = ClickDisambiguator::default();
+        } else if self.clicks.release(self.now_ms) == ClickDecision::Double {
+            self.interaction.trigger_jump(self.now_ms);
+        }
+    }
+
+    #[cfg(any(test, feature = "hydrate"))]
+    fn tick(&mut self, delta: Duration, reduced_motion: bool) -> AtlasFrame {
+        self.now_ms = self.now_ms.saturating_add(delta.as_millis() as u64);
+        if self.clicks.poll(self.now_ms) == ClickDecision::Single {
+            self.interaction.trigger_wave(self.now_ms);
+        }
+        let render = self.interaction.render_with_gaze(
+            self.now_ms,
+            (self.scene == PreviewScene::Idle)
+                .then_some(self.gaze)
+                .flatten(),
+        );
+        self.animation = self.scene.spec().animation();
         if reduced_motion {
             self.frame()
         } else {
-            self.advance(delta)
+            let frame = self.advance(delta);
+            // Preview interactions override every scene without changing live lifecycle priority.
+            if render.animation != lili_pet::AnimationState::Idle
+                || (self.scene == PreviewScene::Idle && self.gaze.is_some())
+            {
+                self.animation = render.animation;
+                render.frame
+            } else {
+                frame
+            }
         }
     }
 }
 
-fn frame_transform(frame: FrameDescriptor) -> String {
+fn frame_transform(frame: AtlasFrame) -> String {
     format!(
         "translate(-{}px,-{}px)",
-        u32::from(frame.column()) * lili_pet::CELL_WIDTH,
-        u32::from(frame.row()) * lili_pet::CELL_HEIGHT,
+        u32::from(frame.column) * lili_pet::CELL_WIDTH,
+        u32::from(frame.row) * lili_pet::CELL_HEIGHT,
     )
 }
 
@@ -578,7 +756,7 @@ fn start_appearance_lifecycle(
     appearance: RwSignal<AppearanceView>,
     selection_in_flight: RwSignal<bool>,
     preview: RwSignal<AppearancePreviewController>,
-    preview_frame: RwSignal<FrameDescriptor>,
+    preview_frame: RwSignal<AtlasFrame>,
     preview_reduced_motion: RwSignal<bool>,
 ) {
     use wasm_bindgen::{JsCast, closure::Closure};
@@ -670,7 +848,7 @@ fn stop_appearance_selection_refresh() {
 #[cfg(feature = "hydrate")]
 fn start_appearance_preview_clock(
     preview: RwSignal<AppearancePreviewController>,
-    preview_frame: RwSignal<FrameDescriptor>,
+    preview_frame: RwSignal<AtlasFrame>,
     preview_reduced_motion: RwSignal<bool>,
 ) {
     use std::cell::Cell;
@@ -929,8 +1107,8 @@ mod tests {
     fn appearance_preview_controller_resets_and_advances_shared_atlas_scheduler() {
         let mut controller = AppearancePreviewController::new(PreviewScene::Idle);
         assert_eq!(controller.scene(), PreviewScene::Idle);
-        assert_eq!(controller.frame().row(), 0);
-        assert_eq!(controller.frame().column(), 0);
+        assert_eq!(controller.frame().row, 0);
+        assert_eq!(controller.frame().column, 0);
 
         let first_running_frame = controller.select(PreviewScene::Running);
         assert_eq!(controller.scene(), PreviewScene::Running);
@@ -938,7 +1116,7 @@ mod tests {
             AnimationScheduler::new(PreviewScene::Running.spec().animation())
                 .current_frame()
                 .row();
-        assert_eq!(first_running_frame.row(), expected_running_row);
+        assert_eq!(first_running_frame.row, expected_running_row);
 
         let next_running_frame = controller.advance(Duration::from_millis(400));
         assert_ne!(next_running_frame, first_running_frame);
@@ -960,6 +1138,83 @@ mod tests {
         let held_frame = controller.tick(Duration::from_millis(400), true);
 
         assert_eq!(held_frame, running_frame);
+    }
+
+    #[test]
+    fn preview_drag_overrides_every_scene_and_restores_on_release_or_cancel() {
+        use lili_pet::AnimationState;
+
+        for scene in PreviewScene::all().iter().copied() {
+            for cancelled in [false, true] {
+                let mut preview = AppearancePreviewController::new(scene);
+                preview.press(0.0, 0.0, 0);
+                preview.move_to(40.0, 0.0, 20, 40.0, 0.0);
+                let right = preview.tick(Duration::from_millis(16), false);
+                assert_eq!(preview.animation(), AnimationState::RunningRight);
+                assert_eq!(right.row, 1);
+                let held_right = preview.tick(Duration::from_millis(400), false);
+                assert_eq!(preview.animation(), AnimationState::RunningRight);
+                assert_eq!(held_right.row, right.row);
+                assert_ne!(held_right.column, right.column);
+                preview.tick(Duration::from_secs(3), false);
+                assert_eq!(preview.animation(), AnimationState::RunningRight);
+                preview.move_to(-40.0, 0.0, 4020, -40.0, 0.0);
+                let left = preview.tick(Duration::from_millis(16), false);
+                assert_eq!(preview.animation(), AnimationState::RunningLeft);
+                assert_eq!(left.row, 2);
+                preview.move_to(-40.0, 20.0, 4040, -40.0, 20.0);
+                let held_left = preview.tick(Duration::from_millis(400), false);
+                assert_eq!(preview.animation(), AnimationState::RunningLeft);
+                assert_eq!(held_left.row, left.row);
+                assert_ne!(held_left.column, left.column);
+                preview.release(cancelled);
+                preview.tick(Duration::from_millis(300), false);
+                assert_eq!(preview.animation(), scene.spec().animation());
+                assert_eq!(preview.scene(), scene);
+                assert_eq!(preview.clicks, ClickDisambiguator::default());
+            }
+        }
+    }
+
+    #[test]
+    fn idle_preview_supports_gaze_wave_and_jump_and_resets_on_scene_change() {
+        use lili_pet::AnimationState;
+
+        let mut preview = AppearancePreviewController::new(PreviewScene::Idle);
+        preview.move_to(180.0, 100.0, 0, 84.0, -4.0);
+        let gaze = preview.gaze.unwrap();
+        assert_eq!(preview.tick(Duration::from_millis(16), false), gaze.into());
+        preview.press(0.0, 0.0, 0);
+        preview.release(false);
+        preview.tick(Duration::from_millis(251), false);
+        assert_eq!(preview.animation(), AnimationState::Waving);
+        preview.tick(Duration::from_millis(701), false);
+        assert_eq!(preview.animation(), AnimationState::Idle);
+        for _ in 0..2 {
+            preview.press(0.0, 0.0, 0);
+            preview.release(false);
+        }
+        preview.tick(Duration::from_millis(16), false);
+        assert_eq!(preview.animation(), AnimationState::Jumping);
+        preview.select(PreviewScene::Failed);
+        preview.tick(Duration::from_millis(16), false);
+        assert_eq!(preview.animation(), AnimationState::Failed);
+        assert!(!preview.pointer.pressed());
+        assert!(preview.gaze.is_none());
+    }
+
+    #[test]
+    fn reduced_motion_suppresses_preview_interactions() {
+        let mut preview = AppearancePreviewController::new(PreviewScene::Idle);
+        let frame = preview.frame();
+        preview.press(0.0, 0.0, 0);
+        preview.move_to(40.0, 0.0, 20, 40.0, 0.0);
+        assert_eq!(preview.tick(Duration::from_millis(16), true), frame);
+        preview.release(false);
+        preview.press(0.0, 0.0, 30);
+        preview.release(false);
+        assert_eq!(preview.tick(Duration::from_millis(300), true), frame);
+        assert_eq!(preview.animation(), lili_pet::AnimationState::Idle);
     }
 
     #[test]
