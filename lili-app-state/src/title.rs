@@ -175,6 +175,27 @@ impl AppState {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unmatched_notification_schedules_no_worker() {
+        let state = AppState::default();
+        let loaded = load_actions_str(
+            r#"version = 1
+[[action]]
+id = "unmatched"
+trigger = "session_title"
+command = ["/bin/sh", "-c", "exit 1"]
+[action.filters]
+providers = ["another-provider"]
+"#,
+            &ActionLoadContext::new("/", "/", vec![]),
+        );
+        assert!(state.configure_actions(loaded, 1).await);
+        state.apply_session_event(event("unmatched", "one")).await;
+        assert!(state.title_dispatch.lock().await.pending.is_empty());
+        assert!(state.action_audit().await.is_empty());
+    }
+
     use lili_actions::{ActionLoadContext, load_actions_str};
     use lili_session::{ProviderInputV1, normalize_provider_input};
 

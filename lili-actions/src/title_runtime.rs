@@ -6,8 +6,9 @@ use tokio::{sync::watch, task::JoinHandle, time::Instant};
 use crate::{ActionExecutionOutcome, ActionSupervisor, SessionTitleRequest, decode_title_response};
 
 const CAPACITY: usize = 256;
-type Key = (String, String, String);
-type Reply = Option<Option<String>>;
+// Provider selection is fixed within this immutable supervisor instance.
+type Key = (String, String);
+type Reply = Option<String>;
 
 #[derive(Default)]
 pub(crate) struct TitleState {
@@ -94,9 +95,9 @@ impl ActionSupervisor {
         if *self.shutdown.borrow() {
             return None;
         }
-        let action_id = self.title_action_id(provider)?.to_owned();
-        let runtime = self.actions.get(&action_id)?.clone();
-        let key = (action_id, provider.to_owned(), session_id.to_owned());
+        let action_id = self.title_action_id(provider)?;
+        let runtime = self.actions.get(action_id)?.clone();
+        let key = (provider.to_owned(), session_id.to_owned());
         let mut state = self.titles.lock().await;
         if let Some(title) = state.cached(&key) {
             return Some(title);
@@ -168,7 +169,7 @@ impl ActionSupervisor {
                 {
                     state.insert(worker_key.clone(), title.clone());
                 }
-                sender.send_replace(Some(title));
+                sender.send_replace(title);
                 state.pending.remove(&worker_key);
             });
             state.pending.insert(
@@ -181,14 +182,9 @@ impl ActionSupervisor {
             receiver
         };
         drop(state);
-        loop {
-            if let Some(reply) = receiver.borrow().clone() {
-                return reply;
-            }
-            if receiver.changed().await.is_err() {
-                return None;
-            }
-        }
+        // Even a null result advances the watch version and wakes every waiter.
+        receiver.changed().await.ok()?;
+        receiver.borrow_and_update().clone()
     }
 }
 
@@ -216,6 +212,71 @@ fn log_failure(result: &crate::ActionExecutionResult, duration: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn coalesced_null_notifies_every_waiter() {
+        let supervisor = supervisor(
+            "cat >/dev/null; sleep 0.02; printf '%s' '{\"version\":1,\"title\":null}'",
+            0,
+        );
+        let (a, b) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                supervisor.resolve_title("example", "one"),
+                supervisor.resolve_title("example", "one")
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!((a, b), (None, None));
+        assert_eq!(supervisor.audit_snapshot().await.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_results_obey_per_session_debounce() {
+        let supervisor = supervisor("cat >/dev/null; printf invalid", 60000);
+        assert!(supervisor.resolve_title("example", "one").await.is_none());
+        assert!(supervisor.resolve_title("example", "one").await.is_none());
+        assert_eq!(supervisor.audit_snapshot().await.len(), 1);
+        assert!(supervisor.resolve_title("example", "two").await.is_none());
+        assert_eq!(supervisor.audit_snapshot().await.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_keeps_providers_separate() {
+        let mut source = String::from("version = 1\n");
+        for (id, provider, title) in [
+            ("z-first", "first", "First"),
+            ("a-second", "second", "Second"),
+        ] {
+            let script = format!(
+                "cat >/dev/null; printf '%s' '{}'",
+                serde_json::json!({"version":1,"title":title})
+            );
+            source.push_str(&format!("\n[[action]]\nid = \"{id}\"\ntrigger = \"session_title\"\ncommand = [\"/bin/sh\", \"-c\", {}]\n[action.filters]\nproviders = [\"{provider}\"]\n", toml::Value::String(script)));
+        }
+        let loaded =
+            crate::load_actions_str(&source, &crate::ActionLoadContext::new("/", "/", vec![]));
+        let supervisor = ActionSupervisor::new(loaded, 1).unwrap();
+        assert_eq!(
+            supervisor.resolve_title("first", "shared").await.as_deref(),
+            Some("First")
+        );
+        assert_eq!(
+            supervisor
+                .resolve_title("second", "shared")
+                .await
+                .as_deref(),
+            Some("Second")
+        );
+        assert_eq!(
+            supervisor.resolve_title("first", "shared").await.as_deref(),
+            Some("First")
+        );
+        assert_eq!(supervisor.audit_snapshot().await.len(), 2);
+    }
 
     #[cfg(unix)]
     fn supervisor(script: &str, debounce: u64) -> ActionSupervisor {
@@ -419,7 +480,7 @@ mod tests {
     }
 
     fn key(index: usize) -> Key {
-        ("title".into(), "example".into(), index.to_string())
+        ("example".into(), index.to_string())
     }
 
     #[test]

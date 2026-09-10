@@ -1,13 +1,13 @@
 ## 1. Preserve the Baseline and Evidence
 
-- [ ] 1.1 Promote the supplemental probes for coalesced null completion, per-Session failure debounce, provider cache separation, and unmatched-source scheduling into regular tests.
-- [ ] 1.2 Confirm the implementation baseline and preserve current configuration, interaction ordering, persistence, cancellation/reaping, and shutdown/publication regressions.
+- [x] 1.1 Promote the supplemental probes for coalesced null completion, per-Session failure debounce, provider cache separation, and unmatched-source scheduling into regular tests.
+- [x] 1.2 Confirm the implementation baseline and preserve current configuration, interaction ordering, persistence, cancellation/reaping, and shutdown/publication regressions.
 
 ## 2. Remove Redundant Query Representations
 
-- [ ] 2.1 Reduce title cache, debounce, and pending keys to `(provider, session_id)` while retaining immutable supervisor ownership and configuration identity checks; verify same-ID cross-provider isolation and replacement behavior.
-- [ ] 2.2 Replace nested optional watch replies with one optional title and wait for channel updates; verify coalesced null results, closed channels, cancellation, and successful cache reuse.
-- [ ] 2.3 Run both changes together against the scoped suites and lint, then commit the behavior-preserving simplification separately.
+- [x] 2.1 Reduce title cache, debounce, and pending keys to `(provider, session_id)` while retaining immutable supervisor ownership and configuration identity checks; verify same-ID cross-provider isolation and replacement behavior.
+- [x] 2.2 Replace nested optional watch replies with one optional title and wait for channel updates; verify coalesced null results, closed channels, cancellation, and successful cache reuse.
+- [x] 2.3 Run both changes together against the scoped suites and lint, then commit the behavior-preserving simplification separately.
 
 ## 3. Action Storage Decision
 
