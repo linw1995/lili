@@ -479,8 +479,18 @@ async fn appearance_selection_contract(
     if window
         .eval(
             r#"(() => {
-                const option = document.querySelector('#lili-appearance [role="option"]');
-                if (option instanceof HTMLButtonElement) option.click();
+                const deadline = Date.now() + 5000;
+                const clickWhenReady = () => {
+                    if (Date.now() >= deadline) return;
+                    const root = document.querySelector('#lili-appearance[data-hydrated="true"]');
+                    const option = root?.querySelector('[role="option"]');
+                    if (option instanceof HTMLButtonElement && !option.disabled) {
+                        option.click();
+                        return;
+                    }
+                    window.setTimeout(clickWhenReady, 25);
+                };
+                clickWhenReady();
             })();"#,
         )
         .is_err()
@@ -491,15 +501,17 @@ async fn appearance_selection_contract(
 
     let store = lili_app_state::AppStateStore::for_application(application_paths.clone());
     let selected = state.appearance_view().await.selected_pet_id;
-    let mut published_new_asset = false;
-    for _ in 0..40 {
-        let current = state.snapshot().await;
-        if current.pet_asset_id.as_ref() != before.pet_asset_id.as_ref() {
-            published_new_asset = true;
-            break;
+    let published_new_asset = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = state.snapshot().await;
+            if current.pet_asset_id.as_ref() != before.pet_asset_id.as_ref() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    })
+    .await
+    .is_ok();
     let persisted = store
         .load()
         .ok()
@@ -508,7 +520,11 @@ async fn appearance_selection_contract(
         == selected;
     let after = state.snapshot().await;
     let _ = window.hide();
-    published_new_asset && persisted && after.session_state == before.session_state
+    let session_unchanged = after.session_state == before.session_state;
+    eprintln!(
+        "appearance selection assetPublished={published_new_asset} persisted={persisted} sessionUnchanged={session_unchanged}"
+    );
+    published_new_asset && persisted && session_unchanged
 }
 
 fn expected_action_id() -> &'static str {
