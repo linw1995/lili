@@ -288,7 +288,7 @@ impl ActionRuntime {
 }
 
 fn matches_context(action: &LoadedAction, context: &InteractionContextV1) -> bool {
-    if action.trigger() != context.trigger {
+    if action.trigger() != context.trigger.into() {
         return false;
     }
     let filters = action.filters();

@@ -1,8 +1,8 @@
 ## 1. Configuration and Protocol
 
-- [ ] 1.1 Separate configured triggers from interaction-only triggers and add `session_title` loading, provider-only filter validation, deterministic first-match selection, and effective-configuration diagnostics.
-- [ ] 1.2 Add dedicated version 1 request and response types with required fields, strict output decoding, bounded UTF-8 handling, null/empty handling, and title normalization.
-- [ ] 1.3 Verify existing configuration defaults, serialized interaction contexts, interaction endpoint validation, and click completion effects remain unchanged.
+- [x] 1.1 Separate configured triggers from interaction-only triggers and add `session_title` loading, provider-only filter validation, deterministic first-match selection, and effective-configuration diagnostics.
+- [x] 1.2 Add dedicated version 1 request and response types with required fields, strict output decoding, bounded UTF-8 handling, null/empty handling, and title normalization.
+- [x] 1.3 Verify existing configuration defaults, serialized interaction contexts, interaction endpoint validation, and click completion effects remain unchanged.
 
 ## 2. Execution and Scheduling
 
