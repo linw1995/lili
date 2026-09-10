@@ -7,10 +7,45 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    DisplayProjectContext, EventId, NormalizedSessionEvent, Notification, NotificationId,
+    DisplayProjectContext, DisplaySummary, EventId, NormalizedSessionEvent, NotificationId,
     NotificationKind, NotificationState, PresentationState, ProviderId, SessionEventKind,
     SessionId, SessionPhase, SessionSummary, SessionViewSnapshot, TurnId,
 };
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notification {
+    #[serde(skip)]
+    incarnation: std::sync::Arc<()>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_notification_title"
+    )]
+    pub title: Option<String>,
+    pub id: NotificationId,
+    pub provider: ProviderId,
+    pub event_id: EventId,
+    pub session_id: SessionId,
+    pub turn_id: Option<TurnId>,
+    pub kind: NotificationKind,
+    pub state: NotificationState,
+    pub occurred_at_ms: u64,
+    pub project: Option<DisplayProjectContext>,
+    pub summary: Option<DisplaySummary>,
+}
+
+fn deserialize_notification_title<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let title = Option::<String>::deserialize(deserializer)?;
+    if title.as_ref().is_some_and(|title| {
+        title.is_empty() || title.chars().count() > 256 || title.chars().any(char::is_control)
+    }) {
+        return Err(serde::de::Error::custom("invalid notification title"));
+    }
+    Ok(title)
+}
 
 const MAX_RECENT_EVENT_IDS: usize = 4096;
 const MAX_PERSISTED_SESSIONS: usize = 128;

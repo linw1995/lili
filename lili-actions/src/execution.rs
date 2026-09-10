@@ -1,3 +1,10 @@
+mod supervisor;
+
+pub use supervisor::{
+    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor,
+    CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
+};
+
 use std::{collections::BTreeMap, ffi::OsString, io, process::Stdio};
 
 use thiserror::Error;
@@ -35,7 +42,7 @@ impl SpawnedAction {
         self.child.as_ref().and_then(Child::id)
     }
 
-    pub(crate) fn child_mut(&mut self) -> &mut Child {
+    fn child_mut(&mut self) -> &mut Child {
         self.child
             .as_mut()
             .expect("spawned action retains its child")
@@ -48,11 +55,11 @@ impl SpawnedAction {
         self.child.take().expect("spawned action retains its child")
     }
 
-    pub(crate) fn take_stdin_task(&mut self) -> Option<JoinHandle<io::Result<()>>> {
+    fn take_stdin_task(&mut self) -> Option<JoinHandle<io::Result<()>>> {
         self.stdin_task.take()
     }
 
-    pub(crate) async fn terminate_tree(&mut self) -> io::Result<()> {
+    async fn terminate_tree(&mut self) -> io::Result<()> {
         let tree_error = self.process_tree.terminate().err();
         if tree_error.is_some() {
             let _ = self.child_mut().kill().await;
@@ -64,7 +71,7 @@ impl SpawnedAction {
         }
     }
 
-    pub(crate) fn mark_finished(&mut self) {
+    fn mark_finished(&mut self) {
         self.process_tree.disarm();
     }
 }
@@ -87,7 +94,7 @@ pub async fn spawn_action(
     spawn_input(action, context).await
 }
 
-pub(crate) async fn spawn_input<T: serde::Serialize>(
+async fn spawn_input<T: serde::Serialize>(
     action: &LoadedAction,
     context: &T,
 ) -> Result<SpawnedAction, ActionSpawnError> {

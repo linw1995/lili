@@ -10,14 +10,74 @@ use crate::{AppState, AppStateStore, PersistenceError, PersistentApplicationStat
 const MAX_PENDING_TITLES: usize = 256;
 
 #[derive(Default)]
-pub(super) struct TitleDispatch {
+pub struct TitleDispatch {
     pub closed: bool,
     pub pending: HashMap<NotificationId, PendingTitle>,
 }
 
-pub(super) struct PendingTitle {
+pub struct PendingTitle {
     token: Uuid,
     pub worker: JoinHandle<()>,
+}
+
+pub async fn schedule_notification_titles(
+    state: &AppState,
+    event: Option<(ProviderId, EventId)>,
+    store: Option<AppStateStore>,
+) {
+    let runtime = state.action_runtime.read().await;
+    let Some(supervisor) = runtime.supervisor.clone() else {
+        return;
+    };
+    let notifications = state.session_reducer.lock().await.snapshot().notifications;
+    let unread: std::collections::HashSet<_> = notifications
+        .iter()
+        .filter(|notification| notification.state == NotificationState::Unread)
+        .map(|notification| notification.id.clone())
+        .collect();
+    let mut dispatch = state.title_dispatch.lock().await;
+    if dispatch.closed {
+        return;
+    }
+    dispatch.pending.retain(|id, task| {
+        if unread.contains(id) {
+            true
+        } else {
+            task.worker.abort();
+            false
+        }
+    });
+    for notification in notifications {
+        if notification.state != NotificationState::Unread
+            || event.as_ref().is_some_and(|(provider, id)| {
+                &notification.provider != provider || &notification.event_id != id
+            })
+            || supervisor
+                .title_action_id(notification.provider.as_str())
+                .is_none()
+            || dispatch.pending.contains_key(&notification.id)
+            || dispatch.pending.len() >= MAX_PENDING_TITLES
+        {
+            continue;
+        }
+        let token = Uuid::new_v4();
+        let id = notification.id.clone();
+        let state = state.clone();
+        let supervisor = supervisor.clone();
+        let store = store.clone();
+        let worker = tokio::spawn(async move {
+            let title = supervisor
+                .resolve_title(
+                    notification.provider.as_str(),
+                    notification.session_id.as_str(),
+                )
+                .await;
+            state
+                .complete_title(supervisor, notification, token, title, store)
+                .await;
+        });
+        dispatch.pending.insert(id, PendingTitle { token, worker });
+    }
 }
 
 impl AppState {
@@ -31,66 +91,6 @@ impl AppState {
         let pending = std::mem::take(&mut self.title_dispatch.lock().await.pending);
         for task in pending.into_values() {
             let _ = task.worker.await;
-        }
-    }
-
-    pub(super) async fn schedule_notification_titles(
-        &self,
-        event: Option<(ProviderId, EventId)>,
-        store: Option<AppStateStore>,
-    ) {
-        let runtime = self.action_runtime.read().await;
-        let Some(supervisor) = runtime.supervisor.clone() else {
-            return;
-        };
-        let notifications = self.session_reducer.lock().await.snapshot().notifications;
-        let unread: std::collections::HashSet<_> = notifications
-            .iter()
-            .filter(|notification| notification.state == NotificationState::Unread)
-            .map(|notification| notification.id.clone())
-            .collect();
-        let mut dispatch = self.title_dispatch.lock().await;
-        if dispatch.closed {
-            return;
-        }
-        dispatch.pending.retain(|id, task| {
-            if unread.contains(id) {
-                true
-            } else {
-                task.worker.abort();
-                false
-            }
-        });
-        for notification in notifications {
-            if notification.state != NotificationState::Unread
-                || event.as_ref().is_some_and(|(provider, id)| {
-                    &notification.provider != provider || &notification.event_id != id
-                })
-                || supervisor
-                    .title_action_id(notification.provider.as_str())
-                    .is_none()
-                || dispatch.pending.contains_key(&notification.id)
-                || dispatch.pending.len() >= MAX_PENDING_TITLES
-            {
-                continue;
-            }
-            let token = Uuid::new_v4();
-            let id = notification.id.clone();
-            let state = self.clone();
-            let supervisor = supervisor.clone();
-            let store = store.clone();
-            let worker = tokio::spawn(async move {
-                let title = supervisor
-                    .resolve_title(
-                        notification.provider.as_str(),
-                        notification.session_id.as_str(),
-                    )
-                    .await;
-                state
-                    .complete_title(supervisor, notification, token, title, store)
-                    .await;
-            });
-            dispatch.pending.insert(id, PendingTitle { token, worker });
         }
     }
 

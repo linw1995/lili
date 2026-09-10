@@ -18,3 +18,12 @@ Implementation commit: `460d399`.
 - Persistence, configuration replacement, cancellation/reaping, and shutdown/publication regressions passed in the workspace suite.
 
 Only local validation was performed for this adoption. No remote operation, CI rerun, or live user configuration change was performed. Other operating systems were not exercised locally.
+
+## Visibility Follow-up Verification
+
+- Replaced scattered scoped visibility in the action runtime and application-state helpers with private module ownership and parent-level imports/re-exports.
+- Moved the supervisor below the process implementation, and the title runtime below the supervisor. Their internal fields, execution trait, audit helper, and process helpers are private.
+- The reducer owns the notification incarnation field without exposing it across the crate.
+- The three related library suites passed 183 tests, and workspace all-target/all-feature Clippy passed.
+- An independent temporary consumer crate compiled against the existing public types and spawn API. Thirteen negative compilation probes were rejected with the expected privacy errors: supervisor fields, process helper methods, notification incarnation, internal scheduling/restoration imports, and the private execution module.
+- No public protocol or runtime behavior was changed. No remote operation was performed.

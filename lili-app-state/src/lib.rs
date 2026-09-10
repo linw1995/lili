@@ -2,6 +2,9 @@ mod ingestion;
 mod persistence;
 mod title;
 
+use persistence::into_reducer_state;
+use title::{TitleDispatch, schedule_notification_titles};
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::Path,
@@ -77,7 +80,7 @@ pub struct AppState {
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
-    title_dispatch: Arc<Mutex<title::TitleDispatch>>,
+    title_dispatch: Arc<Mutex<TitleDispatch>>,
     title_lifecycle: Arc<Mutex<()>>,
     clock_origin: Instant,
 }
@@ -241,7 +244,7 @@ impl AppState {
         pet_catalog: PetCatalog,
         state: PersistentApplicationState,
     ) -> Result<Self, lili_session::ReducerRestoreError> {
-        let reducer = SessionReducer::from_persistent_state(state.into_reducer_state())?;
+        let reducer = SessionReducer::from_persistent_state(into_reducer_state(state))?;
         Ok(Self::with_reducer(pet_catalog, reducer))
     }
 
@@ -276,7 +279,7 @@ impl AppState {
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
             dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
-            title_dispatch: Arc::new(Mutex::new(title::TitleDispatch::default())),
+            title_dispatch: Arc::new(Mutex::new(TitleDispatch::default())),
             title_lifecycle: Arc::new(Mutex::new(())),
             clock_origin: Instant::now(),
         }
@@ -464,8 +467,7 @@ impl AppState {
         };
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
-            self.schedule_notification_titles(Some(title_event), None)
-                .await;
+            schedule_notification_titles(self, Some(title_event), None).await;
             if starts_activity_reminder {
                 self.schedule_activity_reminder_expiry(accepted_at_ms);
             }
@@ -504,8 +506,7 @@ impl AppState {
         drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
-            self.schedule_notification_titles(Some(title_event), Some(store.clone()))
-                .await;
+            schedule_notification_titles(self, Some(title_event), Some(store.clone())).await;
             if let Some(started_at_ms) = activity_reminder_started_at_ms {
                 self.schedule_activity_reminder_expiry(started_at_ms);
             }
@@ -721,7 +722,7 @@ impl AppState {
         }
         self.snapshot.write().await.actions = summaries;
         self.publish_presentation().await;
-        self.schedule_notification_titles(None, store).await;
+        schedule_notification_titles(self, None, store).await;
         configured
     }
 
@@ -816,7 +817,7 @@ impl AppState {
         self.ingestion_diagnostics.read().await.clone()
     }
 
-    pub(crate) async fn replace_ingestion_diagnostics(&self, diagnostics: IngestionDiagnostics) {
+    async fn replace_ingestion_diagnostics(&self, diagnostics: IngestionDiagnostics) {
         *self.ingestion_diagnostics.write().await = diagnostics;
     }
 

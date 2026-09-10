@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
 
-use crate::{ActionExecutionOutcome, ActionSupervisor, SessionTitleRequest, decode_title_response};
+use super::{
+    ActionExecutionOutcome, ActionSupervisor, SessionTitleRequest, run_action_cancellable,
+};
+use crate::decode_title_response;
 
 const CAPACITY: usize = 256;
 // Provider selection is fixed within this immutable supervisor instance.
@@ -11,7 +14,7 @@ type Key = (String, String);
 type Reply = Option<String>;
 
 #[derive(Default)]
-pub(crate) struct TitleState {
+pub struct TitleState {
     cache: VecDeque<(Key, String)>,
     debounce: VecDeque<(Key, Instant)>,
     pending: BTreeMap<Key, Pending>,
@@ -136,12 +139,9 @@ impl ActionSupervisor {
                 };
                 let title = if let Some((_action, _global)) = slots {
                     let started = Instant::now();
-                    if let Some(mut result) = crate::supervisor::run_action_cancellable(
-                        &runtime.action,
-                        &request,
-                        Some(shutdown.clone()),
-                    )
-                    .await
+                    if let Some(mut result) =
+                        run_action_cancellable(&runtime.action, &request, Some(shutdown.clone()))
+                            .await
                     {
                         let title = if result.outcome == ActionExecutionOutcome::Succeeded {
                             match decode_title_response(result.stdout.bytes()) {

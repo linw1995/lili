@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::SESSION_SCHEMA_VERSION;
+use crate::{Notification, SESSION_SCHEMA_VERSION};
 
 const MAX_ID_BYTES: usize = 256;
 pub const MAX_PROJECT_LABEL_CHARS: usize = 128;
@@ -310,41 +310,6 @@ pub enum NotificationState {
     Unread,
     Acknowledged,
     Resolved,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Notification {
-    #[serde(skip)]
-    pub(crate) incarnation: std::sync::Arc<()>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_notification_title"
-    )]
-    pub title: Option<String>,
-    pub id: NotificationId,
-    pub provider: ProviderId,
-    pub event_id: EventId,
-    pub session_id: SessionId,
-    pub turn_id: Option<TurnId>,
-    pub kind: NotificationKind,
-    pub state: NotificationState,
-    pub occurred_at_ms: u64,
-    pub project: Option<DisplayProjectContext>,
-    pub summary: Option<DisplaySummary>,
-}
-
-fn deserialize_notification_title<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    let title = Option::<String>::deserialize(deserializer)?;
-    if title.as_ref().is_some_and(|title| {
-        title.is_empty() || title.chars().count() > 256 || title.chars().any(char::is_control)
-    }) {
-        return Err(serde::de::Error::custom("invalid notification title"));
-    }
-    Ok(title)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

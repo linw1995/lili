@@ -1,8 +1,6 @@
 mod execution;
 mod loading;
-mod supervisor;
 mod title;
-mod title_runtime;
 
 pub use title::{SessionTitleRequest, TitleResponseError, decode_title_response};
 
@@ -22,15 +20,15 @@ pub const MAX_ACTION_QUEUE_CAPACITY: usize = 64;
 pub const INTERACTION_CONTEXT_VERSION: u16 = 1;
 pub const MAX_INTERACTION_CONTEXT_BYTES: usize = 16 * 1024;
 
-pub use execution::{ActionSpawnError, SpawnedAction, spawn_action};
+pub use execution::{
+    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSpawnError,
+    ActionSupervisor, CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
+    SpawnedAction, spawn_action,
+};
 pub use loading::{
     ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
     EffectiveActionsView, LoadedAction, LoadedActions, MAX_ACTION_CONFIG_BYTES, MAX_ACTION_ENTRIES,
     action_config_path, load_actions_file, load_actions_str,
-};
-pub use supervisor::{
-    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor,
-    CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

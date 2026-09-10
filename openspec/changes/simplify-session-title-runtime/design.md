@@ -59,3 +59,9 @@ The `ExecutionInput` trait currently serves two concrete payload types and keeps
 Promote the supplemental behavior probes before applying representation changes. Run each change independently and then together. Keep negative controls as experiment artifacts, not production patches. Re-run the full workspace suite and all-feature lint after integration; run focused packaged notification acceptance once on the final combined implementation.
 
 The recorded experiments cover three library test suites on arm64 macOS. They do not establish a performance gain, cover other operating systems, or exhaustively explore thread interleavings. Compilation and test elapsed times are execution metadata, not benchmark results.
+
+## Visibility Ownership Follow-up
+
+Private parent modules own internal access; public re-exports define the external boundary. The process implementation owns the supervisor child module, and the supervisor owns its title-runtime child. This lets descendants use genuinely private process/supervisor fields without crate-wide field visibility. The crate root explicitly re-exports the existing public API.
+
+The application-state root privately imports title dispatch and scheduling helpers. Internal free functions in private modules do not become public methods on the exported application-state types. Notification representation and its incarnation marker are owned by the reducer; the marker remains private while the crate root preserves the public `Notification` name.

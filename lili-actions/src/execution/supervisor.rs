@@ -1,3 +1,8 @@
+mod title_runtime;
+
+use super::spawn_input;
+use title_runtime::TitleState;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
@@ -133,7 +138,7 @@ impl ActionExecutionResult {
     }
 }
 
-pub(crate) trait ExecutionInput: Serialize {
+trait ExecutionInput: Serialize {
     fn request_id(&self) -> uuid::Uuid;
     fn action_trigger(&self) -> ActionTrigger;
     fn event_id(&self) -> Option<String>;
@@ -167,11 +172,11 @@ impl ExecutionInput for SessionTitleRequest {
 
 #[derive(Clone)]
 pub struct ActionSupervisor {
-    pub(crate) actions: Arc<BTreeMap<String, Arc<ActionRuntime>>>,
-    pub(crate) global: Arc<Semaphore>,
-    pub(crate) title_order: Arc<Vec<String>>,
-    pub(crate) titles: Arc<Mutex<crate::title_runtime::TitleState>>,
-    pub(crate) shutdown: Arc<tokio::sync::watch::Sender<bool>>,
+    actions: Arc<BTreeMap<String, Arc<ActionRuntime>>>,
+    global: Arc<Semaphore>,
+    title_order: Arc<Vec<String>>,
+    titles: Arc<Mutex<TitleState>>,
+    shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     audit: Arc<Mutex<VecDeque<ActionAuditEntry>>>,
 }
 
@@ -201,7 +206,7 @@ impl ActionSupervisor {
         Some(Self {
             actions: Arc::new(actions),
             title_order,
-            titles: Arc::new(Mutex::new(crate::title_runtime::TitleState::default())),
+            titles: Arc::new(Mutex::new(TitleState::default())),
             shutdown: Arc::new(shutdown),
             global: Arc::new(Semaphore::new(global_concurrency)),
             audit: Arc::new(Mutex::new(VecDeque::with_capacity(
@@ -287,7 +292,7 @@ impl ActionSupervisor {
         run_action(&runtime.action, context).await
     }
 
-    pub(crate) async fn record_audit(&self, result: &ActionExecutionResult) {
+    async fn record_audit(&self, result: &ActionExecutionResult) {
         let mut audit = self.audit.lock().await;
         if audit.len() == MAX_ACTION_AUDIT_ENTRIES {
             audit.pop_front();
@@ -296,10 +301,10 @@ impl ActionSupervisor {
     }
 }
 
-pub(crate) struct ActionRuntime {
-    pub(crate) action: LoadedAction,
+struct ActionRuntime {
+    action: LoadedAction,
     admission: Arc<Semaphore>,
-    pub(crate) running: Arc<Semaphore>,
+    running: Arc<Semaphore>,
     last_accepted: Mutex<Option<Instant>>,
 }
 
@@ -319,7 +324,7 @@ impl ActionRuntime {
         }
     }
 
-    pub(crate) fn admit(&self) -> Option<OwnedSemaphorePermit> {
+    fn admit(&self) -> Option<OwnedSemaphorePermit> {
         self.admission.clone().try_acquire_owned().ok()
     }
 
@@ -360,16 +365,13 @@ fn matches_context(action: &LoadedAction, context: &InteractionContextV1) -> boo
                 .is_some_and(|project| filters.project_labels.contains(project)))
 }
 
-pub(crate) async fn run_action(
-    action: &LoadedAction,
-    context: &impl ExecutionInput,
-) -> ActionExecutionResult {
+async fn run_action(action: &LoadedAction, context: &impl ExecutionInput) -> ActionExecutionResult {
     run_action_cancellable(action, context, None)
         .await
         .expect("interaction execution is not cancelled")
 }
 
-pub(crate) async fn run_action_cancellable(
+async fn run_action_cancellable(
     action: &LoadedAction,
     context: &impl ExecutionInput,
     mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
@@ -381,7 +383,7 @@ pub(crate) async fn run_action_cancellable(
         return None;
     }
     let started_at_ms = unix_time_ms();
-    let result = crate::execution::spawn_input(action, context).await;
+    let result = spawn_input(action, context).await;
     let Ok(mut spawned) = result else {
         return Some(completed_result(
             action,
