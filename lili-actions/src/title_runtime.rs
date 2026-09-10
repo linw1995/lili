@@ -283,6 +283,32 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_coalesced_execution_logs_once_without_output() {
+        let buffer = LogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let supervisor = supervisor(
+            "cat >/dev/null; sleep 0.02; printf 'PRIVATE_OUTPUT'; printf 'PRIVATE_ERROR' >&2",
+            0,
+        );
+        let _ = tokio::join!(
+            supervisor.resolve_title("example", "one"),
+            supervisor.resolve_title("example", "one")
+        );
+        let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.lines().count(), 1);
+        assert!(output.contains("invalid_response"));
+        assert!(!output.contains("PRIVATE_OUTPUT"));
+        assert!(!output.contains("PRIVATE_ERROR"));
+    }
+
     #[test]
     fn warnings_have_bounded_metadata_and_only_failure_outcomes() {
         let buffer = LogBuffer::default();

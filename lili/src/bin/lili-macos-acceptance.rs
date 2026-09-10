@@ -3,6 +3,7 @@ fn main() {
     let mode = std::env::args_os().nth(1);
     let result = match mode.as_deref() {
         Some(mode) if mode == "--record-action" => macos::record_action(),
+        Some(mode) if mode == "--title-action" => macos::title_action(),
         Some(mode) if mode == "--direct-hook" => macos::run_direct_hook_acceptance(),
         _ => macos::run(),
     };
@@ -37,6 +38,30 @@ mod macos {
     const PAYLOAD: &[u8] = include_bytes!(
         "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
     );
+
+    pub fn title_action() -> Result<(), String> {
+        let mut input = Vec::new();
+        std::io::stdin()
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut input)
+            .map_err(|_| "title stdin failed".to_owned())?;
+        if input.len() > 16 * 1024 {
+            return Err("title stdin overflow".to_owned());
+        }
+        let request: serde_json::Value =
+            serde_json::from_slice(&input).map_err(|_| "invalid title request".to_owned())?;
+        if request["version"] != 1
+            || request["trigger"] != "session_title"
+            || !request["requestId"].is_string()
+            || !request["sessionId"].is_string()
+        {
+            return Err("invalid title request fields".to_owned());
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        std::io::stdout()
+            .write_all(br#"{"version":1,"title":"<b>Acceptance title</b>"}"#)
+            .map_err(|_| "title stdout failed".to_owned())
+    }
 
     pub fn record_action() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
@@ -349,9 +374,15 @@ id = "macos-timeout"
 trigger = "notification_activate"
 command = ["/bin/sleep", "5"]
 timeout_ms = 100
+
+[[action]]
+id = "acceptance-title"
+trigger = "session_title"
+command = [{}, "--title-action"]
 "#,
                 toml_string(&fixture)?,
                 toml_string(&self.action_context_path())?,
+                toml_string(&fixture)?,
             );
             fs::write(application_paths.actions_path(), source)
                 .map_err(|error| format!("acceptance action config could not be written: {error}"))

@@ -230,6 +230,51 @@ If the action is disabled, confirm that the executable path is absolute, exists,
 
 To roll back this recipe, remove only the `[[action]]` entry whose `id` is `open-session-context`, preserve all other entries byte-for-byte, restart Lili, and confirm in **Diagnostics** that the action is absent while other actions and Session delivery remain available. Do not remove hooks, change trust, uninstall the plugin, delete Lili application data, or clean up external state as part of this action-only rollback. Follow the external executable's own cleanup procedure separately.
 
+### Optional Session title action
+
+Add a `session_title` entry to resolve notification titles asynchronously. Notifications appear immediately with their existing label; a successful result updates the bound notification title without changing its summary, order, unread state, or click behavior.
+
+```toml
+[[action]]
+id = "custom-session-title"
+trigger = "session_title"
+command = ["/absolute/path/to/title-action"]
+timeout_ms = 1000
+
+[action.filters]
+providers = ["example"]
+```
+
+Keep the existing top-level `version = 1` and unrelated entries. Remove the filter block to match every source. Only `providers` filters are supported for this trigger; nonempty `notification_kinds` or `project_labels` disable the entry. The first enabled matching entry in file order wins. Failure does not try another matching entry. Restart Lili after editing configuration. Older binaries report this trigger as unsupported.
+
+The executable receives one UTF-8 JSON document on stdin, followed by EOF:
+
+```json
+{
+  "version": 1,
+  "requestId": "00000000-0000-0000-0000-000000000000",
+  "trigger": "session_title",
+  "provider": "example",
+  "sessionId": "session-123"
+}
+```
+
+Return exactly one JSON document on stdout and exit successfully:
+
+```json
+{"version": 1, "title": "Review changes"}
+```
+
+Version and title are required; unknown fields, extra documents, malformed UTF-8/JSON, and non-string/non-null titles are rejected. `null` or a whitespace-only title means no result. Whitespace is normalized, remaining control characters are removed, and titles are limited to 256 Unicode scalar values. Titles are rendered as plain text. Stdin and captured output retain the existing 16 KiB bounds. Never mix diagnostic text into stdout.
+
+Commands still execute as fixed argv without shell interpretation, with the existing working-directory, environment, timeout, and concurrency defaults. Matching requests share one execution. Debounce is applied per source/Session/action key, while process capacity is shared with click actions. Full queues or busy reject actions skip the query without retry loops; a later eligible notification event can retry.
+
+Successful nonempty titles are reused through a 256-entry in-memory LRU cache. Cache hits promote recency; capacity eviction removes the least recently used title. There is no TTL or background refresh. Empty results and failures are not cached. Restart clears the cache; a frequently used cached title can remain unchanged until eviction or restart. Eviction does not remove titles already written to notifications. Retained notification titles survive restart through normal notification persistence.
+
+Failures preserve the current notification title. The existing runtime logger emits one structured `warn` per failed execution with `action_id`, `request_id`, `trigger`, `failure_kind`, `duration_ms`, and `exit_code` when available. Failure kinds cover spawn, I/O, timeout, nonzero exit, output overflow, and invalid responses. Warnings follow the existing `RUST_LOG` filter; start Lili with `RUST_LOG=warn` to enable warning output. Bounded action diagnostics also expose request identity and outcome. Neither log includes title text or raw stdout/stderr. Successful empty results and ordinary scheduling skips do not emit execution warnings, and queries never show click-action feedback.
+
+To verify configuration, start with a synthetic executable that reads stdin and returns the fixed JSON response above. Confirm that the notification appears before the result, its title updates, and activation still runs the configured click action. Removing the title entry and restarting disables future queries; titles already retained on notifications remain.
+
 ## 6. Verify and troubleshoot
 
 Use this sequence after configuration:

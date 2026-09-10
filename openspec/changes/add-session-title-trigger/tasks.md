@@ -21,11 +21,11 @@
 
 ## 4. Verification and Documentation
 
-- [ ] 4.1 Add synthetic executable tests for valid/null output, normalization, malformed output, unknown fields, UTF-8 and output limits, nonzero exit, spawn failure, timeout, and process cleanup.
-- [ ] 4.2 Add deterministic scheduling tests for matching priority, coalescing, independent Session debounce, saturation, queue bounds, LRU hit promotion/eviction and configuration invalidation, title persistence/restoration, and shutdown.
-- [ ] 4.3 Add race tests for primary-Session changes, dismissal, notification removal/recreation, configuration generation changes, and out-of-order results; verify interaction regression behavior.
-- [ ] 4.4 Document the new trigger, exact stdin/stdout schemas, defaults, matching/filter rules, capacity-only cache policy and title retention, failure diagnostics and runtime warning fields, compatibility, and additive configuration/rollback using a synthetic example.
-- [ ] 4.5 Run repository-toolchain formatting, lint, targeted unit and presentation tests, and packaged desktop acceptance demonstrating immediate fallback, asynchronous title update, safe rendering, and unchanged click behavior.
-- [ ] 4.6 Run `openspec validate add-session-title-trigger --strict` and record only verification actually performed.
+- [x] 4.1 Add synthetic executable tests for valid/null output, normalization, malformed output, unknown fields, UTF-8 and output limits, nonzero exit, spawn failure, timeout, and process cleanup.
+- [x] 4.2 Add deterministic scheduling tests for matching priority, coalescing, independent Session debounce, saturation, queue bounds, LRU hit promotion/eviction and configuration invalidation, title persistence/restoration, and shutdown.
+- [x] 4.3 Add race tests for primary-Session changes, dismissal, notification removal/recreation, configuration generation changes, and out-of-order results; verify interaction regression behavior.
+- [x] 4.4 Document the new trigger, exact stdin/stdout schemas, defaults, matching/filter rules, capacity-only cache policy and title retention, failure diagnostics and runtime warning fields, compatibility, and additive configuration/rollback using a synthetic example.
+- [x] 4.5 Run repository-toolchain formatting, lint, targeted unit and presentation tests, and packaged desktop acceptance demonstrating immediate fallback, asynchronous title update, safe rendering, and unchanged click behavior.
+- [x] 4.6 Run `openspec validate add-session-title-trigger --strict` and record only verification actually performed.
 
-- [ ] 4.7 Capture runtime logs in tests to verify warning level and fields for each execution/protocol failure, one warning for coalesced consumers, exclusion of raw content, and no execution-failure warnings for successful empty results or normal scheduling/cancellation outcomes.
+- [x] 4.7 Capture runtime logs in tests to verify warning level and fields for each execution/protocol failure, one warning for coalesced consumers, exclusion of raw content, and no execution-failure warnings for successful empty results or normal scheduling/cancellation outcomes.

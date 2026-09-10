@@ -262,6 +262,7 @@ impl SessionReducer {
             return false;
         };
         if notification.state != NotificationState::Unread
+            || !std::sync::Arc::ptr_eq(&notification.incarnation, &original.incarnation)
             || notification.provider != original.provider
             || notification.session_id != original.session_id
             || notification.event_id != original.event_id
@@ -546,6 +547,7 @@ impl SessionReducer {
         self.notifications
             .entry(id.clone())
             .or_insert_with(|| Notification {
+                incarnation: std::sync::Arc::new(()),
                 title: None,
                 id,
                 provider: event.provider.clone(),
@@ -960,6 +962,23 @@ mod tests {
             source_discriminator: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn title_results_cannot_update_a_recreated_notification() {
+        let mut reducer = SessionReducer::default();
+        let event = event("first", "turn_completed", "one", Some("turn"), 1);
+        reducer.reduce(event.clone());
+        let original = reducer.snapshot().notifications[0].clone();
+        reducer.notifications.remove(&original.id);
+        reducer.insert_notification(&event, NotificationKind::Completion);
+        assert!(!reducer.update_notification_title(&original, "Obsolete".into()));
+        let current = reducer.snapshot().notifications[0].clone();
+        assert!(reducer.update_notification_title(&current, "Current".into()));
+        assert_eq!(
+            reducer.snapshot().notifications[0].title.as_deref(),
+            Some("Current")
+        );
     }
 
     #[test]

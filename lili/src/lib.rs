@@ -587,7 +587,14 @@ fn create_notification_window(
     .on_navigation(move |url| url.origin() == allowed_origin);
     let window = if acceptance {
         builder
-            .initialization_script(desktop_acceptance::NOTIFICATION_SCRIPT)
+            .initialization_script(desktop_acceptance::NOTIFICATION_SCRIPT.replace(
+                "__TITLE_REQUIRED__",
+                if cfg!(target_os = "macos") {
+                    "true"
+                } else {
+                    "false"
+                },
+            ))
             .build()
     } else {
         builder.build()

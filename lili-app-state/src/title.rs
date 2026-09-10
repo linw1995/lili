@@ -276,6 +276,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn old_notification_payloads_load_and_failed_title_save_rolls_back() {
+        let state = AppState::default();
+        state.apply_session_event(event("first", "one")).await;
+        let notification = state.snapshot().await.session_state.notifications[0].clone();
+        let mut json = serde_json::to_value(&notification).unwrap();
+        json.as_object_mut().unwrap().remove("title");
+        let old: Notification = serde_json::from_value(json.clone()).unwrap();
+        assert!(old.title.is_none());
+        json["title"] = serde_json::json!("x".repeat(257));
+        assert!(serde_json::from_value::<Notification>(json).is_err());
+        let root = std::env::temp_dir().join(format!("title-invalid-store-{}", Uuid::new_v4()));
+        std::fs::write(&root, b"not a directory").unwrap();
+        let store = AppStateStore::for_application(
+            lili_storage::ApplicationPaths::from_root(root.clone()).unwrap(),
+        );
+        assert!(
+            state
+                .save_notification_title(&notification, "New title".into(), Some(&store))
+                .await
+                .is_err()
+        );
+        assert!(
+            state.snapshot().await.session_state.notifications[0]
+                .title
+                .is_none()
+        );
+        std::fs::remove_file(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn other_sessions_do_not_receive_a_bound_result() {
         let state = AppState::default();
         configure(&state, "First title").await;

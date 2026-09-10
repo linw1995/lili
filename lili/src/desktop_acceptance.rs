@@ -64,7 +64,15 @@ window.addEventListener('DOMContentLoaded', () => {
   const poll = window.setInterval(() => {
     const hydrated = document.querySelector('#lili-app[data-hydrated="true"]') !== null;
     const notification = document.querySelector('.notification-activate');
-    if (hydrated && notification instanceof HTMLButtonElement) {
+    const label = document.querySelector('.notification-project');
+    const titleRequired = __TITLE_REQUIRED__;
+    if (hydrated && label && label.textContent !== '<b>Acceptance title</b>') {
+      localStorage.setItem('lili-acceptance-title-fallback', 'true');
+    }
+    const titleReady = !titleRequired || (label?.textContent === '<b>Acceptance title</b>'
+      && label.childElementCount === 0
+      && localStorage.getItem('lili-acceptance-title-fallback') === 'true');
+    if (hydrated && notification instanceof HTMLButtonElement && titleReady) {
       window.clearInterval(poll);
       notification.click();
       localStorage.setItem('lili-acceptance-notification-activated', 'true');
@@ -139,7 +147,12 @@ pub async fn complete_desktop_acceptance(
     };
     let expected_action_id = expected_action_id();
     let action_contract = if cfg!(target_os = "macos") {
-        action_audit.len() == 2
+        action_audit.len() == 3
+            && action_audit.iter().any(|entry| {
+                entry.action_id == "acceptance-title"
+                    && entry.outcome == ActionExecutionOutcome::Succeeded
+                    && entry.request_id.is_some()
+            })
             && action_audit.iter().any(|entry| {
                 entry.action_id == "open-session-context"
                     && entry.outcome == ActionExecutionOutcome::Succeeded

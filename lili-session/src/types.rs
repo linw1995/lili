@@ -315,6 +315,8 @@ pub enum NotificationState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Notification {
+    #[serde(skip)]
+    pub(crate) incarnation: std::sync::Arc<()>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
