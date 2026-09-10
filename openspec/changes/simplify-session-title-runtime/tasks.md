@@ -15,6 +15,6 @@
 
 ## 4. Final Verification
 
-- [ ] 4.1 Re-run the full workspace tests, all-feature Clippy, formatting, and strict OpenSpec validation after applying the selected changes.
-- [ ] 4.2 Run focused packaged notification acceptance on the final implementation, including fallback-first display, plain-text title update, click behavior, persistence, and shutdown.
-- [ ] 4.3 Record actual results and remaining limitations; do not delete the negative-control protections or configuration lifecycle safeguards as part of this refactor.
+- [x] 4.1 Re-run the full workspace tests, all-feature Clippy, formatting, and strict OpenSpec validation after applying the selected changes.
+- [x] 4.2 Run focused packaged notification acceptance on the final implementation, including fallback-first display, plain-text title update, and click behavior; retain the persistence and shutdown regressions in the workspace suite.
+- [x] 4.3 Record actual results and remaining limitations; do not delete the negative-control protections or configuration lifecycle safeguards as part of this refactor.
