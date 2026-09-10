@@ -1,0 +1,123 @@
+{
+  "base_revision": "8bbac24964cd3f3e3ba4a71c29396968b1442fb6",
+  "platform": "Darwin arm64",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--no-fail-fast",
+    "-p",
+    "lili-actions",
+    "-p",
+    "lili-app-state",
+    "-p",
+    "lili-session",
+    "--lib"
+  ],
+  "harness_sha256": "205e5534f686de2d836470ffdcea88287dd7d6efd2c13ed88b5aba5622ec86fe",
+  "results": [
+    {
+      "variant": "baseline",
+      "exit_code": 0,
+      "seconds": 24.239,
+      "passed": 183,
+      "failed_tests": [],
+      "production_line_delta": 0,
+      "compile_error": false,
+      "clippy_exit_code": 0
+    },
+    {
+      "variant": "smaller_key",
+      "exit_code": 0,
+      "seconds": 21.385,
+      "passed": 183,
+      "failed_tests": [],
+      "production_line_delta": 0,
+      "compile_error": false
+    },
+    {
+      "variant": "single_option",
+      "exit_code": 0,
+      "seconds": 20.471,
+      "passed": 183,
+      "failed_tests": [],
+      "production_line_delta": -5,
+      "compile_error": false
+    },
+    {
+      "variant": "single_index",
+      "exit_code": 0,
+      "seconds": 18.368,
+      "passed": 183,
+      "failed_tests": [],
+      "production_line_delta": 0,
+      "compile_error": false
+    },
+    {
+      "variant": "combined",
+      "exit_code": 0,
+      "seconds": 17.769,
+      "passed": 183,
+      "failed_tests": [],
+      "production_line_delta": -5,
+      "compile_error": false,
+      "clippy_exit_code": 101
+    },
+    {
+      "variant": "no_debounce",
+      "exit_code": 101,
+      "seconds": 18.475,
+      "passed": 182,
+      "failed_tests": [
+        "title_runtime::tests::ablation_failed_results_obey_per_session_debounce"
+      ],
+      "production_line_delta": -3,
+      "compile_error": false
+    },
+    {
+      "variant": "no_coalescing",
+      "exit_code": 101,
+      "seconds": 17.68,
+      "passed": 182,
+      "failed_tests": [
+        "title_runtime::tests::requests_coalesce_cache_and_select_in_file_order"
+      ],
+      "production_line_delta": 0,
+      "compile_error": false
+    },
+    {
+      "variant": "no_incarnation",
+      "exit_code": 101,
+      "seconds": 18.162,
+      "passed": 182,
+      "failed_tests": [
+        "reducer::tests::title_results_cannot_update_a_recreated_notification"
+      ],
+      "production_line_delta": -1,
+      "compile_error": false
+    },
+    {
+      "variant": "no_publication_join",
+      "exit_code": 101,
+      "seconds": 17.237,
+      "passed": 182,
+      "failed_tests": [
+        "title::tests::shutdown_waits_for_title_publication_and_rejects_new_work"
+      ],
+      "production_line_delta": -2,
+      "compile_error": false
+    },
+    {
+      "variant": "no_prefilter",
+      "exit_code": 101,
+      "seconds": 17.488,
+      "passed": 182,
+      "failed_tests": [
+        "title::tests::ablation_unmatched_notification_schedules_no_worker"
+      ],
+      "production_line_delta": -3,
+      "compile_error": false
+    }
+  ]
+}

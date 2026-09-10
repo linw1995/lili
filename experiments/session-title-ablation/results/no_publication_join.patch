@@ -1,0 +1,13 @@
+--- a/lili-app-state/src/title.rs
++++ b/lili-app-state/src/title.rs
+@@ -29,9 +29,7 @@
+             supervisor.shutdown_titles().await;
+         }
+         let pending = std::mem::take(&mut self.title_dispatch.lock().await.pending);
+-        for task in pending.into_values() {
+-            let _ = task.worker.await;
+-        }
++        drop(pending);
+     }
+ 
+     pub(super) async fn schedule_notification_titles(

@@ -1,0 +1,11 @@
+--- a/lili-actions/src/title_runtime.rs
++++ b/lili-actions/src/title_runtime.rs
+@@ -101,7 +101,7 @@
+         if let Some(title) = state.cached(&key) {
+             return Some(title);
+         }
+-        let mut receiver = if let Some(pending) = state.pending.get(&key) {
++        let mut receiver = if let Some(pending) = None::<&Pending> {
+             pending.receiver.clone()
+         } else {
+             if state.pending.len() >= CAPACITY {

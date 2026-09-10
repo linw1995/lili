@@ -1,0 +1,12 @@
+--- a/lili-app-state/src/title.rs
++++ b/lili-app-state/src/title.rs
+@@ -66,9 +66,6 @@
+                 || event.as_ref().is_some_and(|(provider, id)| {
+                     &notification.provider != provider || &notification.event_id != id
+                 })
+-                || supervisor
+-                    .title_action_id(notification.provider.as_str())
+-                    .is_none()
+                 || dispatch.pending.contains_key(&notification.id)
+                 || dispatch.pending.len() >= MAX_PENDING_TITLES
+             {
