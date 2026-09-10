@@ -2,6 +2,7 @@ mod execution;
 mod loading;
 mod supervisor;
 mod title;
+mod title_runtime;
 
 pub use title::{SessionTitleRequest, TitleResponseError, decode_title_response};
 

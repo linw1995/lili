@@ -15,8 +15,8 @@ use tokio::{
 };
 
 use crate::{
-    ConcurrencyMode, InteractionContextV1, InteractionTrigger, LoadedAction, LoadedActions,
-    MAX_GLOBAL_CONCURRENCY, spawn_action,
+    ActionTrigger, ConcurrencyMode, InteractionContextV1, LoadedAction, LoadedActions,
+    MAX_GLOBAL_CONCURRENCY, SessionTitleRequest,
 };
 
 pub const MAX_ACTION_OUTPUT_BYTES: usize = 16 * 1024;
@@ -36,6 +36,7 @@ pub enum ActionExecutionOutcome {
     Saturated,
     NotMatched,
     UnknownAction,
+    InvalidResponse,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -62,7 +63,7 @@ impl CapturedOutput {
 pub struct ActionExecutionResult {
     pub action_id: String,
     pub interaction_id: uuid::Uuid,
-    pub trigger: InteractionTrigger,
+    pub trigger: ActionTrigger,
     pub event_id: Option<String>,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -76,7 +77,7 @@ pub struct ActionExecutionResult {
 #[serde(rename_all = "camelCase")]
 pub struct ActionAuditEntry {
     pub action_id: String,
-    pub trigger: InteractionTrigger,
+    pub trigger: ActionTrigger,
     pub event_id: Option<String>,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -109,18 +110,15 @@ impl From<&ActionExecutionResult> for ActionAuditEntry {
 impl ActionExecutionResult {
     fn immediate(
         action_id: impl Into<String>,
-        context: &InteractionContextV1,
+        context: &impl ExecutionInput,
         outcome: ActionExecutionOutcome,
     ) -> Self {
         let now_ms = unix_time_ms();
         Self {
             action_id: action_id.into(),
-            interaction_id: context.interaction_id,
-            trigger: context.trigger,
-            event_id: context
-                .notification
-                .as_ref()
-                .map(|notification| notification.event_id.clone()),
+            interaction_id: context.request_id(),
+            trigger: context.action_trigger(),
+            event_id: context.event_id(),
             started_at_ms: now_ms,
             finished_at_ms: now_ms,
             outcome,
@@ -131,10 +129,45 @@ impl ActionExecutionResult {
     }
 }
 
+pub(crate) trait ExecutionInput: Serialize {
+    fn request_id(&self) -> uuid::Uuid;
+    fn action_trigger(&self) -> ActionTrigger;
+    fn event_id(&self) -> Option<String>;
+}
+
+impl ExecutionInput for InteractionContextV1 {
+    fn request_id(&self) -> uuid::Uuid {
+        self.interaction_id
+    }
+    fn action_trigger(&self) -> ActionTrigger {
+        self.trigger.into()
+    }
+    fn event_id(&self) -> Option<String> {
+        self.notification
+            .as_ref()
+            .map(|value| value.event_id.clone())
+    }
+}
+
+impl ExecutionInput for SessionTitleRequest {
+    fn request_id(&self) -> uuid::Uuid {
+        self.request_id
+    }
+    fn action_trigger(&self) -> ActionTrigger {
+        ActionTrigger::SessionTitle
+    }
+    fn event_id(&self) -> Option<String> {
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct ActionSupervisor {
-    actions: Arc<BTreeMap<String, Arc<ActionRuntime>>>,
-    global: Arc<Semaphore>,
+    pub(crate) actions: Arc<BTreeMap<String, Arc<ActionRuntime>>>,
+    pub(crate) global: Arc<Semaphore>,
+    pub(crate) title_order: Arc<Vec<String>>,
+    pub(crate) titles: Arc<Mutex<crate::title_runtime::TitleState>>,
+    pub(crate) shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     audit: Arc<Mutex<VecDeque<ActionAuditEntry>>>,
 }
 
@@ -143,6 +176,15 @@ impl ActionSupervisor {
         if !(1..=MAX_GLOBAL_CONCURRENCY).contains(&global_concurrency) {
             return None;
         }
+        let title_order = Arc::new(
+            actions
+                .enabled()
+                .iter()
+                .filter(|action| action.trigger() == ActionTrigger::SessionTitle)
+                .map(|action| action.id().to_owned())
+                .collect(),
+        );
+        let (shutdown, _) = tokio::sync::watch::channel(false);
         let actions = actions
             .enabled()
             .iter()
@@ -154,6 +196,9 @@ impl ActionSupervisor {
             .collect();
         Some(Self {
             actions: Arc::new(actions),
+            title_order,
+            titles: Arc::new(Mutex::new(crate::title_runtime::TitleState::default())),
+            shutdown: Arc::new(shutdown),
             global: Arc::new(Semaphore::new(global_concurrency)),
             audit: Arc::new(Mutex::new(VecDeque::with_capacity(
                 MAX_ACTION_AUDIT_ENTRIES,
@@ -238,7 +283,7 @@ impl ActionSupervisor {
         run_action(&runtime.action, context).await
     }
 
-    async fn record_audit(&self, result: &ActionExecutionResult) {
+    pub(crate) async fn record_audit(&self, result: &ActionExecutionResult) {
         let mut audit = self.audit.lock().await;
         if audit.len() == MAX_ACTION_AUDIT_ENTRIES {
             audit.pop_front();
@@ -247,10 +292,10 @@ impl ActionSupervisor {
     }
 }
 
-struct ActionRuntime {
-    action: LoadedAction,
+pub(crate) struct ActionRuntime {
+    pub(crate) action: LoadedAction,
     admission: Arc<Semaphore>,
-    running: Arc<Semaphore>,
+    pub(crate) running: Arc<Semaphore>,
     last_accepted: Mutex<Option<Instant>>,
 }
 
@@ -270,7 +315,7 @@ impl ActionRuntime {
         }
     }
 
-    fn admit(&self) -> Option<OwnedSemaphorePermit> {
+    pub(crate) fn admit(&self) -> Option<OwnedSemaphorePermit> {
         self.admission.clone().try_acquire_owned().ok()
     }
 
@@ -311,12 +356,12 @@ fn matches_context(action: &LoadedAction, context: &InteractionContextV1) -> boo
                 .is_some_and(|project| filters.project_labels.contains(project)))
 }
 
-async fn run_action(
+pub(crate) async fn run_action(
     action: &LoadedAction,
-    context: &InteractionContextV1,
+    context: &impl ExecutionInput,
 ) -> ActionExecutionResult {
     let started_at_ms = unix_time_ms();
-    let result = spawn_action(action, context).await;
+    let result = crate::execution::spawn_input(action, context).await;
     let Ok(mut spawned) = result else {
         return completed_result(
             action,
@@ -378,7 +423,7 @@ async fn run_action(
 
 fn completed_result(
     action: &LoadedAction,
-    context: &InteractionContextV1,
+    context: &impl ExecutionInput,
     started_at_ms: u64,
     outcome: ActionExecutionOutcome,
     exit_code: Option<i32>,
@@ -387,12 +432,9 @@ fn completed_result(
 ) -> ActionExecutionResult {
     ActionExecutionResult {
         action_id: action.id().to_owned(),
-        interaction_id: context.interaction_id,
-        trigger: context.trigger,
-        event_id: context
-            .notification
-            .as_ref()
-            .map(|notification| notification.event_id.clone()),
+        interaction_id: context.request_id(),
+        trigger: context.action_trigger(),
+        event_id: context.event_id(),
         started_at_ms,
         finished_at_ms: unix_time_ms(),
         outcome,

@@ -84,6 +84,13 @@ pub async fn spawn_action(
     action: &LoadedAction,
     context: &InteractionContextV1,
 ) -> Result<SpawnedAction, ActionSpawnError> {
+    spawn_input(action, context).await
+}
+
+pub(crate) async fn spawn_input<T: serde::Serialize>(
+    action: &LoadedAction,
+    context: &T,
+) -> Result<SpawnedAction, ActionSpawnError> {
     let input = serde_json::to_vec(context).map_err(ActionSpawnError::Encode)?;
     if input.len() > MAX_INTERACTION_CONTEXT_BYTES {
         return Err(ActionSpawnError::InputTooLarge);

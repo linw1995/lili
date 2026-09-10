@@ -6,9 +6,9 @@
 
 ## 2. Execution and Scheduling
 
-- [ ] 2.1 Refactor shared process primitives to accept bounded query input while preserving direct argv, minimal environment, timeout, output bounds, process-tree cleanup, and global accounting.
+- [x] 2.1 Refactor shared process primitives to accept bounded query input while preserving direct argv, minimal environment, timeout, output bounds, process-tree cleanup, and global accounting.
 - [ ] 2.2 Add native scheduling after unread-notification publication and restoration, deterministic selection, per-key debounce, in-flight coalescing, and bounded queue/reject behavior.
-- [ ] 2.3 Implement the 256-entry success-only LRU cache with hit promotion, capacity eviction, configuration invalidation, and no TTL; keep null/empty results and failures uncached and implement shutdown cancellation.
+- [x] 2.3 Implement the 256-entry success-only LRU cache with hit promotion, capacity eviction, configuration invalidation, and no TTL; keep null/empty results and failures uncached and implement shutdown cancellation.
 - [ ] 2.4 Bind lookup consumers to notification IDs and guard application with unread state, Session identity, latest-request tokens, selected action, and configuration generation; discard obsolete results.
 
 ## 3. Presentation and Diagnostics

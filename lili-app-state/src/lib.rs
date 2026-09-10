@@ -617,7 +617,8 @@ impl AppState {
             ActionExecutionOutcome::Succeeded
             | ActionExecutionOutcome::Debounced
             | ActionExecutionOutcome::NotMatched
-            | ActionExecutionOutcome::UnknownAction => return false,
+            | ActionExecutionOutcome::UnknownAction
+            | ActionExecutionOutcome::InvalidResponse => return false,
         };
         self.set_action_feedback(feedback).await;
         true
@@ -1689,7 +1690,7 @@ mod tests {
             let result = ActionExecutionResult {
                 action_id: "open-session".to_owned(),
                 interaction_id: Uuid::nil(),
-                trigger: InteractionTrigger::NotificationActivate,
+                trigger: lili_actions::ActionTrigger::NotificationActivate,
                 event_id: Some("event-action-feedback".to_owned()),
                 started_at_ms: 11,
                 finished_at_ms: 12 + index as u64,
@@ -1731,7 +1732,7 @@ mod tests {
         let result = ActionExecutionResult {
             action_id: "open-session".to_owned(),
             interaction_id: context.interaction_id,
-            trigger: context.trigger,
+            trigger: context.trigger.into(),
             event_id: Some("event-action-feedback".to_owned()),
             started_at_ms: 11,
             finished_at_ms: 20,
