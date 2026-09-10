@@ -333,6 +333,9 @@ fn validate_fixture_presentation(presentation: &PetPresentationState) -> Result<
         if notification.activation_id.is_empty()
             || notification.activation_id.len() > MAX_FIXTURE_TEXT_BYTES
             || notification.summary.len() > MAX_FIXTURE_TEXT_BYTES
+            || notification.title.as_ref().is_some_and(|title| {
+                title.chars().count() > 256 || title.chars().any(char::is_control)
+            })
             || notification
                 .project_label
                 .as_ref()

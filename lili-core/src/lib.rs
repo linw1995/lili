@@ -92,6 +92,8 @@ impl PetNotificationKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetNotificationPresentation {
+    #[serde(default)]
+    pub title: Option<String>,
     pub activation_id: String,
     pub kind: PetNotificationKind,
     pub project_label: Option<String>,

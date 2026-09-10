@@ -315,6 +315,12 @@ pub enum NotificationState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Notification {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_notification_title"
+    )]
+    pub title: Option<String>,
     pub id: NotificationId,
     pub provider: ProviderId,
     pub event_id: EventId,
@@ -325,6 +331,18 @@ pub struct Notification {
     pub occurred_at_ms: u64,
     pub project: Option<DisplayProjectContext>,
     pub summary: Option<DisplaySummary>,
+}
+
+fn deserialize_notification_title<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let title = Option::<String>::deserialize(deserializer)?;
+    if title.as_ref().is_some_and(|title| {
+        title.is_empty() || title.chars().count() > 256 || title.chars().any(char::is_control)
+    }) {
+        return Err(serde::de::Error::custom("invalid notification title"));
+    }
+    Ok(title)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

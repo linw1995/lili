@@ -79,6 +79,8 @@ pub struct ActionAuditEntry {
     pub action_id: String,
     pub trigger: ActionTrigger,
     pub event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<uuid::Uuid>,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
     pub outcome: ActionExecutionOutcome,
@@ -95,6 +97,8 @@ impl From<&ActionExecutionResult> for ActionAuditEntry {
             action_id: result.action_id.clone(),
             trigger: result.trigger,
             event_id: result.event_id.clone(),
+            request_id: (result.trigger == ActionTrigger::SessionTitle)
+                .then_some(result.interaction_id),
             started_at_ms: result.started_at_ms,
             finished_at_ms: result.finished_at_ms,
             outcome: result.outcome,

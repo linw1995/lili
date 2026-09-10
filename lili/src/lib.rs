@@ -433,7 +433,7 @@ fn configure_native_runtime(
     if !enabled {
         return None;
     }
-    configure_native_actions(application_paths, state);
+    configure_native_actions(application_paths, state, state_store.clone());
     match start_native_ingestion(application_paths, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
@@ -1192,6 +1192,7 @@ fn run_desktop_event_loop(
             macos_panel::hide_dock_icon();
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            tauri::async_runtime::block_on(state.shutdown_title_actions());
             if !smoke {
                 persist_desktop_state(app, &state, state_store.as_ref());
             }
@@ -1221,13 +1222,20 @@ fn persist_desktop_state(app: &tauri::AppHandle, state: &AppState, store: Option
     }
 }
 
-fn configure_native_actions(application_paths: &ApplicationPaths, state: &AppState) {
+fn configure_native_actions(
+    application_paths: &ApplicationPaths,
+    state: &AppState,
+    store: Option<AppStateStore>,
+) {
     let context = ActionLoadContext::for_application(application_paths.root());
     let loaded = load_actions_file(&application_paths.actions_path(), &context);
     let enabled_count = loaded.enabled().len();
     let diagnostic_count = loaded.effective().diagnostics.len();
-    let configured =
-        tauri::async_runtime::block_on(state.configure_actions(loaded, DEFAULT_GLOBAL_CONCURRENCY));
+    let configured = tauri::async_runtime::block_on(state.configure_actions_with_persistence(
+        loaded,
+        DEFAULT_GLOBAL_CONCURRENCY,
+        store,
+    ));
     if configured {
         diagnostics::info_with_counts(
             "actions",

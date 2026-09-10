@@ -1,5 +1,6 @@
 mod ingestion;
 mod persistence;
+mod title;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -76,6 +77,7 @@ pub struct AppState {
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
+    title_dispatch: Arc<Mutex<title::TitleDispatch>>,
     clock_origin: Instant,
 }
 
@@ -273,6 +275,7 @@ impl AppState {
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
             dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
+            title_dispatch: Arc::new(Mutex::new(title::TitleDispatch::default())),
             clock_origin: Instant::now(),
         }
     }
@@ -449,6 +452,7 @@ impl AppState {
     }
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        let title_event = (event.provider.clone(), event.event_id.clone());
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let (outcome, accepted_at_ms) = {
             let mut reducer = self.session_reducer.lock().await;
@@ -458,6 +462,8 @@ impl AppState {
         };
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
+            self.schedule_notification_titles(Some(title_event), None)
+                .await;
             if starts_activity_reminder {
                 self.schedule_activity_reminder_expiry(accepted_at_ms);
             }
@@ -470,6 +476,7 @@ impl AppState {
         event: NormalizedSessionEvent,
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
+        let title_event = (event.provider.clone(), event.event_id.clone());
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
@@ -495,6 +502,8 @@ impl AppState {
         drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
+            self.schedule_notification_titles(Some(title_event), Some(store.clone()))
+                .await;
             if let Some(started_at_ms) = activity_reminder_started_at_ms {
                 self.schedule_activity_reminder_expiry(started_at_ms);
             }
@@ -675,16 +684,40 @@ impl AppState {
         loaded: LoadedActions,
         global_concurrency: usize,
     ) -> bool {
+        self.configure_actions_with_persistence(loaded, global_concurrency, None)
+            .await
+    }
+
+    pub async fn configure_actions_with_persistence(
+        &self,
+        loaded: LoadedActions,
+        global_concurrency: usize,
+        store: Option<AppStateStore>,
+    ) -> bool {
         let effective = loaded.effective().clone();
         let summaries = loaded.summaries();
         let supervisor = ActionSupervisor::new(loaded, global_concurrency);
         let configured = supervisor.is_some();
-        *self.action_runtime.write().await = ActionRuntimeState {
-            supervisor,
-            effective,
+        let old = {
+            let mut runtime = self.action_runtime.write().await;
+            let mut dispatch = self.title_dispatch.lock().await;
+            for (_, task) in dispatch.pending.drain() {
+                task.worker.abort();
+            }
+            std::mem::replace(
+                &mut *runtime,
+                ActionRuntimeState {
+                    supervisor,
+                    effective,
+                },
+            )
         };
+        if let Some(supervisor) = old.supervisor {
+            supervisor.shutdown_titles().await;
+        }
         self.snapshot.write().await.actions = summaries;
         self.publish_presentation().await;
+        self.schedule_notification_titles(None, store).await;
         configured
     }
 
@@ -897,6 +930,7 @@ fn presentation_from_view(
         .iter()
         .filter(|notification| notification.state == NotificationState::Unread)
         .map(|notification| PetNotificationPresentation {
+            title: notification.title.clone(),
             activation_id: notification.id.as_str().to_owned(),
             kind: match notification.kind {
                 NotificationKind::Attention => PetNotificationKind::Attention,

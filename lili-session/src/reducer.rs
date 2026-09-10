@@ -257,6 +257,26 @@ impl SessionReducer {
         }
     }
 
+    pub fn update_notification_title(&mut self, original: &Notification, title: String) -> bool {
+        let Some(notification) = self.notifications.get_mut(&original.id) else {
+            return false;
+        };
+        if notification.state != NotificationState::Unread
+            || notification.provider != original.provider
+            || notification.session_id != original.session_id
+            || notification.event_id != original.event_id
+            || notification.title.as_ref() == Some(&title)
+            || title.is_empty()
+            || title.chars().count() > 256
+            || title.chars().any(char::is_control)
+        {
+            return false;
+        }
+        notification.title = Some(title);
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
     pub fn persistent_state(&self) -> SessionReducerState {
         let unread_notification_priorities = self
             .notifications
@@ -526,6 +546,7 @@ impl SessionReducer {
         self.notifications
             .entry(id.clone())
             .or_insert_with(|| Notification {
+                title: None,
                 id,
                 provider: event.provider.clone(),
                 event_id: event.event_id.clone(),

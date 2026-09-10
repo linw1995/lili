@@ -121,6 +121,7 @@ impl ActionSupervisor {
                 let work = async {
                     let _action = runtime.running.clone().acquire_owned().await.ok()?;
                     let _global = supervisor.global.clone().acquire_owned().await.ok()?;
+                    let started = Instant::now();
                     let mut result = crate::supervisor::run_action(&runtime.action, &request).await;
                     let title = if result.outcome == ActionExecutionOutcome::Succeeded {
                         match decode_title_response(result.stdout.bytes()) {
@@ -133,6 +134,7 @@ impl ActionSupervisor {
                     } else {
                         None
                     };
+                    log_failure(&result, started.elapsed());
                     supervisor.record_audit(&result).await;
                     title
                 };
@@ -146,10 +148,10 @@ impl ActionSupervisor {
                     }
                 };
                 let mut state = supervisor.titles.lock().await;
-                if !*supervisor.shutdown.borrow() {
-                    if let Some(title) = &title {
-                        state.insert(worker_key.clone(), title.clone());
-                    }
+                if !*supervisor.shutdown.borrow()
+                    && let Some(title) = &title
+                {
+                    state.insert(worker_key.clone(), title.clone());
                 }
                 sender.send_replace(Some(title));
                 state.pending.remove(&worker_key);
@@ -173,6 +175,27 @@ impl ActionSupervisor {
             }
         }
     }
+}
+
+fn log_failure(result: &crate::ActionExecutionResult, duration: Duration) {
+    let failure_kind = match result.outcome {
+        ActionExecutionOutcome::SpawnFailed => "spawn_failed",
+        ActionExecutionOutcome::IoFailed => "io_failed",
+        ActionExecutionOutcome::TimedOut => "timed_out",
+        ActionExecutionOutcome::NonZeroExit => "nonzero_exit",
+        ActionExecutionOutcome::OutputOverflow => "output_overflow",
+        ActionExecutionOutcome::InvalidResponse => "invalid_response",
+        _ => return,
+    };
+    tracing::warn!(
+        action_id = %result.action_id,
+        request_id = %result.interaction_id,
+        trigger = "session_title",
+        failure_kind,
+        duration_ms = duration.as_millis() as u64,
+        exit_code = result.exit_code,
+        "session title execution failed"
+    );
 }
 
 #[cfg(test)]
@@ -245,6 +268,76 @@ mod tests {
         supervisor.shutdown_titles().await;
         assert_eq!(worker.await.unwrap(), None);
         assert!(supervisor.titles.lock().await.pending.is_empty());
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn warnings_have_bounded_metadata_and_only_failure_outcomes() {
+        let buffer = LogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            for outcome in [
+                ActionExecutionOutcome::SpawnFailed,
+                ActionExecutionOutcome::IoFailed,
+                ActionExecutionOutcome::TimedOut,
+                ActionExecutionOutcome::NonZeroExit,
+                ActionExecutionOutcome::OutputOverflow,
+                ActionExecutionOutcome::InvalidResponse,
+                ActionExecutionOutcome::Succeeded,
+                ActionExecutionOutcome::Debounced,
+                ActionExecutionOutcome::Saturated,
+                ActionExecutionOutcome::NotMatched,
+                ActionExecutionOutcome::UnknownAction,
+            ] {
+                log_failure(
+                    &crate::ActionExecutionResult {
+                        action_id: "title-action".into(),
+                        interaction_id: uuid::Uuid::nil(),
+                        trigger: crate::ActionTrigger::SessionTitle,
+                        event_id: None,
+                        started_at_ms: 0,
+                        finished_at_ms: 7,
+                        outcome,
+                        exit_code: Some(9),
+                        stdout: crate::CapturedOutput::default(),
+                        stderr: crate::CapturedOutput::default(),
+                    },
+                    Duration::from_millis(7),
+                );
+            }
+        });
+        let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.lines().count(), 6);
+        for line in output.lines() {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(event["level"], "WARN");
+            let fields = &event["fields"];
+            assert_eq!(fields["action_id"], "title-action");
+            assert_eq!(fields["duration_ms"], 7);
+            assert_eq!(fields["exit_code"], 9);
+            assert_eq!(fields["request_id"], uuid::Uuid::nil().to_string());
+            assert!(fields.get("failure_kind").is_some());
+            for field in ["title", "stdout", "stderr", "request", "environment"] {
+                assert!(fields.get(field).is_none());
+            }
+        }
     }
 
     fn key(index: usize) -> Key {

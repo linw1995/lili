@@ -7,17 +7,17 @@
 ## 2. Execution and Scheduling
 
 - [x] 2.1 Refactor shared process primitives to accept bounded query input while preserving direct argv, minimal environment, timeout, output bounds, process-tree cleanup, and global accounting.
-- [ ] 2.2 Add native scheduling after unread-notification publication and restoration, deterministic selection, per-key debounce, in-flight coalescing, and bounded queue/reject behavior.
+- [x] 2.2 Add native scheduling after unread-notification publication and restoration, deterministic selection, per-key debounce, in-flight coalescing, and bounded queue/reject behavior.
 - [x] 2.3 Implement the 256-entry success-only LRU cache with hit promotion, capacity eviction, configuration invalidation, and no TTL; keep null/empty results and failures uncached and implement shutdown cancellation.
-- [ ] 2.4 Bind lookup consumers to notification IDs and guard application with unread state, Session identity, latest-request tokens, selected action, and configuration generation; discard obsolete results.
+- [x] 2.4 Bind lookup consumers to notification IDs and guard application with unread state, Session identity, latest-request tokens, selected action, and configuration generation; discard obsolete results.
 
 ## 3. Presentation and Diagnostics
 
-- [ ] 3.1 Directly update optional notification titles and retain them through existing notification persistence with backward-compatible missing-field defaults; cache eviction, empty results, and failures must preserve applied titles, summaries, ordering, lifecycle, acknowledgement, and immutable interaction snapshots.
-- [ ] 3.2 Render title text safely across native and browser surfaces and publish only meaningful visible changes.
-- [ ] 3.3 Extend bounded diagnostics for query request identity and outcomes without raw streams or title content; keep query completion separate from click feedback.
+- [x] 3.1 Directly update optional notification titles and retain them through existing notification persistence with backward-compatible missing-field defaults; cache eviction, empty results, and failures must preserve applied titles, summaries, ordering, lifecycle, acknowledgement, and immutable interaction snapshots.
+- [x] 3.2 Render title text safely across native and browser surfaces and publish only meaningful visible changes.
+- [x] 3.3 Extend bounded diagnostics for query request identity and outcomes without raw streams or title content; keep query completion separate from click feedback.
 
-- [ ] 3.4 Emit structured runtime `warn` events once per failed execution attempt with action/request identity, trigger, categorized failure, duration, and available exit code; exclude raw output, title text, request bodies, environment values, and unfiltered error strings.
+- [x] 3.4 Emit structured runtime `warn` events once per failed execution attempt with action/request identity, trigger, categorized failure, duration, and available exit code; exclude raw output, title text, request bodies, environment values, and unfiltered error strings.
 
 ## 4. Verification and Documentation
 

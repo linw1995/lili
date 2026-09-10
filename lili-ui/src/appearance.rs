@@ -704,6 +704,7 @@ fn preview_notification(scene: PreviewScene) -> Option<PetNotificationPresentati
         PreviewScene::Idle | PreviewScene::Running | PreviewScene::Click => return None,
     };
     Some(PetNotificationPresentation {
+        title: None,
         activation_id: format!("appearance-preview-{}", scene_token(scene)),
         kind,
         project_label: Some(project_label.to_owned()),
