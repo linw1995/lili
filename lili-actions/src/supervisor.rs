@@ -364,10 +364,26 @@ pub(crate) async fn run_action(
     action: &LoadedAction,
     context: &impl ExecutionInput,
 ) -> ActionExecutionResult {
+    run_action_cancellable(action, context, None)
+        .await
+        .expect("interaction execution is not cancelled")
+}
+
+pub(crate) async fn run_action_cancellable(
+    action: &LoadedAction,
+    context: &impl ExecutionInput,
+    mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Option<ActionExecutionResult> {
+    if cancellation
+        .as_ref()
+        .is_some_and(|receiver| *receiver.borrow())
+    {
+        return None;
+    }
     let started_at_ms = unix_time_ms();
     let result = crate::execution::spawn_input(action, context).await;
     let Ok(mut spawned) = result else {
-        return completed_result(
+        return Some(completed_result(
             action,
             context,
             started_at_ms,
@@ -375,7 +391,7 @@ pub(crate) async fn run_action(
             None,
             CapturedOutput::default(),
             CapturedOutput::default(),
-        );
+        ));
     };
     let stdout = spawned.child_mut().stdout.take();
     let stderr = spawned.child_mut().stderr.take();
@@ -383,23 +399,34 @@ pub(crate) async fn run_action(
     let stdout_task = tokio::spawn(capture_output(stdout));
     let stderr_task = tokio::spawn(capture_output(stderr));
     let timeout = Duration::from_millis(action.timeout_ms());
-    let status = tokio::time::timeout(timeout, spawned.child_mut().wait()).await;
-
+    let status = tokio::select! {
+        biased;
+        _ = wait_for_cancellation(&mut cancellation) => None,
+        status = tokio::time::timeout(timeout, spawned.child_mut().wait()) => Some(status),
+    };
+    let cancelled = status.is_none();
     let (timed_out, wait_failed, status) = match status {
-        Ok(Ok(status)) => (false, false, Some(status)),
-        Ok(Err(_)) => {
+        Some(Ok(Ok(status))) => (false, false, Some(status)),
+        Some(Ok(Err(_))) => {
             let _ = spawned.terminate_tree().await;
             (false, true, None)
         }
-        Err(_) => {
+        Some(Err(_)) => {
             let _ = spawned.terminate_tree().await;
             (true, false, None)
+        }
+        None => {
+            let _ = spawned.terminate_tree().await;
+            (false, false, None)
         }
     };
     spawned.mark_finished();
     let stdin_failed = join_stdin(stdin_task).await.is_none();
     let stdout = join_capture(stdout_task).await;
     let stderr = join_capture(stderr_task).await;
+    if cancelled {
+        return None;
+    }
     let capture_failed = stdout.is_none() || stderr.is_none();
     let stdout = stdout.unwrap_or_default();
     let stderr = stderr.unwrap_or_default();
@@ -414,7 +441,7 @@ pub(crate) async fn run_action(
     } else {
         ActionExecutionOutcome::NonZeroExit
     };
-    completed_result(
+    Some(completed_result(
         action,
         context,
         started_at_ms,
@@ -422,7 +449,16 @@ pub(crate) async fn run_action(
         status.as_ref().and_then(ExitStatus::code),
         stdout,
         stderr,
-    )
+    ))
+}
+
+async fn wait_for_cancellation(cancellation: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(receiver) = cancellation else {
+        return std::future::pending().await;
+    };
+    if !*receiver.borrow() {
+        let _ = receiver.changed().await;
+    }
 }
 
 fn completed_result(

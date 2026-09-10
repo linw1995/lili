@@ -118,34 +118,49 @@ impl ActionSupervisor {
             let worker = tokio::spawn(async move {
                 let _admission = admission;
                 let mut shutdown = supervisor.shutdown.subscribe();
-                let work = async {
-                    let _action = runtime.running.clone().acquire_owned().await.ok()?;
-                    let _global = supervisor.global.clone().acquire_owned().await.ok()?;
-                    let started = Instant::now();
-                    let mut result = crate::supervisor::run_action(&runtime.action, &request).await;
-                    let title = if result.outcome == ActionExecutionOutcome::Succeeded {
-                        match decode_title_response(result.stdout.bytes()) {
-                            Ok(title) => title,
-                            Err(_) => {
-                                result.outcome = ActionExecutionOutcome::InvalidResponse;
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    log_failure(&result, started.elapsed());
-                    supervisor.record_audit(&result).await;
-                    title
+                let slots = async {
+                    Some((
+                        runtime.running.clone().acquire_owned().await.ok()?,
+                        supervisor.global.clone().acquire_owned().await.ok()?,
+                    ))
                 };
-                let title = if *shutdown.borrow() {
+                let slots = if *shutdown.borrow() {
                     None
                 } else {
                     tokio::select! {
                         biased;
                         _ = shutdown.changed() => None,
-                        title = work => title,
+                        slots = slots => slots,
                     }
+                };
+                let title = if let Some((_action, _global)) = slots {
+                    let started = Instant::now();
+                    if let Some(mut result) = crate::supervisor::run_action_cancellable(
+                        &runtime.action,
+                        &request,
+                        Some(shutdown.clone()),
+                    )
+                    .await
+                    {
+                        let title = if result.outcome == ActionExecutionOutcome::Succeeded {
+                            match decode_title_response(result.stdout.bytes()) {
+                                Ok(title) => title,
+                                Err(_) => {
+                                    result.outcome = ActionExecutionOutcome::InvalidResponse;
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        log_failure(&result, started.elapsed());
+                        supervisor.record_audit(&result).await;
+                        title
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 };
                 let mut state = supervisor.titles.lock().await;
                 if !*supervisor.shutdown.borrow()
@@ -268,6 +283,43 @@ mod tests {
         supervisor.shutdown_titles().await;
         assert_eq!(worker.await.unwrap(), None);
         assert!(supervisor.titles.lock().await.pending.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_waits_until_the_spawned_child_is_reaped() {
+        let path = std::env::temp_dir().join(format!("title-child-{}", uuid::Uuid::new_v4()));
+        let supervisor = supervisor(&format!("echo $$ > '{}'; exec sleep 30", path.display()), 0);
+        let worker = {
+            let supervisor = supervisor.clone();
+            tokio::spawn(async move { supervisor.resolve_title("example", "one").await })
+        };
+        let pid = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&path)
+                    && let Ok(pid) = contents.trim().parse::<libc::pid_t>()
+                {
+                    break pid;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+        supervisor.shutdown_titles().await;
+        assert_eq!(worker.await.unwrap(), None);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert!(supervisor.audit_snapshot().await.is_empty());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[derive(Clone, Default)]
