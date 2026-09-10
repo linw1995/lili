@@ -409,3 +409,25 @@ test("pet preview supports idle interactions and isolated dragging in every scen
   expect(requests).toEqual([]);
   expect(await page.evaluate(() => window.__previewNativeCalls)).toEqual([]);
 });
+
+
+test("scaled pet preview keeps gaze centered and follows both horizontal directions", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await openAppearance(page);
+  const pet = page.locator("#appearance-pet");
+  await pet.scrollIntoViewIfNeeded();
+  const box = await pet.boundingBox();
+  const atlas = page.locator(".appearance-pet-atlas");
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  await page.mouse.move(centerX, centerY);
+  await expect(atlas).toHaveAttribute("data-frame-row", "0");
+  await page.mouse.move(box.x + box.width - 10, centerY);
+  await expect(atlas).toHaveAttribute("data-frame-row", /^(9|10)$/);
+  const rightRow = await atlas.getAttribute("data-frame-row");
+  await page.mouse.move(box.x + 10, centerY);
+  await expect(atlas).toHaveAttribute("data-frame-row", /^(9|10)$/);
+  await expect(atlas).not.toHaveAttribute("data-frame-row", rightRow);
+  await page.mouse.move(centerX, centerY);
+  await expect(atlas).toHaveAttribute("data-frame-row", "0");
+});

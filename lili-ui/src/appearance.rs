@@ -118,6 +118,28 @@ pub(crate) fn install_appearance_selection_boundary() {
 }
 
 #[cfg(feature = "hydrate")]
+fn preview_gaze_offset(event: &web_sys::PointerEvent) -> (f64, f64) {
+    use wasm_bindgen::JsCast;
+
+    event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .map(|target| {
+            let bounds = target.get_bounding_client_rect();
+            // Convert transformed viewport coordinates back to atlas coordinates.
+            (
+                (f64::from(event.client_x()) - bounds.left()) / bounds.width().max(1.0)
+                    * f64::from(lili_pet::CELL_WIDTH)
+                    - super::PET_CENTER_X,
+                (f64::from(event.client_y()) - bounds.top()) / bounds.height().max(1.0)
+                    * f64::from(lili_pet::CELL_HEIGHT)
+                    - super::PET_CENTER_Y,
+            )
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "hydrate")]
 struct AppearanceClock {
     window: web_sys::Window,
     interval_id: i32,
@@ -359,13 +381,13 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                         on:pointermove=move |event| {
                                             #[cfg(feature = "hydrate")]
                                             if event.is_primary() {
-                                                let (x, y) = super::pointer_offset(&event);
+                                                let (gaze_x, gaze_y) = preview_gaze_offset(&event);
                                                 preview.update(|preview| preview.move_to(
                                                     f64::from(event.client_x()),
                                                     f64::from(event.client_y()),
                                                     event.time_stamp().max(0.0) as u64,
-                                                    x - super::PET_CENTER_X,
-                                                    y - super::PET_CENTER_Y,
+                                                    gaze_x,
+                                                    gaze_y,
                                                 ));
                                             }
                                             #[cfg(not(feature = "hydrate"))]
