@@ -78,6 +78,7 @@ pub struct AppState {
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
     title_dispatch: Arc<Mutex<title::TitleDispatch>>,
+    title_lifecycle: Arc<Mutex<()>>,
     clock_origin: Instant,
 }
 
@@ -276,6 +277,7 @@ impl AppState {
             dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
             title_dispatch: Arc::new(Mutex::new(title::TitleDispatch::default())),
+            title_lifecycle: Arc::new(Mutex::new(())),
             clock_origin: Instant::now(),
         }
     }
@@ -694,6 +696,7 @@ impl AppState {
         global_concurrency: usize,
         store: Option<AppStateStore>,
     ) -> bool {
+        let _lifecycle = self.title_lifecycle.lock().await;
         let effective = loaded.effective().clone();
         let summaries = loaded.summaries();
         let supervisor = ActionSupervisor::new(loaded, global_concurrency);
@@ -701,6 +704,7 @@ impl AppState {
         let old = {
             let mut runtime = self.action_runtime.write().await;
             let mut dispatch = self.title_dispatch.lock().await;
+            dispatch.closed = false;
             for (_, task) in dispatch.pending.drain() {
                 task.worker.abort();
             }

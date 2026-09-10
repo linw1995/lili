@@ -11,6 +11,7 @@ const MAX_PENDING_TITLES: usize = 256;
 
 #[derive(Default)]
 pub(super) struct TitleDispatch {
+    pub closed: bool,
     pub pending: HashMap<NotificationId, PendingTitle>,
 }
 
@@ -21,16 +22,15 @@ pub(super) struct PendingTitle {
 
 impl AppState {
     pub async fn shutdown_title_actions(&self) {
-        let runtime = self.action_runtime.read().await;
-        let pending = std::mem::take(&mut self.title_dispatch.lock().await.pending);
-        for task in pending.values() {
-            task.worker.abort();
+        let _lifecycle = self.title_lifecycle.lock().await;
+        let supervisor = self.action_runtime.read().await.supervisor.clone();
+        self.title_dispatch.lock().await.closed = true;
+        if let Some(supervisor) = supervisor {
+            supervisor.shutdown_titles().await;
         }
+        let pending = std::mem::take(&mut self.title_dispatch.lock().await.pending);
         for task in pending.into_values() {
             let _ = task.worker.await;
-        }
-        if let Some(supervisor) = &runtime.supervisor {
-            supervisor.shutdown_titles().await;
         }
     }
 
@@ -50,6 +50,9 @@ impl AppState {
             .map(|notification| notification.id.clone())
             .collect();
         let mut dispatch = self.title_dispatch.lock().await;
+        if dispatch.closed {
+            return;
+        }
         dispatch.pending.retain(|id, task| {
             if unread.contains(id) {
                 true
@@ -115,8 +118,8 @@ impl AppState {
         {
             return;
         }
-        dispatch.pending.remove(&notification.id);
         let Some(title) = title else {
+            dispatch.pending.remove(&notification.id);
             return;
         };
         let result = self
@@ -133,6 +136,14 @@ impl AppState {
                 failure_kind = "persistence_failed",
                 "notification title could not be saved"
             ),
+        }
+        let mut dispatch = self.title_dispatch.lock().await;
+        if dispatch
+            .pending
+            .get(&notification.id)
+            .is_some_and(|task| task.token == token)
+        {
+            dispatch.pending.remove(&notification.id);
         }
     }
 
@@ -273,6 +284,50 @@ mod tests {
                 .as_deref(),
             Some("New")
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_title_publication_and_rejects_new_work() {
+        let state = AppState::default();
+        configure(&state, "Final title").await;
+        state.apply_session_event(event("first", "one")).await;
+        let presentations = state.subscribe_pet_presentation();
+        let settings = state.settings.write().await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.session_reducer.lock().await.snapshot().notifications[0]
+                    .title
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state.title_dispatch.lock().await.pending.len(), 1);
+        let shutdown = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                state.shutdown_title_actions().await;
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(!shutdown.is_finished());
+        drop(settings);
+        tokio::time::timeout(std::time::Duration::from_secs(2), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            presentations.borrow().notifications[0].title.as_deref(),
+            Some("Final title")
+        );
+        let audit = state.action_audit().await;
+        state.apply_session_event(event("second", "two")).await;
+        assert!(state.title_dispatch.lock().await.pending.is_empty());
+        assert_eq!(state.action_audit().await, audit);
     }
 
     #[tokio::test]
