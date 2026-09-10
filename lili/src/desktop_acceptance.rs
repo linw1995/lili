@@ -185,13 +185,21 @@ pub async fn complete_desktop_acceptance(
         true
     };
     let notification_state_contract = match app_state.as_ref() {
-        Some(state) => state
-            .snapshot()
-            .await
-            .session_state
-            .notifications
-            .iter()
-            .any(|notification| notification.state == lili_session::NotificationState::Unread),
+        Some(state) => {
+            let unread = state
+                .snapshot()
+                .await
+                .session_state
+                .notifications
+                .iter()
+                .any(|notification| notification.state == lili_session::NotificationState::Unread);
+            // The macOS fixture includes a successful action that dismisses its notification.
+            if cfg!(target_os = "macos") {
+                !unread
+            } else {
+                unread
+            }
+        }
         None => false,
     };
     eprintln!(

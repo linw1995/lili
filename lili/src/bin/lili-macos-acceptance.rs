@@ -156,7 +156,14 @@ mod macos {
             return Err(error);
         }
 
-        wait_for_completion(&mut app, "marketplace")
+        wait_for_completion(
+            &mut app,
+            "marketplace",
+            &workspace
+                .application_paths()
+                .root()
+                .join("desktop-acceptance-result"),
+        )
     }
 
     pub fn run_direct_hook_acceptance() -> Result<(), String> {
@@ -202,7 +209,14 @@ mod macos {
             terminate(&mut app);
             return Err(error);
         }
-        wait_for_completion(&mut app, "direct-hook")
+        wait_for_completion(
+            &mut app,
+            "direct-hook",
+            &workspace
+                .application_paths()
+                .root()
+                .join("desktop-acceptance-result"),
+        )
     }
 
     fn invoke_direct_hook(
@@ -242,11 +256,18 @@ mod macos {
         Ok(())
     }
 
-    fn wait_for_completion(app: &mut Child, delivery: &str) -> Result<(), String> {
+    fn wait_for_completion(
+        app: &mut Child,
+        delivery: &str,
+        result_path: &Path,
+    ) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match app.try_wait() {
                 Ok(Some(status)) if status.success() => {
+                    if fs::read_to_string(result_path).ok().as_deref() != Some("passed\n") {
+                        return Err("packaged app did not record successful acceptance".to_owned());
+                    }
                     println!(
                         "{{\"macosAcceptance\":\"passed\",\"delivery\":{delivery:?},\"target\":\"{}\"}}",
                         MACOS_ARM64.triple,

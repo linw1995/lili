@@ -12,3 +12,9 @@ Completed on 2026-09-10 on arm64 macOS through the repository Nix toolchain.
 Regression coverage includes configuration isolation, strict response decoding, Unicode bounds, shared process supervision, LRU promotion/eviction, per-key debounce, request coalescing, null/failure cache exclusion, cancellation, notification dismissal/recreation, configuration replacement, notification persistence and rollback, backward-compatible decoding, and structured warning fields and output exclusion.
 
 No live user action configuration was changed. No remote repository operation was performed.
+
+## PR follow-up
+
+- Cancellation now explicitly terminates and awaits the child process before completing title shutdown; the regression checks that Unix `waitpid` reports no remaining child after shutdown returns.
+- The related action and application-state suites passed (84 tests), and workspace all-feature Clippy passed.
+- The packaged notification-action acceptance was rerun successfully with a strict result-file check in addition to the process exit code. Its notification-state assertion now reflects the successful activation action dismissing the notification.
