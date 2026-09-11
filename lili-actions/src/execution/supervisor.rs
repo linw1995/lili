@@ -1,3 +1,8 @@
+mod title_runtime;
+
+use super::spawn_input;
+use title_runtime::TitleState;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
@@ -15,8 +20,8 @@ use tokio::{
 };
 
 use crate::{
-    ConcurrencyMode, InteractionContextV1, InteractionTrigger, LoadedAction, LoadedActions,
-    MAX_GLOBAL_CONCURRENCY, spawn_action,
+    ActionTrigger, ConcurrencyMode, InteractionContextV1, LoadedAction, LoadedActions,
+    MAX_GLOBAL_CONCURRENCY, SessionTitleRequest,
 };
 
 pub const MAX_ACTION_OUTPUT_BYTES: usize = 16 * 1024;
@@ -36,6 +41,7 @@ pub enum ActionExecutionOutcome {
     Saturated,
     NotMatched,
     UnknownAction,
+    InvalidResponse,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -62,7 +68,7 @@ impl CapturedOutput {
 pub struct ActionExecutionResult {
     pub action_id: String,
     pub interaction_id: uuid::Uuid,
-    pub trigger: InteractionTrigger,
+    pub trigger: ActionTrigger,
     pub event_id: Option<String>,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -76,8 +82,10 @@ pub struct ActionExecutionResult {
 #[serde(rename_all = "camelCase")]
 pub struct ActionAuditEntry {
     pub action_id: String,
-    pub trigger: InteractionTrigger,
+    pub trigger: ActionTrigger,
     pub event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<uuid::Uuid>,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
     pub outcome: ActionExecutionOutcome,
@@ -94,6 +102,8 @@ impl From<&ActionExecutionResult> for ActionAuditEntry {
             action_id: result.action_id.clone(),
             trigger: result.trigger,
             event_id: result.event_id.clone(),
+            request_id: (result.trigger == ActionTrigger::SessionTitle)
+                .then_some(result.interaction_id),
             started_at_ms: result.started_at_ms,
             finished_at_ms: result.finished_at_ms,
             outcome: result.outcome,
@@ -109,18 +119,15 @@ impl From<&ActionExecutionResult> for ActionAuditEntry {
 impl ActionExecutionResult {
     fn immediate(
         action_id: impl Into<String>,
-        context: &InteractionContextV1,
+        context: &impl ExecutionInput,
         outcome: ActionExecutionOutcome,
     ) -> Self {
         let now_ms = unix_time_ms();
         Self {
             action_id: action_id.into(),
-            interaction_id: context.interaction_id,
-            trigger: context.trigger,
-            event_id: context
-                .notification
-                .as_ref()
-                .map(|notification| notification.event_id.clone()),
+            interaction_id: context.request_id(),
+            trigger: context.action_trigger(),
+            event_id: context.event_id(),
             started_at_ms: now_ms,
             finished_at_ms: now_ms,
             outcome,
@@ -131,10 +138,45 @@ impl ActionExecutionResult {
     }
 }
 
+trait ExecutionInput: Serialize {
+    fn request_id(&self) -> uuid::Uuid;
+    fn action_trigger(&self) -> ActionTrigger;
+    fn event_id(&self) -> Option<String>;
+}
+
+impl ExecutionInput for InteractionContextV1 {
+    fn request_id(&self) -> uuid::Uuid {
+        self.interaction_id
+    }
+    fn action_trigger(&self) -> ActionTrigger {
+        self.trigger.into()
+    }
+    fn event_id(&self) -> Option<String> {
+        self.notification
+            .as_ref()
+            .map(|value| value.event_id.clone())
+    }
+}
+
+impl ExecutionInput for SessionTitleRequest {
+    fn request_id(&self) -> uuid::Uuid {
+        self.request_id
+    }
+    fn action_trigger(&self) -> ActionTrigger {
+        ActionTrigger::SessionTitle
+    }
+    fn event_id(&self) -> Option<String> {
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct ActionSupervisor {
     actions: Arc<BTreeMap<String, Arc<ActionRuntime>>>,
     global: Arc<Semaphore>,
+    title_order: Arc<Vec<String>>,
+    titles: Arc<Mutex<TitleState>>,
+    shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     audit: Arc<Mutex<VecDeque<ActionAuditEntry>>>,
 }
 
@@ -143,6 +185,15 @@ impl ActionSupervisor {
         if !(1..=MAX_GLOBAL_CONCURRENCY).contains(&global_concurrency) {
             return None;
         }
+        let title_order = Arc::new(
+            actions
+                .enabled()
+                .iter()
+                .filter(|action| action.trigger() == ActionTrigger::SessionTitle)
+                .map(|action| action.id().to_owned())
+                .collect(),
+        );
+        let (shutdown, _) = tokio::sync::watch::channel(false);
         let actions = actions
             .enabled()
             .iter()
@@ -154,6 +205,9 @@ impl ActionSupervisor {
             .collect();
         Some(Self {
             actions: Arc::new(actions),
+            title_order,
+            titles: Arc::new(Mutex::new(TitleState::default())),
+            shutdown: Arc::new(shutdown),
             global: Arc::new(Semaphore::new(global_concurrency)),
             audit: Arc::new(Mutex::new(VecDeque::with_capacity(
                 MAX_ACTION_AUDIT_ENTRIES,
@@ -288,7 +342,7 @@ impl ActionRuntime {
 }
 
 fn matches_context(action: &LoadedAction, context: &InteractionContextV1) -> bool {
-    if action.trigger() != context.trigger {
+    if action.trigger() != context.trigger.into() {
         return false;
     }
     let filters = action.filters();
@@ -311,14 +365,27 @@ fn matches_context(action: &LoadedAction, context: &InteractionContextV1) -> boo
                 .is_some_and(|project| filters.project_labels.contains(project)))
 }
 
-async fn run_action(
+async fn run_action(action: &LoadedAction, context: &impl ExecutionInput) -> ActionExecutionResult {
+    run_action_cancellable(action, context, None)
+        .await
+        .expect("interaction execution is not cancelled")
+}
+
+async fn run_action_cancellable(
     action: &LoadedAction,
-    context: &InteractionContextV1,
-) -> ActionExecutionResult {
+    context: &impl ExecutionInput,
+    mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Option<ActionExecutionResult> {
+    if cancellation
+        .as_ref()
+        .is_some_and(|receiver| *receiver.borrow())
+    {
+        return None;
+    }
     let started_at_ms = unix_time_ms();
-    let result = spawn_action(action, context).await;
+    let result = spawn_input(action, context).await;
     let Ok(mut spawned) = result else {
-        return completed_result(
+        return Some(completed_result(
             action,
             context,
             started_at_ms,
@@ -326,7 +393,7 @@ async fn run_action(
             None,
             CapturedOutput::default(),
             CapturedOutput::default(),
-        );
+        ));
     };
     let stdout = spawned.child_mut().stdout.take();
     let stderr = spawned.child_mut().stderr.take();
@@ -334,23 +401,34 @@ async fn run_action(
     let stdout_task = tokio::spawn(capture_output(stdout));
     let stderr_task = tokio::spawn(capture_output(stderr));
     let timeout = Duration::from_millis(action.timeout_ms());
-    let status = tokio::time::timeout(timeout, spawned.child_mut().wait()).await;
-
+    let status = tokio::select! {
+        biased;
+        _ = wait_for_cancellation(&mut cancellation) => None,
+        status = tokio::time::timeout(timeout, spawned.child_mut().wait()) => Some(status),
+    };
+    let cancelled = status.is_none();
     let (timed_out, wait_failed, status) = match status {
-        Ok(Ok(status)) => (false, false, Some(status)),
-        Ok(Err(_)) => {
+        Some(Ok(Ok(status))) => (false, false, Some(status)),
+        Some(Ok(Err(_))) => {
             let _ = spawned.terminate_tree().await;
             (false, true, None)
         }
-        Err(_) => {
+        Some(Err(_)) => {
             let _ = spawned.terminate_tree().await;
             (true, false, None)
+        }
+        None => {
+            let _ = spawned.terminate_tree().await;
+            (false, false, None)
         }
     };
     spawned.mark_finished();
     let stdin_failed = join_stdin(stdin_task).await.is_none();
     let stdout = join_capture(stdout_task).await;
     let stderr = join_capture(stderr_task).await;
+    if cancelled {
+        return None;
+    }
     let capture_failed = stdout.is_none() || stderr.is_none();
     let stdout = stdout.unwrap_or_default();
     let stderr = stderr.unwrap_or_default();
@@ -365,7 +443,7 @@ async fn run_action(
     } else {
         ActionExecutionOutcome::NonZeroExit
     };
-    completed_result(
+    Some(completed_result(
         action,
         context,
         started_at_ms,
@@ -373,12 +451,21 @@ async fn run_action(
         status.as_ref().and_then(ExitStatus::code),
         stdout,
         stderr,
-    )
+    ))
+}
+
+async fn wait_for_cancellation(cancellation: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(receiver) = cancellation else {
+        return std::future::pending().await;
+    };
+    if !*receiver.borrow() {
+        let _ = receiver.changed().await;
+    }
 }
 
 fn completed_result(
     action: &LoadedAction,
-    context: &InteractionContextV1,
+    context: &impl ExecutionInput,
     started_at_ms: u64,
     outcome: ActionExecutionOutcome,
     exit_code: Option<i32>,
@@ -387,12 +474,9 @@ fn completed_result(
 ) -> ActionExecutionResult {
     ActionExecutionResult {
         action_id: action.id().to_owned(),
-        interaction_id: context.interaction_id,
-        trigger: context.trigger,
-        event_id: context
-            .notification
-            .as_ref()
-            .map(|notification| notification.event_id.clone()),
+        interaction_id: context.request_id(),
+        trigger: context.action_trigger(),
+        event_id: context.event_id(),
         started_at_ms,
         finished_at_ms: unix_time_ms(),
         outcome,

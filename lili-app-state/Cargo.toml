@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tracing.workspace = true
 diesel.workspace = true
 lili-actions = { path = "../lili-actions" }
 lili-core = { path = "../lili-core" }

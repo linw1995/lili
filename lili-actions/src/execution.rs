@@ -1,3 +1,10 @@
+mod supervisor;
+
+pub use supervisor::{
+    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor,
+    CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
+};
+
 use std::{collections::BTreeMap, ffi::OsString, io, process::Stdio};
 
 use thiserror::Error;
@@ -35,7 +42,7 @@ impl SpawnedAction {
         self.child.as_ref().and_then(Child::id)
     }
 
-    pub(crate) fn child_mut(&mut self) -> &mut Child {
+    fn child_mut(&mut self) -> &mut Child {
         self.child
             .as_mut()
             .expect("spawned action retains its child")
@@ -48,11 +55,11 @@ impl SpawnedAction {
         self.child.take().expect("spawned action retains its child")
     }
 
-    pub(crate) fn take_stdin_task(&mut self) -> Option<JoinHandle<io::Result<()>>> {
+    fn take_stdin_task(&mut self) -> Option<JoinHandle<io::Result<()>>> {
         self.stdin_task.take()
     }
 
-    pub(crate) async fn terminate_tree(&mut self) -> io::Result<()> {
+    async fn terminate_tree(&mut self) -> io::Result<()> {
         let tree_error = self.process_tree.terminate().err();
         if tree_error.is_some() {
             let _ = self.child_mut().kill().await;
@@ -64,7 +71,7 @@ impl SpawnedAction {
         }
     }
 
-    pub(crate) fn mark_finished(&mut self) {
+    fn mark_finished(&mut self) {
         self.process_tree.disarm();
     }
 }
@@ -83,6 +90,13 @@ impl Drop for SpawnedAction {
 pub async fn spawn_action(
     action: &LoadedAction,
     context: &InteractionContextV1,
+) -> Result<SpawnedAction, ActionSpawnError> {
+    spawn_input(action, context).await
+}
+
+async fn spawn_input<T: serde::Serialize>(
+    action: &LoadedAction,
+    context: &T,
 ) -> Result<SpawnedAction, ActionSpawnError> {
     let input = serde_json::to_vec(context).map_err(ActionSpawnError::Encode)?;
     if input.len() > MAX_INTERACTION_CONTEXT_BYTES {

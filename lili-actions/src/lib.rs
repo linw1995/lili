@@ -1,6 +1,8 @@
 mod execution;
 mod loading;
-mod supervisor;
+mod title;
+
+pub use title::{SessionTitleRequest, TitleResponseError, decode_title_response};
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -18,15 +20,15 @@ pub const MAX_ACTION_QUEUE_CAPACITY: usize = 64;
 pub const INTERACTION_CONTEXT_VERSION: u16 = 1;
 pub const MAX_INTERACTION_CONTEXT_BYTES: usize = 16 * 1024;
 
-pub use execution::{ActionSpawnError, SpawnedAction, spawn_action};
+pub use execution::{
+    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSpawnError,
+    ActionSupervisor, CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
+    SpawnedAction, spawn_action,
+};
 pub use loading::{
     ActionDiagnostic, ActionDiagnosticCode, ActionLoadContext, EffectiveActionView,
     EffectiveActionsView, LoadedAction, LoadedActions, MAX_ACTION_CONFIG_BYTES, MAX_ACTION_ENTRIES,
     action_config_path, load_actions_file, load_actions_str,
-};
-pub use supervisor::{
-    ActionAuditEntry, ActionExecutionOutcome, ActionExecutionResult, ActionSupervisor,
-    CapturedOutput, MAX_ACTION_AUDIT_ENTRIES, MAX_ACTION_OUTPUT_BYTES,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -35,6 +37,25 @@ pub enum InteractionTrigger {
     PetClick,
     PetDoubleClick,
     NotificationActivate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionTrigger {
+    PetClick,
+    PetDoubleClick,
+    NotificationActivate,
+    SessionTitle,
+}
+
+impl From<InteractionTrigger> for ActionTrigger {
+    fn from(trigger: InteractionTrigger) -> Self {
+        match trigger {
+            InteractionTrigger::PetClick => Self::PetClick,
+            InteractionTrigger::PetDoubleClick => Self::PetDoubleClick,
+            InteractionTrigger::NotificationActivate => Self::NotificationActivate,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -234,7 +255,7 @@ impl Default for ConcurrencyV1 {
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct ActionConfigV1 {
     pub id: String,
-    pub trigger: InteractionTrigger,
+    pub trigger: ActionTrigger,
     #[serde(default)]
     pub filters: EventFilterV1,
     pub command: Vec<String>,
@@ -269,7 +290,7 @@ pub struct ActionsFileV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActionSummary {
     pub id: String,
-    pub trigger: InteractionTrigger,
+    pub trigger: ActionTrigger,
     pub enabled: bool,
 }
 
@@ -312,7 +333,7 @@ ACTION_MODE = "desktop"
         assert_eq!(file.version, ACTIONS_SCHEMA_VERSION);
         assert_eq!(file.actions.len(), 1);
         let action = &file.actions[0];
-        assert_eq!(action.trigger, InteractionTrigger::NotificationActivate);
+        assert_eq!(action.trigger, ActionTrigger::NotificationActivate);
         assert_eq!(action.command, ["/usr/bin/example", "--mode", "desktop"]);
         assert_eq!(action.concurrency.mode, ConcurrencyMode::Queue);
         assert_eq!(
@@ -367,12 +388,9 @@ command = "echo unsafe"
 
         assert_eq!(file.version, ACTIONS_SCHEMA_VERSION);
         assert_eq!(file.actions.len(), 3);
-        assert_eq!(file.actions[0].trigger, InteractionTrigger::PetClick);
-        assert_eq!(file.actions[1].trigger, InteractionTrigger::PetDoubleClick);
-        assert_eq!(
-            file.actions[2].trigger,
-            InteractionTrigger::NotificationActivate
-        );
+        assert_eq!(file.actions[0].trigger, ActionTrigger::PetClick);
+        assert_eq!(file.actions[1].trigger, ActionTrigger::PetDoubleClick);
+        assert_eq!(file.actions[2].trigger, ActionTrigger::NotificationActivate);
         let notification_action = &file.actions[2];
         assert_eq!(notification_action.filters, EventFilterV1::default());
         assert_eq!(notification_action.timeout_ms, DEFAULT_ACTION_TIMEOUT_MS);

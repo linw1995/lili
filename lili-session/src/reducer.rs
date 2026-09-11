@@ -7,10 +7,45 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    DisplayProjectContext, EventId, NormalizedSessionEvent, Notification, NotificationId,
+    DisplayProjectContext, DisplaySummary, EventId, NormalizedSessionEvent, NotificationId,
     NotificationKind, NotificationState, PresentationState, ProviderId, SessionEventKind,
     SessionId, SessionPhase, SessionSummary, SessionViewSnapshot, TurnId,
 };
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notification {
+    #[serde(skip)]
+    incarnation: std::sync::Arc<()>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_notification_title"
+    )]
+    pub title: Option<String>,
+    pub id: NotificationId,
+    pub provider: ProviderId,
+    pub event_id: EventId,
+    pub session_id: SessionId,
+    pub turn_id: Option<TurnId>,
+    pub kind: NotificationKind,
+    pub state: NotificationState,
+    pub occurred_at_ms: u64,
+    pub project: Option<DisplayProjectContext>,
+    pub summary: Option<DisplaySummary>,
+}
+
+fn deserialize_notification_title<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let title = Option::<String>::deserialize(deserializer)?;
+    if title.as_ref().is_some_and(|title| {
+        title.is_empty() || title.chars().count() > 256 || title.chars().any(char::is_control)
+    }) {
+        return Err(serde::de::Error::custom("invalid notification title"));
+    }
+    Ok(title)
+}
 
 const MAX_RECENT_EVENT_IDS: usize = 4096;
 const MAX_PERSISTED_SESSIONS: usize = 128;
@@ -255,6 +290,27 @@ impl SessionReducer {
         ReductionOutcome::Applied {
             revision: self.revision,
         }
+    }
+
+    pub fn update_notification_title(&mut self, original: &Notification, title: String) -> bool {
+        let Some(notification) = self.notifications.get_mut(&original.id) else {
+            return false;
+        };
+        if notification.state != NotificationState::Unread
+            || !std::sync::Arc::ptr_eq(&notification.incarnation, &original.incarnation)
+            || notification.provider != original.provider
+            || notification.session_id != original.session_id
+            || notification.event_id != original.event_id
+            || notification.title.as_ref() == Some(&title)
+            || title.is_empty()
+            || title.chars().count() > 256
+            || title.chars().any(char::is_control)
+        {
+            return false;
+        }
+        notification.title = Some(title);
+        self.revision = self.revision.saturating_add(1);
+        true
     }
 
     pub fn persistent_state(&self) -> SessionReducerState {
@@ -526,6 +582,8 @@ impl SessionReducer {
         self.notifications
             .entry(id.clone())
             .or_insert_with(|| Notification {
+                incarnation: std::sync::Arc::new(()),
+                title: None,
                 id,
                 provider: event.provider.clone(),
                 event_id: event.event_id.clone(),
@@ -939,6 +997,23 @@ mod tests {
             source_discriminator: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn title_results_cannot_update_a_recreated_notification() {
+        let mut reducer = SessionReducer::default();
+        let event = event("first", "turn_completed", "one", Some("turn"), 1);
+        reducer.reduce(event.clone());
+        let original = reducer.snapshot().notifications[0].clone();
+        reducer.notifications.remove(&original.id);
+        reducer.insert_notification(&event, NotificationKind::Completion);
+        assert!(!reducer.update_notification_title(&original, "Obsolete".into()));
+        let current = reducer.snapshot().notifications[0].clone();
+        assert!(reducer.update_notification_title(&current, "Current".into()));
+        assert_eq!(
+            reducer.snapshot().notifications[0].title.as_deref(),
+            Some("Current")
+        );
     }
 
     #[test]

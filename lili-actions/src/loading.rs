@@ -8,8 +8,8 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    ACTIONS_SCHEMA_VERSION, ActionConfigV1, ActionSummary, ConcurrencyMode, EventFilterV1,
-    InteractionTrigger, MAX_ACTION_DEBOUNCE_MS, MAX_ACTION_QUEUE_CAPACITY, MAX_ACTION_TIMEOUT_MS,
+    ACTIONS_SCHEMA_VERSION, ActionConfigV1, ActionSummary, ActionTrigger, ConcurrencyMode,
+    EventFilterV1, MAX_ACTION_DEBOUNCE_MS, MAX_ACTION_QUEUE_CAPACITY, MAX_ACTION_TIMEOUT_MS,
     MAX_GLOBAL_CONCURRENCY, WorkingDirectoryPolicy,
 };
 
@@ -93,7 +93,7 @@ pub struct ActionDiagnostic {
 pub struct EffectiveActionView {
     pub entry_index: usize,
     pub id: Option<String>,
-    pub trigger: Option<InteractionTrigger>,
+    pub trigger: Option<ActionTrigger>,
     pub enabled: bool,
     pub executable_resolved: bool,
     pub argument_count: usize,
@@ -117,7 +117,7 @@ pub struct EffectiveActionsView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoadedAction {
     id: String,
-    trigger: InteractionTrigger,
+    trigger: ActionTrigger,
     filters: EventFilterV1,
     executable: PathBuf,
     arguments: Vec<OsString>,
@@ -136,7 +136,7 @@ impl LoadedAction {
         &self.id
     }
 
-    pub const fn trigger(&self) -> InteractionTrigger {
+    pub const fn trigger(&self) -> ActionTrigger {
         self.trigger
     }
 
@@ -391,7 +391,11 @@ fn validate_action(
     {
         return Err(ActionDiagnosticCode::InvalidEnvironment);
     }
-    if !valid_filters(&config.filters) {
+    if !valid_filters(&config.filters)
+        || (config.trigger == ActionTrigger::SessionTitle
+            && (!config.filters.notification_kinds.is_empty()
+                || !config.filters.project_labels.is_empty()))
+    {
         return Err(ActionDiagnosticCode::InvalidFilter);
     }
     Ok(LoadedAction {
@@ -582,6 +586,35 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
+
+    #[test]
+    fn title_filters_are_entry_local_and_interactions_reject_title_trigger() {
+        let command = std::env::current_exe().unwrap();
+        let command = toml::Value::String(command.to_string_lossy().into()).to_string();
+        let source = format!(
+            r#"version = 1
+[[action]]
+id = "title"
+trigger = "session_title"
+command = [{command}]
+[[action]]
+id = "invalid"
+trigger = "session_title"
+command = [{command}]
+[action.filters]
+notification_kinds = ["completion"]
+"#
+        );
+        let cwd = std::env::current_dir().unwrap();
+        let loaded = load_actions_str(&source, &ActionLoadContext::new(&cwd, &cwd, vec![]));
+        assert_eq!(loaded.enabled().len(), 1);
+        assert_eq!(loaded.enabled()[0].trigger(), ActionTrigger::SessionTitle);
+        assert_eq!(
+            loaded.effective().diagnostics[0].code,
+            ActionDiagnosticCode::InvalidFilter
+        );
+        assert!(serde_json::from_str::<crate::InteractionTrigger>(r#""session_title""#).is_err());
+    }
 
     static NEXT_TEST_TEMP: AtomicU64 = AtomicU64::new(0);
 

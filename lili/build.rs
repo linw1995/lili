@@ -12,6 +12,7 @@ fn main() {
             "set_notification_hit_region",
             "run_pet_context_action",
             "complete_desktop_smoke",
+            "mark_title_fallback_visible",
         ]));
     tauri_build::try_build(attributes).expect("failed to run Tauri build script");
 }

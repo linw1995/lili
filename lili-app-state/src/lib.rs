@@ -1,5 +1,9 @@
 mod ingestion;
 mod persistence;
+mod title;
+
+use persistence::into_reducer_state;
+use title::{TitleDispatch, schedule_notification_titles};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -76,6 +80,8 @@ pub struct AppState {
     action_runtime: Arc<RwLock<ActionRuntimeState>>,
     dispatched_interactions: Arc<Mutex<DispatchHistory>>,
     presentation_sender: Arc<watch::Sender<PetPresentationState>>,
+    title_dispatch: Arc<Mutex<TitleDispatch>>,
+    title_lifecycle: Arc<Mutex<()>>,
     clock_origin: Instant,
 }
 
@@ -238,7 +244,7 @@ impl AppState {
         pet_catalog: PetCatalog,
         state: PersistentApplicationState,
     ) -> Result<Self, lili_session::ReducerRestoreError> {
-        let reducer = SessionReducer::from_persistent_state(state.into_reducer_state())?;
+        let reducer = SessionReducer::from_persistent_state(into_reducer_state(state))?;
         Ok(Self::with_reducer(pet_catalog, reducer))
     }
 
@@ -273,6 +279,8 @@ impl AppState {
             action_runtime: Arc::new(RwLock::new(ActionRuntimeState::default())),
             dispatched_interactions: Arc::new(Mutex::new(DispatchHistory::default())),
             presentation_sender: Arc::new(presentation_sender),
+            title_dispatch: Arc::new(Mutex::new(TitleDispatch::default())),
+            title_lifecycle: Arc::new(Mutex::new(())),
             clock_origin: Instant::now(),
         }
     }
@@ -449,6 +457,7 @@ impl AppState {
     }
 
     pub async fn apply_session_event(&self, event: NormalizedSessionEvent) -> ReductionOutcome {
+        let title_event = (event.provider.clone(), event.event_id.clone());
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let (outcome, accepted_at_ms) = {
             let mut reducer = self.session_reducer.lock().await;
@@ -458,6 +467,7 @@ impl AppState {
         };
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
+            schedule_notification_titles(self, Some(title_event), None).await;
             if starts_activity_reminder {
                 self.schedule_activity_reminder_expiry(accepted_at_ms);
             }
@@ -470,6 +480,7 @@ impl AppState {
         event: NormalizedSessionEvent,
         store: &AppStateStore,
     ) -> Result<ReductionOutcome, PersistenceError> {
+        let title_event = (event.provider.clone(), event.event_id.clone());
         let starts_activity_reminder = starts_activity_reminder(event.event_type);
         let selected_pet_id =
             lili_core::PetId::parse(self.pet_state.read().await.catalog.requested_identifier());
@@ -495,6 +506,7 @@ impl AppState {
         drop(reducer);
         if matches!(outcome, ReductionOutcome::Applied { .. }) {
             self.publish_presentation().await;
+            schedule_notification_titles(self, Some(title_event), Some(store.clone())).await;
             if let Some(started_at_ms) = activity_reminder_started_at_ms {
                 self.schedule_activity_reminder_expiry(started_at_ms);
             }
@@ -617,7 +629,8 @@ impl AppState {
             ActionExecutionOutcome::Succeeded
             | ActionExecutionOutcome::Debounced
             | ActionExecutionOutcome::NotMatched
-            | ActionExecutionOutcome::UnknownAction => return false,
+            | ActionExecutionOutcome::UnknownAction
+            | ActionExecutionOutcome::InvalidResponse => return false,
         };
         self.set_action_feedback(feedback).await;
         true
@@ -674,16 +687,42 @@ impl AppState {
         loaded: LoadedActions,
         global_concurrency: usize,
     ) -> bool {
+        self.configure_actions_with_persistence(loaded, global_concurrency, None)
+            .await
+    }
+
+    pub async fn configure_actions_with_persistence(
+        &self,
+        loaded: LoadedActions,
+        global_concurrency: usize,
+        store: Option<AppStateStore>,
+    ) -> bool {
+        let _lifecycle = self.title_lifecycle.lock().await;
         let effective = loaded.effective().clone();
         let summaries = loaded.summaries();
         let supervisor = ActionSupervisor::new(loaded, global_concurrency);
         let configured = supervisor.is_some();
-        *self.action_runtime.write().await = ActionRuntimeState {
-            supervisor,
-            effective,
+        let old = {
+            let mut runtime = self.action_runtime.write().await;
+            let mut dispatch = self.title_dispatch.lock().await;
+            dispatch.closed = false;
+            for (_, task) in dispatch.pending.drain() {
+                task.worker.abort();
+            }
+            std::mem::replace(
+                &mut *runtime,
+                ActionRuntimeState {
+                    supervisor,
+                    effective,
+                },
+            )
         };
+        if let Some(supervisor) = old.supervisor {
+            supervisor.shutdown_titles().await;
+        }
         self.snapshot.write().await.actions = summaries;
         self.publish_presentation().await;
+        schedule_notification_titles(self, None, store).await;
         configured
     }
 
@@ -778,7 +817,7 @@ impl AppState {
         self.ingestion_diagnostics.read().await.clone()
     }
 
-    pub(crate) async fn replace_ingestion_diagnostics(&self, diagnostics: IngestionDiagnostics) {
+    async fn replace_ingestion_diagnostics(&self, diagnostics: IngestionDiagnostics) {
         *self.ingestion_diagnostics.write().await = diagnostics;
     }
 
@@ -896,6 +935,7 @@ fn presentation_from_view(
         .iter()
         .filter(|notification| notification.state == NotificationState::Unread)
         .map(|notification| PetNotificationPresentation {
+            title: notification.title.clone(),
             activation_id: notification.id.as_str().to_owned(),
             kind: match notification.kind {
                 NotificationKind::Attention => PetNotificationKind::Attention,
@@ -1689,7 +1729,7 @@ mod tests {
             let result = ActionExecutionResult {
                 action_id: "open-session".to_owned(),
                 interaction_id: Uuid::nil(),
-                trigger: InteractionTrigger::NotificationActivate,
+                trigger: lili_actions::ActionTrigger::NotificationActivate,
                 event_id: Some("event-action-feedback".to_owned()),
                 started_at_ms: 11,
                 finished_at_ms: 12 + index as u64,
@@ -1731,7 +1771,7 @@ mod tests {
         let result = ActionExecutionResult {
             action_id: "open-session".to_owned(),
             interaction_id: context.interaction_id,
-            trigger: context.trigger,
+            trigger: context.trigger.into(),
             event_id: Some("event-action-feedback".to_owned()),
             started_at_ms: 11,
             finished_at_ms: 20,

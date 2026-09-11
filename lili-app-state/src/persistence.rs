@@ -230,10 +230,6 @@ impl PersistentApplicationState {
         self
     }
 
-    pub(crate) fn into_reducer_state(self) -> SessionReducerState {
-        self.reducer
-    }
-
     fn validate(&self) -> Result<(), PersistenceError> {
         if self.version != PERSISTENCE_VERSION {
             return Err(PersistenceError::UnsupportedVersion(self.version));
@@ -249,6 +245,10 @@ impl PersistentApplicationState {
         SessionReducer::from_persistent_state(self.reducer.clone())?;
         Ok(())
     }
+}
+
+pub fn into_reducer_state(state: PersistentApplicationState) -> SessionReducerState {
+    state.reducer
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -508,7 +508,7 @@ mod tests {
             restored.selected_pet_id().map(PetId::as_str),
             Some("custom-pet")
         );
-        assert_eq!(restored.into_reducer_state().revision(), 0);
+        assert_eq!(into_reducer_state(restored).revision(), 0);
     }
 
     #[test]

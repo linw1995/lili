@@ -1400,6 +1400,7 @@ mod tests {
                 pet_label: "Lili".to_owned(),
                 unread_notification_count: 1,
                 notifications: vec![PetNotificationPresentation {
+                    title: None,
                     activation_id: "notification-safe".to_owned(),
                     kind: PetNotificationKind::Completion,
                     project_label: Some("Workspace".to_owned()),
@@ -1445,6 +1446,7 @@ mod tests {
         let html = view! {
             <App presentation=PetPresentationState {
                 notifications: vec![PetNotificationPresentation {
+                    title: None,
                     activation_id: "notification-safe".to_owned(),
                     kind: PetNotificationKind::Completion,
                     project_label: Some("Workspace".to_owned()),

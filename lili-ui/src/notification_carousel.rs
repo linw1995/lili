@@ -991,9 +991,31 @@ fn NotificationCard(
     let exiting = exit_role.is_some();
     let activation_id = notification.activation_id;
     let kind = notification.kind;
-    let project_label = notification
-        .project_label
+    let initial_label = notification
+        .title
+        .or(notification.project_label)
         .unwrap_or_else(|| "Session".to_owned());
+    #[cfg(feature = "hydrate")]
+    let project_label = {
+        let id = activation_id.clone();
+        let snapshot = carousel.notification_snapshot;
+        Signal::derive(move || {
+            snapshot.with(|notifications| {
+                notifications
+                    .iter()
+                    .find(|notification| notification.activation_id == id)
+                    .and_then(|notification| {
+                        notification
+                            .title
+                            .clone()
+                            .or(notification.project_label.clone())
+                    })
+                    .unwrap_or_else(|| initial_label.clone())
+            })
+        })
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let project_label = Signal::derive(move || initial_label.clone());
     let summary = notification.summary;
     let occurred_at_ms = notification.occurred_at_ms;
     let unread = notification.unread;
@@ -1028,7 +1050,7 @@ fn NotificationCard(
             <button
                 class="notification-activate"
                 type="button"
-                aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
+                aria-label=move || format!("Open {} notification for {}", notification_kind_label(kind), project_label.get())
                 tabindex=if exiting || !interactive { "-1" } else { "0" }
                 disabled=exiting || !interactive
                 on:focus=move |_| {
@@ -1047,7 +1069,7 @@ fn NotificationCard(
             <button
                 class="notification-dismiss"
                 type="button"
-                aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
+                aria-label=move || format!("Dismiss {} notification for {}", notification_kind_label(kind), project_label.get())
                 tabindex=if exiting || !interactive { "-1" } else { "0" }
                 disabled=exiting || !interactive
                 on:focus=move |_| {
@@ -1079,7 +1101,7 @@ fn NotificationCard(
         <button
             class="notification-activate"
             type="button"
-            aria-label=format!("Open {} notification for {project_label}", notification_kind_label(kind))
+            aria-label=move || format!("Open {} notification for {}", notification_kind_label(kind), project_label.get())
             tabindex=if exiting || !interactive { "-1" } else { "0" }
             disabled=exiting || !interactive
         >
@@ -1088,7 +1110,7 @@ fn NotificationCard(
         <button
             class="notification-dismiss"
             type="button"
-            aria-label=format!("Dismiss {} notification for {project_label}", notification_kind_label(kind))
+            aria-label=move || format!("Dismiss {} notification for {}", notification_kind_label(kind), project_label.get())
             tabindex=if exiting || !interactive { "-1" } else { "0" }
             disabled=exiting || !interactive
         >
@@ -1163,7 +1185,7 @@ fn NotificationCard(
                 {status}
                 <div class="notification-content">
                     <div class="notification-heading">
-                        <strong class="notification-project">{project_label}</strong>
+                        <strong class="notification-project">{move || project_label.get()}</strong>
                         <time class="notification-time">{move || relative_time_label(occurred_at_ms, wall_clock.get())}</time>
                     </div>
                     <p class="notification-summary">{summary}</p>
@@ -1469,6 +1491,7 @@ mod tests {
     fn keeps_the_last_exiting_notification_in_the_single_card_layout() {
         let mut state = NotificationCarouselState::new(vec!["last".to_owned()]);
         let notification = PetNotificationPresentation {
+            title: None,
             activation_id: "last".to_owned(),
             kind: PetNotificationKind::Completion,
             project_label: Some("Project".to_owned()),
@@ -1497,6 +1520,7 @@ mod tests {
         let mut state =
             NotificationCarouselState::new(vec!["oldest".to_owned(), "newest".to_owned()]);
         let notification = PetNotificationPresentation {
+            title: None,
             activation_id: "newest".to_owned(),
             kind: PetNotificationKind::Completion,
             project_label: Some("Project".to_owned()),

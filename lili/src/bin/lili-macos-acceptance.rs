@@ -3,7 +3,9 @@ fn main() {
     let mode = std::env::args_os().nth(1);
     let result = match mode.as_deref() {
         Some(mode) if mode == "--record-action" => macos::record_action(),
-        Some(mode) if mode == "--direct-hook" => macos::run_direct_hook_acceptance(),
+        Some(mode) if mode == "--title-action" => macos::title_action(),
+        Some(mode) if mode == "--direct-hook" => macos::run_direct_hook_acceptance(true),
+        Some(mode) if mode == "--direct-hook-full" => macos::run_direct_hook_acceptance(false),
         _ => macos::run(),
     };
     if let Err(error) = result {
@@ -37,6 +39,36 @@ mod macos {
     const PAYLOAD: &[u8] = include_bytes!(
         "../../../lili-session/tests/fixtures/codex/0.147.0/permission-request.json"
     );
+
+    pub fn title_action() -> Result<(), String> {
+        let mut input = Vec::new();
+        std::io::stdin()
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut input)
+            .map_err(|_| "title stdin failed".to_owned())?;
+        if input.len() > 16 * 1024 {
+            return Err("title stdin overflow".to_owned());
+        }
+        let request: serde_json::Value =
+            serde_json::from_slice(&input).map_err(|_| "invalid title request".to_owned())?;
+        if request["version"] != 1
+            || request["trigger"] != "session_title"
+            || !request["requestId"].is_string()
+            || !request["sessionId"].is_string()
+        {
+            return Err("invalid title request fields".to_owned());
+        }
+        let marker = std::env::args_os()
+            .nth(2)
+            .map(PathBuf::from)
+            .ok_or("missing title marker")?;
+        if !wait_for_file(&marker, Duration::from_secs(15)) {
+            return Err("fallback was not rendered".to_owned());
+        }
+        std::io::stdout()
+            .write_all(br#"{"version":1,"title":"<b>Acceptance title</b>"}"#)
+            .map_err(|_| "title stdout failed".to_owned())
+    }
 
     pub fn record_action() -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(1);
@@ -131,10 +163,17 @@ mod macos {
             return Err(error);
         }
 
-        wait_for_completion(&mut app, "marketplace")
+        wait_for_completion(
+            &mut app,
+            "marketplace",
+            &workspace
+                .application_paths()
+                .root()
+                .join("desktop-acceptance-result"),
+        )
     }
 
-    pub fn run_direct_hook_acceptance() -> Result<(), String> {
+    pub fn run_direct_hook_acceptance(action_only: bool) -> Result<(), String> {
         let mut arguments = std::env::args_os().skip(2);
         let app_binary = arguments
             .next()
@@ -167,7 +206,7 @@ mod macos {
 
         let workspace = AcceptanceWorkspace::new()?;
         workspace.write_action_config()?;
-        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home(), true)?;
+        let mut app = spawn_app(&app_binary, workspace.path(), workspace.home(), action_only)?;
         let credential_path = workspace.application_paths().credentials_path();
         if !wait_for_file(&credential_path, Duration::from_secs(30)) {
             terminate(&mut app);
@@ -177,7 +216,14 @@ mod macos {
             terminate(&mut app);
             return Err(error);
         }
-        wait_for_completion(&mut app, "direct-hook")
+        wait_for_completion(
+            &mut app,
+            "direct-hook",
+            &workspace
+                .application_paths()
+                .root()
+                .join("desktop-acceptance-result"),
+        )
     }
 
     fn invoke_direct_hook(
@@ -217,11 +263,18 @@ mod macos {
         Ok(())
     }
 
-    fn wait_for_completion(app: &mut Child, delivery: &str) -> Result<(), String> {
+    fn wait_for_completion(
+        app: &mut Child,
+        delivery: &str,
+        result_path: &Path,
+    ) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match app.try_wait() {
                 Ok(Some(status)) if status.success() => {
+                    if fs::read_to_string(result_path).ok().as_deref() != Some("passed\n") {
+                        return Err("packaged app did not record successful acceptance".to_owned());
+                    }
                     println!(
                         "{{\"macosAcceptance\":\"passed\",\"delivery\":{delivery:?},\"target\":\"{}\"}}",
                         MACOS_ARM64.triple,
@@ -349,9 +402,17 @@ id = "macos-timeout"
 trigger = "notification_activate"
 command = ["/bin/sleep", "5"]
 timeout_ms = 100
+
+[[action]]
+id = "acceptance-title"
+trigger = "session_title"
+command = [{}, "--title-action", {}]
+timeout_ms = 20000
 "#,
                 toml_string(&fixture)?,
                 toml_string(&self.action_context_path())?,
+                toml_string(&fixture)?,
+                toml_string(&application_paths.root().join("title-fallback-visible"))?,
             );
             fs::write(application_paths.actions_path(), source)
                 .map_err(|error| format!("acceptance action config could not be written: {error}"))

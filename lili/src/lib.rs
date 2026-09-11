@@ -27,7 +27,9 @@ use std::{
     },
 };
 
-use desktop_acceptance::{DesktopAcceptanceState, complete_desktop_acceptance};
+use desktop_acceptance::{
+    DesktopAcceptanceState, complete_desktop_acceptance, mark_title_fallback_visible,
+};
 use desktop_smoke::{DesktopSmokeState, complete_desktop_smoke};
 use ipc_signer::{FETCH_SIGNER_SCRIPT, sign_loopback_request};
 use lili_actions::{ActionLoadContext, DEFAULT_GLOBAL_CONCURRENCY, load_actions_file};
@@ -293,6 +295,7 @@ fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
             set_notification_hit_region,
             run_pet_context_action,
             complete_desktop_acceptance,
+            mark_title_fallback_visible,
             complete_desktop_smoke
         ])
         .build(tauri::generate_context!())
@@ -360,7 +363,7 @@ fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
     app.manage(signer);
     register_loopback_capability(&app, &origin, smoke, acceptance)
         .expect("failed to register loopback capability");
-    register_notification_window_capability(&app, &origin)
+    register_notification_window_capability(&app, &origin, acceptance)
         .expect("failed to register notification window capability");
     register_appearance_window_capability(&app, &origin)
         .expect("failed to register Appearance window capability");
@@ -433,7 +436,7 @@ fn configure_native_runtime(
     if !enabled {
         return None;
     }
-    configure_native_actions(application_paths, state);
+    configure_native_actions(application_paths, state, state_store.clone());
     match start_native_ingestion(application_paths, state.clone(), state_store) {
         Ok(handle) => Some(handle),
         Err(_) => {
@@ -481,6 +484,7 @@ fn register_context_menu_capability(app: &tauri::App, origin: &tauri::Url) -> ta
 fn register_notification_window_capability(
     app: &tauri::App,
     origin: &tauri::Url,
+    acceptance: bool,
 ) -> tauri::Result<()> {
     let capability = CapabilityBuilder::new("notification-window")
         .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
@@ -489,6 +493,11 @@ fn register_notification_window_capability(
         .permission("allow-sign-loopback-request")
         .permission("allow-focus-pet-window")
         .permission("allow-set-notification-hit-region");
+    let capability = if acceptance {
+        capability.permission("allow-mark-title-fallback-visible")
+    } else {
+        capability
+    };
     app.add_capability(capability)
 }
 
@@ -587,7 +596,14 @@ fn create_notification_window(
     .on_navigation(move |url| url.origin() == allowed_origin);
     let window = if acceptance {
         builder
-            .initialization_script(desktop_acceptance::NOTIFICATION_SCRIPT)
+            .initialization_script(desktop_acceptance::NOTIFICATION_SCRIPT.replace(
+                "__TITLE_REQUIRED__",
+                if cfg!(target_os = "macos") {
+                    "true"
+                } else {
+                    "false"
+                },
+            ))
             .build()
     } else {
         builder.build()
@@ -1192,6 +1208,7 @@ fn run_desktop_event_loop(
             macos_panel::hide_dock_icon();
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            tauri::async_runtime::block_on(state.shutdown_title_actions());
             if !smoke {
                 persist_desktop_state(app, &state, state_store.as_ref());
             }
@@ -1221,13 +1238,20 @@ fn persist_desktop_state(app: &tauri::AppHandle, state: &AppState, store: Option
     }
 }
 
-fn configure_native_actions(application_paths: &ApplicationPaths, state: &AppState) {
+fn configure_native_actions(
+    application_paths: &ApplicationPaths,
+    state: &AppState,
+    store: Option<AppStateStore>,
+) {
     let context = ActionLoadContext::for_application(application_paths.root());
     let loaded = load_actions_file(&application_paths.actions_path(), &context);
     let enabled_count = loaded.enabled().len();
     let diagnostic_count = loaded.effective().diagnostics.len();
-    let configured =
-        tauri::async_runtime::block_on(state.configure_actions(loaded, DEFAULT_GLOBAL_CONCURRENCY));
+    let configured = tauri::async_runtime::block_on(state.configure_actions_with_persistence(
+        loaded,
+        DEFAULT_GLOBAL_CONCURRENCY,
+        store,
+    ));
     if configured {
         diagnostics::info_with_counts(
             "actions",

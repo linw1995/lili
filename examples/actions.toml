@@ -34,3 +34,10 @@ policy = "application_data"
 id = "open-session-context"
 trigger = "notification_activate"
 command = ["/absolute/path/to/user-owned-action"]
+
+# Optional title query; replace the executable path before uncommenting.
+# [[action]]
+# id = "custom-session-title"
+# trigger = "session_title"
+# command = ["/absolute/path/to/title-action"]
+# timeout_ms = 1000

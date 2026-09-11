@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::SESSION_SCHEMA_VERSION;
+use crate::{Notification, SESSION_SCHEMA_VERSION};
 
 const MAX_ID_BYTES: usize = 256;
 pub const MAX_PROJECT_LABEL_CHARS: usize = 128;
@@ -310,21 +310,6 @@ pub enum NotificationState {
     Unread,
     Acknowledged,
     Resolved,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Notification {
-    pub id: NotificationId,
-    pub provider: ProviderId,
-    pub event_id: EventId,
-    pub session_id: SessionId,
-    pub turn_id: Option<TurnId>,
-    pub kind: NotificationKind,
-    pub state: NotificationState,
-    pub occurred_at_ms: u64,
-    pub project: Option<DisplayProjectContext>,
-    pub summary: Option<DisplaySummary>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
