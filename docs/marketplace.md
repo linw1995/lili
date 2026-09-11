@@ -4,6 +4,8 @@ Lili is a local desktop companion for supported Codex session lifecycle events. 
 
 The Lili plugin is discoverable through supported ChatGPT and Codex plugin surfaces. In Codex, explicitly trusted plugin hooks can forward supported lifecycle events to the local desktop application. In ChatGPT, the plugin provides setup, compatibility, migration, and troubleshooting guidance only. It does not observe ChatGPT conversation lifecycle events.
 
+The `lili-setup` skill can apply user-authorized local configuration repairs with available Codex tools. It uses supported commands for managed integration and plugin state, preserves unrelated settings, and validates changes. User-managed Lili configuration can be edited with a recoverable backup. Hook trust still requires explicit user acceptance; inspection requests remain read-only.
+
 ## Requirements
 
 - A separately installed compatible Lili desktop release.
