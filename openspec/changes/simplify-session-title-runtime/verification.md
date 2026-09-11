@@ -2,7 +2,7 @@
 
 Implemented the smaller `(provider, session_id)` key and single-option watch reply. The selected action ID is now borrowed for lookup rather than allocated into a temporary string. Configuration-instance isolation, LRU bounds, debounce, coalescing, notification binding, and lifecycle protections remain unchanged.
 
-The action map and title-order index remain in place. Their consolidation was experimentally viable but offered no production line-count reduction and introduced different lookup/sorting costs without a measured benefit.
+The action map and title-order index remain in place. They preserve indexed lookup and configuration-order title selection.
 
 ## Observed Verification
 

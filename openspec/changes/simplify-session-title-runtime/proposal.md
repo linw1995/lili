@@ -1,6 +1,6 @@
 ## Why
 
-The title runtime contains several overlapping representations. Some encode necessary asynchronous lifetimes; others repeat information already available from an immutable supervisor or a watch channel. Independent ablations should identify which representations can be removed without weakening behavior.
+The title runtime contains several overlapping representations. Some encode necessary asynchronous lifetimes; others repeat information already available from an immutable supervisor or a watch channel. Remove redundant representations while preserving the existing behavioral and ownership guarantees.
 
 ## What Changes
 
@@ -22,7 +22,6 @@ None. This is an internal representation change. Existing configuration, protoco
 
 ## Impact
 
-- Primary implementation scope: `lili-actions/src/title_runtime.rs` and `lili-actions/src/supervisor.rs`.
+- Primary implementation scope: `lili-actions/src/execution/supervisor/title_runtime.rs` and `lili-actions/src/execution/supervisor.rs`.
 - Add targeted regression probes without changing established assertions.
 - No new dependency, public protocol, configuration field, persistent schema, or UI behavior.
-- Experimental evidence and the reproduction script are recorded under `experiments/session-title-ablation/`; generated patches remain ignored local outputs.
