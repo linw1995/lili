@@ -25,4 +25,4 @@ None. This is an internal representation change. Existing configuration, protoco
 - Primary implementation scope: `lili-actions/src/title_runtime.rs` and `lili-actions/src/supervisor.rs`.
 - Add targeted regression probes without changing established assertions.
 - No new dependency, public protocol, configuration field, persistent schema, or UI behavior.
-- Experimental evidence and reproducible patches are recorded under `experiments/session-title-ablation/`.
+- Experimental evidence and the reproduction script are recorded under `experiments/session-title-ablation/`; generated patches remain ignored local outputs.

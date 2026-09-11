@@ -53,14 +53,13 @@ To rerun selected variants:
 nix develop -c python3 experiments/session-title-ablation/run.py single_option combined
 ```
 
-The runner regenerates patches for every variant and updates results only for selected runs. Raw logs remain under `results/` locally and are ignored by Git. `probes.patch` supplies the added assertions; each variant patch applies on top of that probe baseline. `baseline.patch` is empty after normalization.
+The runner regenerates patches for every variant and updates results only for selected runs. Generated patches and raw logs remain under `results/` locally and are ignored by Git. They are reproducible outputs, not tracked inputs. `probes.patch` supplies the added assertions; each variant patch applies on top of that probe baseline. `baseline.patch` is empty after normalization.
 
 ## Evidence and limits
 
 - [Latest machine-readable results](results/summary.json)
 - [Initial results, including the lint finding](results/initial-summary.json)
-- [Combined candidate patch](results/combined.patch)
-- [Shared behavior probes](results/probes.patch)
+- [Runner and shared behavior probes](run.py)
 - [Implementation plan](../../openspec/changes/simplify-session-title-runtime/proposal.md)
 
 This is evidence of observed equivalence on the scoped test set, not a proof that all interleavings are equivalent. Variants were not subjected to full-workspace CI, other operating systems, load benchmarks, or packaged UI acceptance. Those checks remain implementation tasks. The experiment runs made no production source changes or remote operations. Subsequent adoption is tracked in the implementation plan.
