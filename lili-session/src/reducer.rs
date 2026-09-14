@@ -235,8 +235,17 @@ impl SessionReducer {
                 event.turn_id.as_ref(),
             );
         }
-        if let Some(kind) = transition.notification {
-            self.insert_notification(&event, kind);
+        if let Some(kind) = transition.notification
+            && self.insert_notification(&event, kind)
+        {
+            // A replaced card must not leave its old presentation waiting for another event.
+            let desired = self.desired_presentation(accepted_at_ms);
+            if desired != self.presentation.state {
+                self.presentation = PresentationTracker {
+                    state: desired,
+                    since_ms: accepted_at_ms,
+                };
+            }
         }
         self.refresh_presentation(accepted_at_ms);
         self.revision = self.revision.saturating_add(1);
@@ -571,17 +580,23 @@ impl SessionReducer {
         }
     }
 
-    fn insert_notification(&mut self, event: &NormalizedSessionEvent, kind: NotificationKind) {
+    fn insert_notification(
+        &mut self,
+        event: &NormalizedSessionEvent,
+        kind: NotificationKind,
+    ) -> bool {
         if self.notifications.values().any(|notification| {
             notification.provider == event.provider
                 && notification.session_id == event.session_id
                 && (notification.occurred_at_ms, &notification.event_id) >= event_order(event)
         }) {
-            return;
+            return false;
         }
+        let previous_count = self.notifications.len();
         self.notifications.retain(|_, notification| {
             notification.provider != event.provider || notification.session_id != event.session_id
         });
+        let replaced = self.notifications.len() != previous_count;
         let id = notification_id(&event.provider, &event.event_id);
         self.notifications
             .entry(id.clone())
@@ -599,6 +614,7 @@ impl SessionReducer {
                 project: event.project.clone(),
                 summary: event.summary.clone(),
             });
+        replaced
     }
 
     fn resolve_attention_notifications(
@@ -1002,6 +1018,13 @@ mod tests {
                 let snapshot = reducer.snapshot();
                 assert_eq!(snapshot.notifications.len(), 1);
                 assert_eq!(snapshot.notifications[0].event_id.as_str(), "new");
+                let expected = match next_kind {
+                    "attention_required" => PresentationState::Waiting,
+                    "turn_failed" => PresentationState::Failed,
+                    "turn_completed" => PresentationState::Review,
+                    _ => unreachable!(),
+                };
+                assert_eq!(snapshot.presentation, expected);
                 assert!(!reducer.update_notification_title(&original, "Obsolete".into()));
             }
         }
