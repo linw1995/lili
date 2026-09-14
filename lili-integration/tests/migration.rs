@@ -341,15 +341,17 @@ fn concurrent_legacy_and_plugin_events_deduplicate_per_session() {
 }
 
 #[test]
-fn repeated_permission_invocations_remain_distinct_during_overlap() {
+fn repeated_permission_invocations_remain_distinct_but_show_only_latest_notification() {
     let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
     let mut applied = 0;
     let mut duplicates = 0;
+    let mut latest_event_id = None;
     for (index, tool_use_id) in ["toolu_01", "toolu_02"].into_iter().enumerate() {
         let payload = format!(
             r#"{{"hook_event_name":"PermissionRequest","session_id":"session-1","turn_id":"turn-1","tool_use_id":"{tool_use_id}","tool_name":"Bash","tool_input":{{"command":"cargo test"}}}}"#
         );
         let legacy = normalize_lifecycle_json(payload.as_bytes(), index as u64 + 1).unwrap();
+        latest_event_id = Some(legacy.event_id.clone());
         let mut plugin = legacy.clone();
         assert!(mark_plugin_hook_event(&mut plugin, "lili@test-marketplace"));
         for event in [legacy, plugin] {
@@ -363,7 +365,12 @@ fn repeated_permission_invocations_remain_distinct_during_overlap() {
 
     assert_eq!(applied, 2);
     assert_eq!(duplicates, 2);
-    assert_eq!(reducer.snapshot().notifications.len(), 2);
+    let snapshot = reducer.snapshot();
+    assert_eq!(snapshot.notifications.len(), 1);
+    assert_eq!(
+        Some(&snapshot.notifications[0].event_id),
+        latest_event_id.as_ref()
+    );
 }
 
 #[test]
