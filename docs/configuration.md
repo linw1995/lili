@@ -232,6 +232,8 @@ To roll back this recipe, remove only the `[[action]]` entry whose `id` is `open
 
 ### Optional Session title action
 
+Lili retains only the latest notification for each `(provider, sessionId)`, across turns and notification kinds. Recency follows event time, with event identity breaking ties. A delayed older notification cannot replace a newer one. Dismissing the latest notification does not reveal superseded notifications, including after restart.
+
 Add a `session_title` entry to resolve notification titles asynchronously. Notifications appear immediately with their existing label; a successful result updates the bound notification title without changing its summary, order, unread state, or click behavior.
 
 ```toml

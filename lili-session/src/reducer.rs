@@ -236,12 +236,6 @@ impl SessionReducer {
             );
         }
         if let Some(kind) = transition.notification {
-            if matches!(
-                kind,
-                NotificationKind::Completion | NotificationKind::Failure
-            ) {
-                self.remove_superseded_terminal_notifications(&event);
-            }
             self.insert_notification(&event, kind);
         }
         self.refresh_presentation(accepted_at_ms);
@@ -578,6 +572,16 @@ impl SessionReducer {
     }
 
     fn insert_notification(&mut self, event: &NormalizedSessionEvent, kind: NotificationKind) {
+        if self.notifications.values().any(|notification| {
+            notification.provider == event.provider
+                && notification.session_id == event.session_id
+                && (notification.occurred_at_ms, &notification.event_id) >= event_order(event)
+        }) {
+            return;
+        }
+        self.notifications.retain(|_, notification| {
+            notification.provider != event.provider || notification.session_id != event.session_id
+        });
         let id = notification_id(&event.provider, &event.event_id);
         self.notifications
             .entry(id.clone())
@@ -612,18 +616,6 @@ impl SessionReducer {
                 notification.state = NotificationState::Resolved;
             }
         }
-    }
-
-    fn remove_superseded_terminal_notifications(&mut self, event: &NormalizedSessionEvent) {
-        self.notifications.retain(|_, notification| {
-            notification.provider != event.provider
-                || notification.session_id != event.session_id
-                || notification.turn_id != event.turn_id
-                || !matches!(
-                    notification.kind,
-                    NotificationKind::Completion | NotificationKind::Failure
-                )
-        });
     }
 
     fn remember_event(&mut self, event: (ProviderId, EventId)) {
@@ -997,6 +989,83 @@ mod tests {
             source_discriminator: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn latest_notification_replaces_every_kind_and_rejects_old_title_results() {
+        for previous_kind in ["attention_required", "turn_failed", "turn_completed"] {
+            for next_kind in ["attention_required", "turn_failed", "turn_completed"] {
+                let mut reducer = SessionReducer::default();
+                reducer.reduce(event("old", previous_kind, "one", Some("first"), 10));
+                let original = reducer.snapshot().notifications[0].clone();
+                reducer.reduce(event("new", next_kind, "one", Some("second"), 20));
+                let snapshot = reducer.snapshot();
+                assert_eq!(snapshot.notifications.len(), 1);
+                assert_eq!(snapshot.notifications[0].event_id.as_str(), "new");
+                assert!(!reducer.update_notification_title(&original, "Obsolete".into()));
+            }
+        }
+    }
+
+    #[test]
+    fn notification_replacement_is_scoped_to_provider_and_session() {
+        let mut reducer = SessionReducer::default();
+        reducer.reduce(event("old", "turn_completed", "one", Some("first"), 10));
+        reducer.reduce(event(
+            "other-session",
+            "turn_completed",
+            "two",
+            Some("first"),
+            10,
+        ));
+        let mut other_provider =
+            event("other-provider", "turn_completed", "one", Some("first"), 10);
+        other_provider.provider = ProviderId::parse("example").unwrap();
+        reducer.reduce(other_provider);
+        reducer.reduce(event(
+            "new",
+            "attention_required",
+            "one",
+            Some("second"),
+            20,
+        ));
+        let snapshot = reducer.snapshot();
+        assert_eq!(snapshot.notifications.len(), 3);
+        for id in ["new", "other-session", "other-provider"] {
+            assert!(
+                snapshot
+                    .notifications
+                    .iter()
+                    .any(|notification| notification.event_id.as_str() == id)
+            );
+        }
+    }
+
+    #[test]
+    fn delayed_previous_turn_notification_cannot_replace_latest_notification() {
+        let mut reducer = SessionReducer::default();
+        reducer.reduce(event(
+            "first-start",
+            "turn_started",
+            "one",
+            Some("first"),
+            10,
+        ));
+        reducer.reduce(event(
+            "new",
+            "attention_required",
+            "one",
+            Some("second"),
+            30,
+        ));
+        let delayed = event("delayed", "turn_completed", "one", Some("first"), 20);
+        assert!(matches!(
+            reducer.reduce(delayed),
+            ReductionOutcome::Applied { .. }
+        ));
+        let snapshot = reducer.snapshot();
+        assert_eq!(snapshot.notifications.len(), 1);
+        assert_eq!(snapshot.notifications[0].event_id.as_str(), "new");
     }
 
     #[test]
@@ -1542,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn persistence_keeps_an_older_unread_notification_when_newer_one_is_acknowledged() {
+    fn acknowledging_latest_notification_does_not_restore_superseded_notifications() {
         let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
         reducer.reduce(event(
             "completed-1",
@@ -1575,12 +1644,13 @@ mod tests {
         reducer.acknowledge_notification(&newer_notification, 31);
 
         let persisted = reducer.persistent_state();
-        assert_eq!(persisted.notifications.len(), 1);
-        assert_eq!(persisted.notifications[0].event_id.as_str(), "completed-1");
+        assert!(persisted.notifications.is_empty());
+        let restored = SessionReducer::from_persistent_state(persisted).unwrap();
+        assert!(restored.snapshot().notifications.is_empty());
     }
 
     #[test]
-    fn persistence_keeps_the_notification_that_drives_presentation() {
+    fn persistence_keeps_latest_notification_across_turns_and_kinds() {
         let mut reducer = SessionReducer::with_minimum_dwell_ms(0);
         reducer.reduce(event(
             "attention",
@@ -1606,10 +1676,14 @@ mod tests {
 
         let persisted = reducer.persistent_state();
         assert_eq!(persisted.notifications.len(), 1);
-        assert_eq!(persisted.notifications[0].event_id.as_str(), "attention");
+        assert_eq!(persisted.notifications[0].event_id.as_str(), "completed-2");
 
         let restored = SessionReducer::from_persistent_state(persisted).unwrap();
-        assert_eq!(restored.snapshot().presentation, PresentationState::Waiting);
+        assert_eq!(
+            restored.snapshot().notifications[0].event_id.as_str(),
+            "completed-2"
+        );
+        assert_eq!(restored.snapshot().presentation, PresentationState::Review);
     }
 
     #[test]
