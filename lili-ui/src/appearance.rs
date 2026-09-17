@@ -100,7 +100,7 @@ extern "C" {
     fn close_appearance_window();
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = appearanceWindowIsNative)]
-    fn appearance_window_is_native() -> bool;
+    pub(crate) fn appearance_window_is_native() -> bool;
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = appearanceWindowIsVisible)]
     fn appearance_window_is_visible() -> bool;
@@ -311,6 +311,8 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                     <div class="appearance-page-heading">
                         <h1 id="appearance-heading" class="appearance-selectable">"Appearance"</h1>
                     </div>
+
+                    <super::startup::StartupSettings />
 
                     <div class="appearance-workbench">
                         <section class="appearance-preview-panel" aria-label="Appearance preview">

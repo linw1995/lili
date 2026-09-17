@@ -282,6 +282,10 @@ pub fn run() {
 
 fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(DesktopAcceptanceState::default())
         .manage(DesktopSmokeState::default())
         .invoke_handler(tauri::generate_handler![
@@ -509,6 +513,9 @@ fn register_appearance_window_capability(
         .remote(format!("{}/*", origin.as_str().trim_end_matches('/')))
         .local(false)
         .window(APPEARANCE_WINDOW_LABEL)
+        .permission("autostart:allow-is-enabled")
+        .permission("autostart:allow-enable")
+        .permission("autostart:allow-disable")
         .permission("allow-sign-loopback-request")
         .permission("core:window:allow-close")
         .permission("core:window:allow-minimize")
