@@ -572,7 +572,8 @@ html:not([data-notification-placement="below"])
 }
 
 .appearance-preview-panel,
-.appearance-pet-panel {
+.appearance-pet-panel,
+.appearance-startup {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--appearance-line);
@@ -1259,14 +1260,19 @@ html:not([data-notification-placement="below"])
   }
 }
 
+.appearance-settings {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+}
+
 .appearance-startup {
-  margin-bottom: 22px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--appearance-line);
+  padding: 18px;
 }
 
 .appearance-startup-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;

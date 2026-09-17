@@ -312,8 +312,6 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                         <h1 id="appearance-heading" class="appearance-selectable">"Appearance"</h1>
                     </div>
 
-                    <super::startup::StartupSettings />
-
                     <div class="appearance-workbench">
                         <section class="appearance-preview-panel" aria-label="Appearance preview">
                             <div class="appearance-panel-heading">
@@ -450,24 +448,27 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             </div>
                         </section>
 
-                        <aside class="appearance-pet-panel" aria-label="Pet list">
-                            <h2 class="appearance-selectable">"Pet"</h2>
-                            <div class="appearance-pet-list-heading">
-                                <span>"Installed pets"</span>
-                                <span>{move || format!("{} available", appearance.get().pets.len())}</span>
-                            </div>
-                            <div class="appearance-pet-list" role="listbox" aria-label="Installed pets">
-                                {pet_items}
-                            </div>
-                            <Show when=move || selection_error.get().is_some()>
-                                <div class="appearance-status-line">
-                                    <span class="appearance-status-dot" aria-hidden="true"></span>
-                                    <small role="alert" class="appearance-selection-error appearance-selectable">
-                                        {move || selection_error.get().unwrap_or_else(|| "Pet selection failed".to_owned())}
-                                    </small>
+                        <div class="appearance-settings">
+                            <aside class="appearance-pet-panel" aria-label="Pet list">
+                                <h2 class="appearance-selectable">"Pet"</h2>
+                                <div class="appearance-pet-list-heading">
+                                    <span>"Installed pets"</span>
+                                    <span>{move || format!("{} available", appearance.get().pets.len())}</span>
                                 </div>
-                            </Show>
-                        </aside>
+                                <div class="appearance-pet-list" role="listbox" aria-label="Installed pets">
+                                    {pet_items}
+                                </div>
+                                <Show when=move || selection_error.get().is_some()>
+                                    <div class="appearance-status-line">
+                                        <span class="appearance-status-dot" aria-hidden="true"></span>
+                                        <small role="alert" class="appearance-selection-error appearance-selectable">
+                                            {move || selection_error.get().unwrap_or_else(|| "Pet selection failed".to_owned())}
+                                        </small>
+                                    </div>
+                                </Show>
+                            </aside>
+                            <super::startup::StartupSettings />
+                        </div>
                     </div>
                 </section>
             </div>
