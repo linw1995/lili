@@ -629,6 +629,8 @@ fn create_appearance_window(
     .devtools(false)
     .title("Lili Appearance")
     .inner_size(APPEARANCE_WINDOW_WIDTH, APPEARANCE_WINDOW_HEIGHT)
+    .prevent_overflow()
+    .center()
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
