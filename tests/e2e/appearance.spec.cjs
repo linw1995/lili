@@ -431,3 +431,55 @@ test("scaled pet preview keeps gaze centered and follows both horizontal directi
   await page.mouse.move(centerX, centerY);
   await expect(atlas).toHaveAttribute("data-frame-row", "0");
 });
+
+test("Startup is unavailable in browser previews", async ({ page }) => {
+  await openAppearance(page);
+  await expect(page.getByRole("switch", { name: "Launch at login" })).toBeDisabled();
+  await expect(page.getByText("Available in the desktop Settings window.")).toBeVisible();
+});
+
+test("Startup reads system state, toggles, and recovers from failures", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.startupEnabled = true;
+    window.startupFail = false;
+    window.startupCommands = [];
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "appearance" } },
+      invoke: async (command) => {
+        window.startupCommands.push(command);
+        if (window.startupFail) throw new Error("Registration failed");
+        if (command === "plugin:autostart|enable") window.startupEnabled = true;
+        if (command === "plugin:autostart|disable") window.startupEnabled = false;
+        return window.startupEnabled;
+      },
+    };
+  });
+  await openAppearance(page);
+  const toggle = page.getByRole("switch", { name: "Launch at login" });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await page.evaluate(() => { window.startupFail = true; });
+  await toggle.click();
+  await expect(page.getByRole("alert")).toContainText("Unable to update or read");
+  await expect(toggle).toBeDisabled();
+  await page.evaluate(() => { window.startupFail = false; });
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await expect(toggle).toBeEnabled();
+  await page.evaluate(() => {
+    window.startupEnabled = false;
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await page.evaluate(() => {
+    window.startupEnabled = true;
+    window.dispatchEvent(new Event("lili-appearance-shown"));
+  });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => window.startupCommands)).toContain("plugin:autostart|disable");
+  expect(await page.evaluate(() => window.startupCommands)).toContain("plugin:autostart|enable");
+  await page.screenshot({ path: test.info().outputPath("startup-settings.png"), fullPage: true });
+});

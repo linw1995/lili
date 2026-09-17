@@ -11,6 +11,7 @@ use lili_pet::{AnimationScheduler, AnimationState, FrameDescriptor, LookFrame};
 
 mod appearance;
 mod notification_carousel;
+mod startup;
 pub use appearance::AppearancePage;
 #[cfg(feature = "hydrate")]
 use appearance::install_appearance_selection_boundary;

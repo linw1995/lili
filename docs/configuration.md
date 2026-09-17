@@ -46,6 +46,10 @@ Existing `${CODEX_HOME}/lili`, `${CODEX_HOME}/pets`, and `${CODEX_HOME}/pet` pat
 
 `CODEX_HOME` is used only by an explicitly invoked `lili integrate` command to inspect or update Codex configuration. It is not a desktop configuration switch.
 
+### Launch at login
+
+Open **Settings** from the tray menu and use **Startup → Launch at login** to start Lili automatically when you sign in. This option is off until enabled and takes effect immediately. The desktop reads the operating system registration when Settings opens or regains focus; it does not store a separate preference. Disable the switch before moving or uninstalling the application, and enable it again from its new location if needed. Browser previews cannot change this setting.
+
 ## 3. Configure pet packages
 
 Lili always has an embedded Lili fallback. External packages are discovered only below the application root's `pets/` directory. A valid package at `<LILI_DATA>/pets/lili/` replaces the embedded fallback:
