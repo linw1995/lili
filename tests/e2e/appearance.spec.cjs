@@ -58,6 +58,20 @@ async function expectNoHorizontalClipping(page) {
   expect(result.clipped).toEqual([]);
 }
 
+test("Appearance fits the initial desktop window without vertical scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await openAppearance(page);
+
+  const geometry = await page.locator("#lili-appearance").evaluate((surface) => ({
+    height: surface.clientHeight,
+    contentHeight: surface.scrollHeight,
+    frameBottom: surface.querySelector(".appearance-window-frame").getBoundingClientRect().bottom,
+  }));
+  expect(geometry.contentHeight).toBeLessThanOrEqual(geometry.height);
+  expect(geometry.frameBottom).toBeLessThanOrEqual(geometry.height);
+  await expectNoHorizontalClipping(page);
+});
+
 test("Appearance keeps Pet navigation and scene controls keyboard reachable", async ({
   page,
 }) => {

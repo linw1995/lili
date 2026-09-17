@@ -73,7 +73,7 @@ const NOTIFICATION_SHADOW_INSET: i32 = 12;
 const NOTIFICATION_WINDOW_GAP: i32 = 0;
 const APPEARANCE_WINDOW_LABEL: &str = "appearance";
 const APPEARANCE_WINDOW_WIDTH: f64 = 1_180.0;
-const APPEARANCE_WINDOW_HEIGHT: f64 = 860.0;
+const APPEARANCE_WINDOW_HEIGHT: f64 = 900.0;
 const APPEARANCE_WINDOW_SHOWN_SCRIPT: &str = r#"
 window.__LILI_APPEARANCE_VISIBLE__ = true;
 window.dispatchEvent(new Event('lili-appearance-shown'));
@@ -2700,7 +2700,7 @@ mod tests {
     fn appearance_window_uses_the_dedicated_custom_frame_contract() {
         assert_eq!(APPEARANCE_WINDOW_LABEL, "appearance");
         assert_eq!(APPEARANCE_WINDOW_WIDTH, 1_180.0);
-        assert_eq!(APPEARANCE_WINDOW_HEIGHT, 860.0);
+        assert_eq!(APPEARANCE_WINDOW_HEIGHT, 900.0);
         assert!(APPEARANCE_WINDOW_SHOWN_SCRIPT.contains("lili-appearance-shown"));
         assert!(APPEARANCE_WINDOW_HIDDEN_SCRIPT.contains("lili-appearance-hidden"));
     }
