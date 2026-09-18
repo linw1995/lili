@@ -11,10 +11,12 @@ use lili_core::{AppearanceView, PetNotificationKind, PetNotificationPresentation
 use lili_pet::{AnimationScheduler, PreviewScene};
 
 use super::notification_carousel::NotificationPreviewCard;
+mod sprites;
 #[cfg(any(test, feature = "hydrate"))]
 use super::{
     AnimationController, ClickDecision, ClickDisambiguator, PointerTracker, PointerUpdate,
 };
+use sprites::{SpriteBrowser, SpritePlayback, SpriteTarget};
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
@@ -202,6 +204,14 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
             .map(|pet| format!("/pet-assets/{}", pet.asset_id))
             .unwrap_or_default()
     };
+    Effect::new(move |previous: Option<String>| {
+        let asset = selected_asset_url();
+        if previous.as_ref().is_some_and(|previous| previous != &asset) {
+            preview.update(|preview| preview.restart());
+            preview_frame.set(preview.get_untracked().frame());
+        }
+        asset
+    });
     #[cfg(feature = "hydrate")]
     let pet_items = view! {
         <For
@@ -267,11 +277,13 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
             appearance_pet_item_static(pet, selected)
         })
         .collect_view();
-    let scene_items = PreviewScene::all()
-        .iter()
-        .copied()
-        .map(|scene| appearance_scene_button(scene, preview, preview_frame))
-        .collect_view();
+    let scene_items = move || {
+        PreviewScene::all()
+            .iter()
+            .copied()
+            .map(|scene| appearance_scene_button(scene, preview, preview_frame))
+            .collect_view()
+    };
 
     view! {
         <main
@@ -312,14 +324,41 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                         <h1 id="appearance-heading" class="appearance-selectable">"Appearance"</h1>
                     </div>
 
-                    <div class="appearance-workbench">
+                    <div class="appearance-workbench" role="region" aria-label="Appearance workspace" tabindex="0">
                         <section class="appearance-preview-panel" aria-label="Appearance preview">
                             <div class="appearance-panel-heading">
                                 <div class="appearance-panel-heading-copy">
                                     <strong>"Live preview"</strong>
                                 </div>
+                                <div class="appearance-preview-modes" role="group" aria-label="Preview mode">
+                                    <button
+                                        class="appearance-sprite-button"
+                                        type="button"
+                                        aria-pressed=move || preview.get().sprite.is_none().to_string()
+                                        on:click=move |_| {
+                                            preview.update(|preview| { preview.select(preview.scene()); });
+                                            preview_frame.set(preview.get_untracked().frame());
+                                        }
+                                    >"Scenes"</button>
+                                    <button
+                                        class="appearance-sprite-button"
+                                        type="button"
+                                        aria-pressed=move || preview.get().sprite.is_some().to_string()
+                                        on:click=move |_| {
+                                            if preview.get_untracked().sprite.is_none() {
+                                                preview.update(|preview| preview.select_sprite(SpriteTarget::Animation(lili_pet::AnimationState::Idle)));
+                                                preview_frame.set(preview.get_untracked().frame());
+                                            }
+                                        }
+                                    >"Sprites"</button>
+                                </div>
                             </div>
 
+                            <div class="appearance-preview-content" role="region" aria-label="Preview content" tabindex="0">
+                            <Show
+                                when=move || preview.get().sprite.is_none()
+                                fallback=move || view! { <SpriteBrowser appearance preview preview_frame reduced_motion=preview_reduced_motion/> }
+                            >
                             <div class="appearance-scene-picker">
                                 <div class="appearance-scene-heading">
                                     <strong class="appearance-selectable">"Scene"</strong>
@@ -446,9 +485,11 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                                         </div>
                                     </div>
                             </div>
+                            </Show>
+                            </div>
                         </section>
 
-                        <div class="appearance-settings">
+                        <div class="appearance-settings" role="region" aria-label="Pet settings" tabindex="0">
                             <aside class="appearance-pet-panel" aria-label="Pet list">
                                 <h2 class="appearance-selectable">"Pet"</h2>
                                 <div class="appearance-pet-list-heading">
@@ -536,6 +577,7 @@ fn appearance_scene_button(
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct AppearancePreviewController {
     scene: PreviewScene,
+    sprite: Option<SpritePlayback>,
     scheduler: AnimationScheduler,
     #[cfg(any(test, feature = "hydrate"))]
     interaction: AnimationController,
@@ -554,6 +596,7 @@ impl AppearancePreviewController {
     fn new(scene: PreviewScene) -> Self {
         Self {
             scene,
+            sprite: None,
             scheduler: AnimationScheduler::new(scene.spec().animation()),
             #[cfg(any(test, feature = "hydrate"))]
             interaction: AnimationController::new(lili_core::PetLifecycleState::Idle, 0),
@@ -574,7 +617,25 @@ impl AppearancePreviewController {
     }
 
     fn frame(self) -> AtlasFrame {
-        self.scheduler.current_frame().into()
+        self.sprite.map_or_else(
+            || self.scheduler.current_frame().into(),
+            SpritePlayback::frame,
+        )
+    }
+
+    fn select_sprite(&mut self, target: SpriteTarget) {
+        *self = Self::new(self.scene);
+        self.sprite = Some(SpritePlayback::new(target));
+    }
+
+    fn restart(&mut self) {
+        let sprite = self.sprite.map(|sprite| (sprite.target, sprite.playing));
+        *self = Self::new(self.scene);
+        if let Some((target, playing)) = sprite {
+            let mut sprite = SpritePlayback::new(target);
+            sprite.playing = playing;
+            self.sprite = Some(sprite);
+        }
     }
 
     fn select(&mut self, scene: PreviewScene) -> AtlasFrame {
@@ -628,6 +689,9 @@ impl AppearancePreviewController {
 
     #[cfg(any(test, feature = "hydrate"))]
     fn tick(&mut self, delta: Duration, reduced_motion: bool) -> AtlasFrame {
+        if let Some(sprite) = &mut self.sprite {
+            return sprite.tick(delta, reduced_motion);
+        }
         self.now_ms = self.now_ms.saturating_add(delta.as_millis() as u64);
         if self.clicks.poll(self.now_ms) == ClickDecision::Single {
             self.interaction.trigger_wave(self.now_ms);
@@ -1096,7 +1160,7 @@ mod tests {
         assert!(html.contains("/pet-assets/asset-id"));
         assert_eq!(html.matches("appearance-pet-thumb-atlas").count(), 1);
         assert_eq!(html.matches("draggable=\"false\"").count(), 2);
-        assert_eq!(html.matches("aria-pressed=").count(), 7);
+        assert_eq!(html.matches("aria-pressed=").count(), 9);
         assert_eq!(html.matches("data-scene=").count(), 8);
         assert!(!html.contains("Choose a companion"));
         assert!(!html.contains("Pet configuration"));
@@ -1105,6 +1169,29 @@ mod tests {
         assert!(!html.contains(">Notifications</span>"));
         assert!(!html.contains(">Interactions</span>"));
         assert!(!html.contains(">Connection</span>"));
+    }
+
+    #[test]
+    fn sprite_preview_ignores_gestures_and_restarts_without_losing_its_target() {
+        let mut preview = AppearancePreviewController::new(PreviewScene::Review);
+        let target = SpriteTarget::Animation(lili_pet::AnimationState::RunningLeft);
+        preview.select_sprite(target);
+        let first = preview.frame();
+        preview.press(0.0, 0.0, 0);
+        preview.move_to(40.0, 0.0, 20, 40.0, 0.0);
+        let second = preview.tick(Duration::from_millis(120), false);
+        assert_eq!(second.row, first.row);
+        assert_eq!(second.column, 1);
+        preview.sprite.as_mut().unwrap().playing = false;
+        assert_eq!(preview.tick(Duration::from_secs(10), false), second);
+        preview.restart();
+        assert_eq!(preview.sprite.unwrap().target, target);
+        assert!(!preview.sprite.unwrap().playing);
+        assert_eq!(preview.frame(), first);
+        assert!(!preview.pointer.pressed());
+        preview.select(PreviewScene::Review);
+        assert!(preview.sprite.is_none());
+        assert_eq!(preview.scene(), PreviewScene::Review);
     }
 
     #[test]
@@ -1331,7 +1418,7 @@ mod tests {
         assert_eq!(html.matches("role=\"option\"").count(), 2);
         assert_eq!(html.matches("aria-selected=\"true\"").count(), 1);
         assert_eq!(html.matches("aria-selected=\"false\"").count(), 1);
-        assert_eq!(html.matches("aria-pressed=").count(), 7);
+        assert_eq!(html.matches("aria-pressed=").count(), 9);
         assert!(html.contains("aria-live=\"polite\""));
         assert!(html.contains("data-pet-id=\"alternate\""));
     }
@@ -1345,7 +1432,6 @@ mod tests {
         assert!(css.contains("-webkit-user-select: text;"));
         assert!(css.contains("overflow: visible;"));
         assert!(css.contains("border-radius: 0 0 19px 19px;"));
-        assert!(css.contains("min-height: calc(100vh - 96px);"));
         assert!(css.contains("padding: 32px 48px 64px;"));
         assert!(css.contains("@keyframes appearance-idle-preview"));
         assert!(css.contains(".notification-card {"));

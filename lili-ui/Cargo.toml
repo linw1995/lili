@@ -43,6 +43,8 @@ web-sys = { workspace = true, features = [
   "Request",
   "RequestInit",
   "Response",
+  "ScrollIntoViewOptions",
+  "ScrollLogicalPosition",
   "TransitionEvent",
   "WheelEvent",
   "Window",
