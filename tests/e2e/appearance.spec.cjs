@@ -1,5 +1,8 @@
 const { expect, test } = require("@playwright/test");
 
+// Allow subpixel scroll rounding while rejecting partially clipped controls.
+const FULL_VISIBILITY_RATIO = 0.995;
+
 let diagnostics = [];
 
 test.beforeEach(async ({ page }) => {
@@ -58,6 +61,130 @@ async function expectNoHorizontalClipping(page) {
   expect(result.clipped).toEqual([]);
 }
 
+async function expectBoundedAppearance(page) {
+  const geometry = await page.evaluate(() => {
+    const root = document.querySelector("#lili-appearance");
+    const rect = (element) => {
+      const { top, left, bottom, right } = element.getBoundingClientRect();
+      return { top, left, bottom, right };
+    };
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      documentWidth: document.documentElement.scrollWidth,
+      documentHeight: document.documentElement.scrollHeight,
+      rootHeight: root.clientHeight,
+      rootContentHeight: root.scrollHeight,
+      rootWidth: root.clientWidth,
+      rootContentWidth: root.scrollWidth,
+      rootScrollTop: root.scrollTop,
+      frame: rect(root.querySelector(".appearance-window-frame")),
+      close: rect(root.querySelector(".appearance-window-control-close")),
+      scrollOwners: [...root.querySelectorAll("*")].filter((element) =>
+        element.scrollHeight > element.clientHeight + 1 &&
+        ["auto", "scroll"].includes(getComputedStyle(element).overflowY),
+      ).map((element) => element.className),
+    };
+  });
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.width);
+  expect(geometry.documentHeight).toBeLessThanOrEqual(geometry.height);
+  expect(geometry.rootContentWidth).toBeLessThanOrEqual(geometry.rootWidth);
+  expect(geometry.rootContentHeight).toBeLessThanOrEqual(geometry.rootHeight);
+  expect(geometry.rootScrollTop).toBe(0);
+  for (const rect of [geometry.frame, geometry.close]) {
+    expect(rect.left).toBeGreaterThanOrEqual(0);
+    expect(rect.top).toBeGreaterThanOrEqual(0);
+    expect(rect.right).toBeLessThanOrEqual(geometry.width);
+    expect(rect.bottom).toBeLessThanOrEqual(geometry.height);
+  }
+  const allowed = geometry.width > 900
+    ? ["appearance-preview-content", "appearance-settings"]
+    : ["appearance-workbench"];
+  for (const owner of geometry.scrollOwners) expect(allowed).toContain(owner);
+  await expect(page.getByRole("button", { name: "Close Appearance window" })).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+}
+
+for (const [width, height] of [
+  [1180, 900], [1180, 600], [1024, 768], [901, 600],
+  [900, 600], [736, 600], [590, 450], [320, 480],
+]) {
+  test(`Appearance bounds every preview mode at ${width}x${height}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await openAppearance(page);
+    for (const scene of ["idle", "review"]) {
+      await page.locator(`.appearance-scene-button[data-scene=${scene}]`).click();
+      await page.locator("#appearance-pet").scrollIntoViewIfNeeded();
+      await expect(page.locator("#appearance-pet")).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+      await expectBoundedAppearance(page);
+    }
+    await page.getByRole("button", { name: "Sprites", exact: true }).click();
+    for (const [category, group] of [
+      ["Animations", ".appearance-animation-frames"],
+      ["Look directions", '[role=group][aria-label="Look directions"]'],
+      ["Sprite sheet", ".appearance-sheet-grid"],
+    ]) {
+      await page.getByRole("button", { name: category, exact: true }).click();
+      const last = page.locator(`${group} button`).last();
+      await last.focus();
+      await page.keyboard.press("Enter");
+      await expect(last).toHaveAttribute("aria-pressed", "true");
+      await expect(last).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+      await expectBoundedAppearance(page);
+      await page.locator(".appearance-sprite-image").scrollIntoViewIfNeeded();
+      await expect(page.locator(".appearance-sprite-image")).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+      await expectBoundedAppearance(page);
+    }
+    await page.getByRole("switch", { name: "Launch at login" }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole("switch", { name: "Launch at login" })).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+    await expectBoundedAppearance(page);
+    if (width === 1180 && height === 900 || width === 320) {
+      await page.locator(".appearance-preview-content, .appearance-workbench").evaluateAll((elements) => {
+        for (const element of elements) element.scrollTop = 0;
+      });
+      await page.screenshot({ path: testInfo.outputPath("bounded-appearance.png") });
+    }
+  });
+}
+
+test("Appearance keeps long Pet lists reachable while resizing an open sprite sheet", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await openAppearance(page);
+  const original = await page.request.get("/api/v1/appearance").then((response) => response.json());
+  const asset = await page.request.get(`/pet-assets/${original.pets[0].assetId}`);
+  const body = await asset.body();
+  const pets = [original.pets[0], ...Array.from({ length: 63 }, (_, index) => ({
+    id: `layout-${index}`,
+    displayName: `Pet ${index + 2} with a long display name to exercise the available panel width`,
+    assetId: `layout-${index}`,
+  }))];
+  const current = { pets, selectedPetId: pets[0].id };
+  await page.route("**/pet-assets/layout-*", (route) => route.fulfill({ body, contentType: "image/webp" }));
+  await page.route("**/api/v1/appearance", (route) => route.fulfill({ json: current }));
+  await page.route("**/api/v1/appearance/pet", (route) => {
+    current.selectedPetId = route.request().postDataJSON().petId;
+    return route.fulfill({ json: current });
+  });
+  await expect(page.getByRole("option")).toHaveCount(64);
+  await page.getByRole("button", { name: "Sprites", exact: true }).click();
+  await page.getByRole("button", { name: "Sprite sheet", exact: true }).click();
+  for (const [width, height] of [[1180, 900], [590, 450], [320, 480], [1180, 600]]) {
+    await page.setViewportSize({ width, height });
+    const lastPet = page.getByRole("option").last();
+    await lastPet.focus();
+    await page.keyboard.press("Enter");
+    await expect(lastPet).toHaveAttribute("aria-selected", "true");
+    await expect(lastPet).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+    await expectBoundedAppearance(page);
+    const lastCell = page.locator(".appearance-sheet-grid button").last();
+    await lastCell.focus();
+    await page.keyboard.press("Enter");
+    await expect(lastCell).toHaveAttribute("aria-pressed", "true");
+    await expect(lastCell).toBeInViewport({ ratio: FULL_VISIBILITY_RATIO });
+    await expectBoundedAppearance(page);
+  }
+});
+
 test("Appearance fits the initial desktop window without vertical scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 900 });
   await openAppearance(page);
@@ -80,11 +207,11 @@ test("Appearance keeps Pet navigation and scene controls keyboard reachable", as
   await expect(page.locator(".appearance-window-frame")).toBeVisible();
   await expect(page.locator(".appearance-window-frame")).toHaveCSS(
     "overflow",
-    "visible",
+    "hidden",
   );
   await expect(page.locator(".appearance-main")).toHaveCSS(
     "overflow",
-    "visible",
+    "hidden",
   );
   await expect(page.locator(".appearance-topbar")).toHaveAttribute(
     "data-tauri-drag-region",
@@ -450,6 +577,147 @@ test("Startup is unavailable in browser previews", async ({ page }) => {
   await openAppearance(page);
   await expect(page.getByRole("switch", { name: "Launch at login" })).toBeDisabled();
   await expect(page.getByText("Available in the desktop Settings window.")).toBeVisible();
+});
+
+test("Sprites exposes every animation frame with deterministic manual playback", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openAppearance(page);
+  await page.getByRole("button", { name: "Sprites", exact: true }).click();
+  const atlas = page.locator(".appearance-sprite-image img");
+  const animations = page.getByRole("group", { name: "Animations", exact: true });
+  await expect(animations.getByRole("button")).toHaveCount(9);
+  const counts = [6, 8, 8, 4, 5, 8, 6, 6, 6];
+  for (let row = 0; row < counts.length; row += 1) {
+    await animations.getByRole("button").nth(row).click();
+    const frames = page.getByRole("group", { name: "Animation frames" }).getByRole("button");
+    await expect(frames).toHaveCount(counts[row]);
+    for (let column = 0; column < counts[row]; column += 1) {
+      await frames.nth(column).click();
+      await expect(atlas).toHaveAttribute("data-frame-row", String(row));
+      await expect(atlas).toHaveAttribute("data-frame-column", String(column));
+    }
+    await page.getByRole("button", { name: "Next frame", exact: true }).click();
+    await expect(atlas).toHaveAttribute("data-frame-column", "0");
+    await page.getByRole("button", { name: "Previous frame", exact: true }).click();
+    await expect(atlas).toHaveAttribute("data-frame-column", String(counts[row] - 1));
+  }
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toBeDisabled();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await expect(atlas).not.toHaveAttribute("data-frame-column", "5");
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  const column = await atlas.getAttribute("data-frame-column");
+  await page.waitForTimeout(350);
+  await expect(atlas).toHaveAttribute("data-frame-column", column);
+});
+
+test("Sprites fixes every gaze direction and exposes the complete sheet without runtime actions", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1180, height: 900 });
+  const mutations = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/") && request.method() !== "GET") {
+      mutations.push(request.url());
+    }
+  });
+  await openAppearance(page);
+  await page.locator(".appearance-scene-button[data-scene=review]").click();
+  await page.getByRole("button", { name: "Sprites", exact: true }).click();
+  await page.getByRole("button", { name: "Look directions", exact: true }).click();
+  const atlas = page.locator(".appearance-sprite-image img");
+  const directions = page.getByRole("group", { name: "Look directions", exact: true }).getByRole("button");
+  await expect(directions).toHaveCount(17);
+  for (let index = 0; index < 16; index += 1) {
+    await directions.nth(index + 1).click();
+    await expect(atlas).toHaveAttribute("data-frame-row", String(9 + Math.floor(index / 8)));
+    await expect(atlas).toHaveAttribute("data-frame-column", String(index % 8));
+  }
+  await directions.first().focus();
+  await page.keyboard.press("Enter");
+  await expect(atlas).toHaveAttribute("data-frame-row", "0");
+  await expect(atlas).toHaveAttribute("data-frame-column", "6");
+  await page.locator(".appearance-sprite-image").dblclick();
+  await page.waitForTimeout(350);
+  await expect(atlas).toHaveAttribute("data-frame-column", "6");
+  await page.getByRole("button", { name: "Sprite sheet", exact: true }).click();
+  const cells = page.locator(".appearance-sheet-grid button");
+  await expect(cells).toHaveCount(88);
+  await expect(page.locator(".appearance-sprite-unused")).toHaveCount(14);
+  for (let index = 0; index < 88; index += 1) {
+    await cells.nth(index).click();
+    await expect(atlas).toHaveAttribute("data-frame-row", String(Math.floor(index / 8)));
+    await expect(atlas).toHaveAttribute("data-frame-column", String(index % 8));
+  }
+  await page.locator("#lili-appearance").evaluate((element) => { element.scrollTop = 0; });
+  await page.screenshot({ path: testInfo.outputPath("sprite-sheet.png"), fullPage: true });
+  await page.getByRole("button", { name: "Scenes", exact: true }).click();
+  await expect(page.locator("#appearance-scene")).toHaveAttribute("data-scene", "review");
+  await expect(page.locator(".notification-card-preview")).toBeVisible();
+  expect(mutations).toEqual([]);
+});
+
+test("Sprites keeps its target and resets the frame when switching pets", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openAppearance(page);
+  const appearance = await page.request.get("/api/v1/appearance").then((response) => response.json());
+  const original = appearance.pets[0];
+  const alternate = { id: "preview-alternate", displayName: "Alternate pet", assetId: "preview-alternate" };
+  const current = { ...appearance, pets: [original, alternate] };
+  await page.route("**/pet-assets/preview-alternate", async (route) => {
+    const response = await page.request.get(`/pet-assets/${original.assetId}`);
+    await route.fulfill({ response });
+  });
+  await page.route("**/api/v1/appearance/pet", (route) => {
+    current.selectedPetId = route.request().postDataJSON().petId;
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/v1/appearance", (route) => route.fulfill({ json: current }));
+  await expect(page.getByRole("option")).toHaveCount(2);
+  await page.getByRole("button", { name: "Sprites", exact: true }).click();
+  await page.getByRole("button", { name: "Run left", exact: true }).click();
+  await page.getByRole("button", { name: "Next frame", exact: true }).click();
+  const atlas = page.locator(".appearance-sprite-image img");
+  await expect(atlas).toHaveAttribute("data-frame-column", "1");
+  await page.getByRole("option", { name: /Alternate pet/ }).click();
+  await expect(atlas).toHaveAttribute("src", "/pet-assets/preview-alternate");
+  await expect(atlas).toHaveAttribute("data-frame-row", "2");
+  await expect(atlas).toHaveAttribute("data-frame-column", "0");
+  await expect(page.getByRole("button", { name: "Run left", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Next frame", exact: true }).click();
+  await page.waitForTimeout(600);
+  await expect(atlas).toHaveAttribute("data-frame-column", "1");
+  await page.getByRole("button", { name: "Look directions", exact: true }).click();
+  await page.getByRole("button", { name: "Look 90°", exact: true }).click();
+  await page.getByRole("option").first().click();
+  await expect(atlas).toHaveAttribute("src", `/pet-assets/${original.assetId}`);
+  await expect(atlas).toHaveAttribute("data-frame-row", "9");
+  await expect(atlas).toHaveAttribute("data-frame-column", "4");
+});
+
+test("Sprites keeps the full cell visible and confines sheet scrolling on narrow windows", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await openAppearance(page);
+  await page.getByRole("button", { name: "Sprites", exact: true }).click();
+  await expectNoHorizontalClipping(page);
+  await page.getByRole("button", { name: "Sprite sheet", exact: true }).click();
+  const last = page.locator(".appearance-sheet-grid button").last();
+  await last.focus();
+  await page.keyboard.press("Enter");
+  await expect(last).toHaveAttribute("aria-pressed", "true");
+  const geometry = await page.locator(".appearance-sprite-image").evaluate((image) => ({
+    width: image.getBoundingClientRect().width,
+    height: image.getBoundingClientRect().height,
+    left: image.getBoundingClientRect().left,
+    right: image.getBoundingClientRect().right,
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }));
+  expect(geometry.width / geometry.height).toBeCloseTo(192 / 208);
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  await page.locator("#lili-appearance").evaluate((element) => { element.scrollTop = 0; });
+  await page.screenshot({ path: testInfo.outputPath("sprite-sheet-narrow.png"), fullPage: true });
 });
 
 test("Startup reads system state, toggles, and recovers from failures", async ({ page }) => {
