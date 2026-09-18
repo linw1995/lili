@@ -2,7 +2,7 @@
 
 ## Scope
 
-This design covers the first Appearance surface for the Lili desktop pet. The page is intentionally limited to Pet configuration and preview.
+This design covers the Appearance surface for the Lili desktop pet, including Pet configuration, preview, and launch-at-login settings.
 
 ## Layout
 
@@ -13,9 +13,10 @@ This design covers the first Appearance surface for the Lili desktop pet. The pa
 - A center preview workbench with explicit scene controls.
 - An open preview stage without a nested desktop window mockup or extra preview-status badge.
 - A right-side installed Pet list used to change the selected package; each item shows a looping Idle atlas thumbnail.
+- A Startup card below the Pet list keeps launch-at-login settings alongside the preview without adding height above it; narrow layouts stack both cards below the preview.
 - Pet imagery is presentation-only: browser image selection, swipe, and drag interactions are disabled while the surrounding controls remain operable.
 - Readable text can be selected only inside its own marked text container; chrome and controls remain unselectable.
-- No Active pet summary and no additional configuration forms.
+- No Active pet summary.
 
 ## Preview scenes
 
