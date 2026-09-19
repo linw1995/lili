@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
+use tracing::instrument::WithSubscriber;
 
 use super::{
     ActionExecutionOutcome, ActionSupervisor, SessionTitleRequest, run_action_cancellable,
@@ -119,7 +120,7 @@ impl ActionSupervisor {
             let supervisor = self.clone();
             let worker_key = key.clone();
             let request = SessionTitleRequest::new(provider.to_owned(), session_id.to_owned());
-            let worker = tokio::spawn(async move {
+            let worker = async move {
                 let _admission = admission;
                 let mut shutdown = supervisor.shutdown.subscribe();
                 let slots = async {
@@ -171,7 +172,8 @@ impl ActionSupervisor {
                 }
                 sender.send_replace(title);
                 state.pending.remove(&worker_key);
-            });
+            };
+            let worker = tokio::spawn(worker.with_current_subscriber());
             state.pending.insert(
                 key,
                 Pending {
@@ -397,7 +399,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_coalesced_execution_logs_once_without_output() {
         let buffer = LogBuffer::default();
         let writer = buffer.clone();
