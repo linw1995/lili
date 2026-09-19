@@ -32,6 +32,27 @@ class WindowsLauncherTests(unittest.TestCase):
             application_home.mkdir()
             shutil.copytree(WORKSPACE_ROOT / "marketplace" / "local", catalog)
             shutil.copytree(WORKSPACE_ROOT / "plugins" / "lili", plugin)
+            trace = root / "launcher-trace.txt"
+            quoted_trace = str(trace).replace("'", "''")
+            launcher_path = plugin / "hooks" / "forward.ps1"
+            launcher = launcher_path.read_text(encoding="utf-8")
+            for index, marker in enumerate((
+                '$ErrorActionPreference = "Stop"',
+                '$utf8 = [Text.UTF8Encoding]::new($false)',
+                '$payload = $reader.ReadToEnd()',
+                '$startInfo = [Diagnostics.ProcessStartInfo]::new()',
+                '[Console]::InputEncoding = $utf8',
+                '$forwarderProcess = [Diagnostics.Process]::new()',
+                '$forwarderProcess.StandardInput.Write($payload)',
+                '$forwarderProcess.StandardInput.Close()',
+                '$forwarderProcess.WaitForExit()',
+                '$forwarderExitCode = $forwarderProcess.ExitCode',
+            )):
+                launcher = launcher.replace(
+                    marker,
+                    f"[IO.File]::AppendAllText('{quoted_trace}', 'phase-{index}' + [Environment]::NewLine)\n{marker}",
+                )
+            launcher_path.write_text(launcher, encoding="utf-8")
             forwarder = plugin / "bin" / "x86_64-pc-windows-msvc" / "lili-hook.exe"
             forwarder.parent.mkdir(parents=True)
             started = root / "forwarder.started"
@@ -97,13 +118,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "TMP": str(root),
             }
             powershell = Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-            legacy = subprocess.run(
-                [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
-                input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                env=legacy_environment,
-                capture_output=True,
-                timeout=10,
-            )
+            command = f"[IO.File]::AppendAllText('{quoted_trace}', 'command-started' + [Environment]::NewLine); " + command
+            try:
+                legacy = subprocess.run(
+                    [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+                    input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    env=legacy_environment,
+                    capture_output=True,
+                    timeout=10,
+                )
+            finally:
+                if trace.exists():
+                    print(trace.read_text(encoding="utf-8"), file=sys.stderr)
             self.assertEqual(legacy.returncode, 0, legacy.stderr.decode("utf-8", errors="replace"))
             self.assertEqual(legacy.stdout, b"")
             self.assertEqual(legacy.stderr, b"")
