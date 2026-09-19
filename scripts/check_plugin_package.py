@@ -18,7 +18,10 @@ EXPECTED_HOOK_EVENTS = {
 }
 HANDLER_FIELDS = {"type", "command", "commandWindows", "timeout", "statusMessage", "async"}
 GROUP_FIELDS = {"matcher", "hooks"}
-TRUSTED_WINDOWS_POWERSHELL = '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'
+WINDOWS_LAUNCHER_COMMAND = (
+    "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+    "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
+)
 EXECUTABLE_SUFFIXES = {".bat", ".cmd", ".exe", ".ps1", ".sh"}
 EXECUTABLE_MAGICS = (
     b"\x7fELF",
@@ -161,8 +164,8 @@ def validate_hook_schema(path: Path) -> dict:
                 if "commandWindows" in handler:
                     require(isinstance(handler["commandWindows"], str) and handler["commandWindows"], f"invalid Windows command: {event}")
                     require(
-                        handler["commandWindows"].startswith(TRUSTED_WINDOWS_POWERSHELL + " "),
-                        f"Windows command must use the trusted absolute PowerShell path: {event}",
+                        handler["commandWindows"] == WINDOWS_LAUNCHER_COMMAND,
+                        f"Windows command must invoke the packaged launcher through the host shell: {event}",
                     )
                 if "timeout" in handler:
                     timeout = handler["timeout"]

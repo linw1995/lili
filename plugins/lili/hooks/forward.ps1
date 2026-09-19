@@ -50,11 +50,11 @@ if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME) -and
     $env:LILI_PLUGIN_CODEX_HOME = $env:CODEX_HOME
 }
 
-$isWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+$hostIsWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
 )
 $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if (-not $isWindows -or $architecture -ne [Runtime.InteropServices.Architecture]::X64) {
+if (-not $hostIsWindows -or $architecture -ne [Runtime.InteropServices.Architecture]::X64) {
     Fail-LiliLauncher "Lili plugin does not support this host" 64
 }
 
@@ -71,9 +71,38 @@ if (-not $forwarderItem.PSIsContainer -and
     Fail-LiliLauncher "Lili plugin forwarder is missing or invalid" 66
 }
 
-$OutputEncoding = [Text.UTF8Encoding]::new($false)
-$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin
-if ($null -eq $LASTEXITCODE) {
-    Fail-LiliLauncher "Lili plugin forwarder did not return an exit code" 67
+$utf8 = [Text.UTF8Encoding]::new($false)
+$reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), $utf8, $false)
+try {
+    $payload = $reader.ReadToEnd()
+} finally {
+    $reader.Dispose()
 }
-exit $LASTEXITCODE
+
+$startInfo = [Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = $forwarderPath
+$startInfo.Arguments = '--integration-id lili-session-v1 --plugin-hook --json-stdin'
+$startInfo.UseShellExecute = $false
+$startInfo.RedirectStandardInput = $true
+if ($null -ne $startInfo.PSObject.Properties["StandardInputEncoding"]) {
+    $startInfo.StandardInputEncoding = $utf8
+} else {
+    # Windows PowerShell uses Console.InputEncoding for redirected process input.
+    [Console]::InputEncoding = $utf8
+}
+
+$forwarderProcess = [Diagnostics.Process]::new()
+$forwarderProcess.StartInfo = $startInfo
+try {
+    if (-not $forwarderProcess.Start()) {
+        Fail-LiliLauncher "Lili plugin forwarder could not start" 67
+    }
+    $forwarderProcess.StandardInput.Write($payload)
+    # The native forwarder reads to EOF before parsing the event.
+    $forwarderProcess.StandardInput.Close()
+    $forwarderProcess.WaitForExit()
+    $forwarderExitCode = $forwarderProcess.ExitCode
+} finally {
+    $forwarderProcess.Dispose()
+}
+exit $forwarderExitCode
