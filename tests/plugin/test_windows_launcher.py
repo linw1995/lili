@@ -21,7 +21,7 @@ class WindowsLauncherTests(unittest.TestCase):
     def test_installed_hook_forwards_stdin_through_the_host_shell(self) -> None:
         lifecycle = load_json(WORKSPACE_ROOT / "marketplace" / "local" / "lifecycle.json")
         executable = resolve_executable(os.environ.get("CODEX_BIN", "codex"))
-        with tempfile.TemporaryDirectory(prefix="lili launcher ") as temporary:
+        with tempfile.TemporaryDirectory(prefix="lili launcher ", ignore_cleanup_errors=True) as temporary:
             root = Path(temporary).resolve()
             catalog = root / "catalog"
             plugin = catalog / "plugins" / "lili"
@@ -34,49 +34,37 @@ class WindowsLauncherTests(unittest.TestCase):
             shutil.copytree(WORKSPACE_ROOT / "plugins" / "lili", plugin)
             forwarder = plugin / "bin" / "x86_64-pc-windows-msvc" / "lili-hook.exe"
             forwarder.parent.mkdir(parents=True)
-            source = root / "forwarder.cs"
+            started = root / "forwarder.started"
+            source = root / "forwarder.rs"
             source.write_text(
-                """using System;
-using System.IO;
-using System.Text;
+                """use std::io::{Read, Write};
 
-public static class LauncherFixture
-{
-    public static int Main(string[] arguments)
-    {
-        if (String.Join(" ", arguments) != "--integration-id lili-session-v1 --plugin-hook --json-stdin")
-            return 91;
-        Console.InputEncoding = new UTF8Encoding(false);
-        File.AppendAllText(CAPTURE_PATH, Console.In.ReadToEnd() + "\\n");
-        return 0;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    if arguments != "--integration-id lili-session-v1 --plugin-hook --json-stdin" {
+        return Err("unexpected forwarder arguments".into());
     }
+    std::fs::write(STARTED_PATH, b"started")?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut input = String::new();
+        let result = std::io::stdin().read_to_string(&mut input).map(|_| input);
+        let _ = sender.send(result);
+    });
+    let input = receiver.recv_timeout(std::time::Duration::from_secs(5))??;
+    let mut output = std::fs::OpenOptions::new().create(true).append(true).open(CAPTURE_PATH)?;
+    writeln!(output, "{}", input)?;
+    Ok(())
 }
-""".replace("CAPTURE_PATH", json.dumps(str(capture))),
+""".replace("CAPTURE_PATH", json.dumps(str(capture), ensure_ascii=False))
+                .replace("STARTED_PATH", json.dumps(str(started), ensure_ascii=False)),
                 encoding="utf-8",
-            )
-            builder = root / "build.ps1"
-            quoted_forwarder = str(forwarder).replace("'", "''")
-            quoted_source = str(source).replace("'", "''")
-            builder.write_text(
-                '$ErrorActionPreference = "Stop"\n'
-                f"Add-Type -OutputAssembly '{quoted_forwarder}' "
-                "-OutputType ConsoleApplication "
-                f"-TypeDefinition (Get-Content -LiteralPath '{quoted_source}' -Raw)\n",
-                encoding="utf-8",
-            )
-            powershell = (
-                Path(os.environ["SystemRoot"])
-                / "System32"
-                / "WindowsPowerShell"
-                / "v1.0"
-                / "powershell.exe"
             )
             built = subprocess.run(
-                [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive",
-                 "-ExecutionPolicy", "Bypass", "-File", str(builder)],
+                ["rustc", "--edition=2021", str(source), "-o", str(forwarder)],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=90,
             )
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             runner = CodexRunner(executable, root / "host-data", lifecycle["codexVersion"])
@@ -86,7 +74,7 @@ public static class LauncherFixture
             installed = runner.json(["plugin", "add", lifecycle["pluginSelector"]])
             installed_root = Path(installed["installedPath"])
 
-            # CLR startup is outside the native forwarder's hook timeout contract.
+            # Native acceptance also checks the installed executable before dispatch.
             subprocess.run(
                 [str(installed_root / "bin" / "x86_64-pc-windows-msvc" / "lili-hook.exe"),
                  "--integration-id", "lili-session-v1", "--plugin-hook", "--json-stdin"],
@@ -95,10 +83,15 @@ public static class LauncherFixture
                 timeout=60,
             )
             capture.unlink()
+            started.unlink()
             with patch.dict(os.environ, {"LOCALAPPDATA": str(application_home)}):
-                result = dispatch_installed_plugin_hook(
-                    WORKSPACE_ROOT, executable, runner.codex_home, installed_root, project
-                )
+                try:
+                    result = dispatch_installed_plugin_hook(
+                        WORKSPACE_ROOT, executable, runner.codex_home, installed_root, project
+                    )
+                except Exception:
+                    print(f"fixture_started={started.exists()}; payload_captured={capture.exists()}", file=sys.stderr)
+                    raise
             self.assertEqual(result["result"], "passed")
             self.assertIs(result["bypassUsed"], False)
             events = [
