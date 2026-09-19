@@ -52,7 +52,7 @@ def sse(events: list[dict]) -> bytes:
 
 
 class ResponsesServer:
-    def __init__(self, permission_command: str):
+    def __init__(self, permission_command: str | None = None):
         function_arguments = json.dumps(
             {"command": permission_command}, separators=(",", ":")
         )
@@ -117,6 +117,8 @@ class ResponsesServer:
                 ]
             ),
         ]
+        if permission_command is None:
+            self.responses.pop(0)
         self.requests: list[dict] = []
         self.lock = threading.Lock()
         owner = self
@@ -322,6 +324,26 @@ class AppServerClient:
             "turn completion after Stop",
         )
         return runs
+
+    def dispatch_completion_turn(self, thread_id: str) -> dict:
+        turn_id = self._start_turn(
+            thread_id, "Complete the installed Marketplace notification turn."
+        )
+        self._completed_hook(thread_id, "sessionStart", turn_id)
+        self._completed_hook(thread_id, "userPromptSubmit", turn_id)
+        run = self._completed_hook(thread_id, "stop", turn_id)
+        completed = self._notification(
+            "turn/completed",
+            lambda params: params.get("threadId") == thread_id
+            and isinstance(params.get("turn"), dict)
+            and params["turn"].get("id") == turn_id,
+            "notification turn completion",
+        )
+        require(
+            completed["params"]["turn"].get("status") == "completed",
+            "Codex notification turn did not complete cleanly",
+        )
+        return run
 
     def _start_turn(self, thread_id: str, prompt: str) -> str:
         response = self.request(
@@ -556,30 +578,29 @@ def dispatch_installed_plugin_hook(
         temporary = codex_home.resolve() / "acceptance-temp"
         temporary.mkdir(parents=True, exist_ok=True)
         runner.environment.update({"TEMP": str(temporary), "TMP": str(temporary)})
-    runner.environment.update(
-        {
-            "OPENAI_API_KEY": "lili-windows-hook-dispatch",
-            "OPENAI_BASE_URL": "http://127.0.0.1:9/v1",
-        }
-    )
-    client = AppServerClient(runner, cwd.resolve())
-    try:
-        initial = hook_map(client.hooks(), selector, "untrusted")
-        client.trust(list(initial.values()))
-        hook_map(client.hooks(), selector, "trusted")
-        thread_id = client.start_thread()
-        turn_id = client._start_turn(
-            thread_id, "Exercise the installed Marketplace session hook."
+    with ResponsesServer() as responses:
+        runner.environment.update(
+            {
+                "OPENAI_API_KEY": "lili-windows-hook-dispatch",
+                "OPENAI_BASE_URL": responses.base_url,
+            }
         )
-        run = client._completed_hook(thread_id, "sessionStart", turn_id)
-        client.shutdown()
-    finally:
-        client.close()
+        client = AppServerClient(runner, cwd.resolve())
+        try:
+            initial = hook_map(client.hooks(), selector, "untrusted")
+            client.trust(list(initial.values()))
+            hook_map(client.hooks(), selector, "trusted")
+            thread_id = client.start_thread()
+            run = client.dispatch_completion_turn(thread_id)
+            client.shutdown()
+        finally:
+            client.close()
+        require(len(responses.requests) == 1, "Codex notification model round trip drifted")
     return {
         "schemaVersion": 1,
         "plugin": selector,
         "pluginRoot": str(plugin_root.resolve()),
-        "event": "sessionStart",
+        "event": "stop",
         "hookRunId": run["id"],
         "bypassUsed": False,
         "result": "passed",

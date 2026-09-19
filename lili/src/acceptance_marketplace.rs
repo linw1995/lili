@@ -227,6 +227,7 @@ pub fn invoke_installed_plugin_hook(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        // A real completed turn leaves a notification available for desktop activation.
         let _ = payload;
         let script = repository_root.join("scripts").join("test_hook_trust.py");
         require_file(&script, "Codex hook dispatch script")?;
@@ -257,7 +258,7 @@ pub fn invoke_installed_plugin_hook(
                 .get("bypassUsed")
                 .and_then(serde_json::Value::as_bool)
                 != Some(false)
-            || result.get("event").and_then(serde_json::Value::as_str) != Some("sessionStart")
+            || result.get("event").and_then(serde_json::Value::as_str) != Some("stop")
         {
             return Err("Codex Windows hook dispatch contract failed".to_owned());
         }

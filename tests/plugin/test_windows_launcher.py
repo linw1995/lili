@@ -122,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     print(f"fixture_started={started.exists()}; payload_captured={capture.exists()}", file=sys.stderr)
                     raise
             self.assertEqual(result["result"], "passed")
+            self.assertEqual(result["event"], "stop")
             self.assertIs(result["bypassUsed"], False)
             events = [
                 json.loads(line)
@@ -131,6 +132,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             starts = [event for event in events if event["hook_event_name"] == "SessionStart"]
             self.assertEqual(len(starts), 1)
             self.assertTrue(os.path.samefile(starts[0]["cwd"], project))
+            stops = [event for event in events if event["hook_event_name"] == "Stop"]
+            self.assertEqual(len(stops), 1)
+            self.assertTrue(os.path.samefile(stops[0]["cwd"], project))
 
 
 if __name__ == "__main__":
