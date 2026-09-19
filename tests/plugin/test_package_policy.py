@@ -16,10 +16,7 @@ def valid_hooks() -> dict:
     handler = {
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
-        "commandWindows": (
-            "$input | & (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
-            "-Command '$input | & (Join-Path $env:PLUGIN_ROOT \"hooks\\forward.ps1\")'"
-        ),
+        "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')",
         "timeout": 1,
         "async": True,
     }
@@ -89,7 +86,7 @@ class PluginPackagePolicyTests(unittest.TestCase):
             )
         hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
 
-        self.assert_rejected("trusted absolute PowerShell path")
+        self.assert_rejected("packaged launcher through the host shell")
 
     def test_cmd_syntax_is_rejected_for_windows_host_shell(self) -> None:
         hooks_path = self.root / "plugins" / "lili" / "hooks" / "hooks.json"
@@ -101,7 +98,7 @@ class PluginPackagePolicyTests(unittest.TestCase):
             )
         hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
 
-        self.assert_rejected("trusted absolute PowerShell path")
+        self.assert_rejected("packaged launcher through the host shell")
 
     def test_path_escape_is_rejected(self) -> None:
         _, manifest = self.manifest()

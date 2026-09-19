@@ -18,11 +18,7 @@ EXPECTED_EVENTS = {
     "SessionEnd",
 }
 EXPECTED_COMMAND = '"${PLUGIN_ROOT}/hooks/forward"'
-EXPECTED_WINDOWS_COMMAND = (
-    "$input | & (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
-    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
-    "-Command '$input | & (Join-Path $env:PLUGIN_ROOT \"hooks\\forward.ps1\")'"
-)
+EXPECTED_WINDOWS_COMMAND = "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
 
 
 class PluginHooksTests(unittest.TestCase):
