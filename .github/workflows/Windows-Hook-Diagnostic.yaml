@@ -21,6 +21,12 @@ jobs:
         run: |
           $PSVersionTable.PSVersion
           [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+      - name: Install reviewed CLI
+        shell: pwsh
+        run: |
+          npm install --prefix target/launcher-cli --no-save @openai/codex@0.147.0
+          $binary = Get-ChildItem -Path target/launcher-cli/node_modules/@openai -Filter codex.exe -Recurse | Select-Object -First 1
+          "CODEX_BIN=$($binary.FullName)" >> $env:GITHUB_ENV
       - name: Exercise the declared Windows hook command
         shell: powershell
-        run: ./tests/plugin/test_windows_launcher.ps1
+        run: ./tests/plugin/test_windows_launcher.ps1 -CodexBinary $env:CODEX_BIN
