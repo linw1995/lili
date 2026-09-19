@@ -1,0 +1,21 @@
+name: Windows hook diagnostic
+
+on:
+  push:
+    branches:
+      - fix/windows-hook-launcher
+
+permissions:
+  contents: read
+
+jobs:
+  launcher:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Exercise the declared Windows hook command
+        shell: powershell
+        run: ./tests/plugin/test_windows_launcher.ps1
