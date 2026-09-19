@@ -16,7 +16,10 @@ def valid_hooks() -> dict:
     handler = {
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
-        "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')",
+        "commandWindows": (
+            "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+            "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
+        ),
         "timeout": 1,
         "async": True,
     }

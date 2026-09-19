@@ -84,6 +84,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             capture.unlink()
             started.unlink()
+            hooks = load_json(installed_root / "hooks" / "hooks.json")
+            command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
+            payload = {"hook_event_name": "SessionStart", "cwd": str(project), "label": "caf\u00e9"}
+            legacy_environment = {
+                **runner.environment,
+                "LOCALAPPDATA": str(application_home),
+                "PLUGIN_ROOT": str(installed_root),
+                "PLUGIN_DATA": str(runner.codex_home / "plugins" / "data" / "lili-lili-local"),
+                "PSExecutionPolicyPreference": "Restricted",
+                "TEMP": str(root),
+                "TMP": str(root),
+            }
+            powershell = Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            legacy = subprocess.run(
+                [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+                input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                env=legacy_environment,
+                capture_output=True,
+                timeout=10,
+            )
+            self.assertEqual(legacy.returncode, 0, legacy.stderr.decode("utf-8", errors="replace"))
+            self.assertEqual(legacy.stdout, b"")
+            self.assertEqual(legacy.stderr, b"")
+            self.assertEqual(json.loads(capture.read_text(encoding="utf-8")), payload)
+            capture.unlink()
+            started.unlink()
             with patch.dict(os.environ, {"LOCALAPPDATA": str(application_home)}):
                 try:
                     result = dispatch_installed_plugin_hook(

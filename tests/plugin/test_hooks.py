@@ -18,7 +18,10 @@ EXPECTED_EVENTS = {
     "SessionEnd",
 }
 EXPECTED_COMMAND = '"${PLUGIN_ROOT}/hooks/forward"'
-EXPECTED_WINDOWS_COMMAND = "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
+EXPECTED_WINDOWS_COMMAND = (
+    "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+    "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
+)
 
 
 class PluginHooksTests(unittest.TestCase):
