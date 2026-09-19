@@ -19,9 +19,8 @@ EXPECTED_EVENTS = {
 }
 EXPECTED_COMMAND = '"${PLUGIN_ROOT}/hooks/forward"'
 EXPECTED_WINDOWS_COMMAND = (
-    "& (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
-    "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-    "-File (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
+    "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+    "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
 )
 
 

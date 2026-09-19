@@ -17,9 +17,8 @@ def valid_hooks() -> dict:
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
         "commandWindows": (
-            "& (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
-            "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-            "-File (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
+            "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+            "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
         ),
         "timeout": 1,
         "async": True,
