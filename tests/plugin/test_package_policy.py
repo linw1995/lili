@@ -17,8 +17,8 @@ def valid_hooks() -> dict:
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
         "commandWindows": (
-            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
-            '-File "${PLUGIN_ROOT}\\hooks\\forward.ps1"'
+            "$input | & (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
+            "-Command '$input | & (Join-Path $env:PLUGIN_ROOT \"hooks\\forward.ps1\")'"
         ),
         "timeout": 1,
         "async": True,
@@ -86,6 +86,18 @@ class PluginPackagePolicyTests(unittest.TestCase):
         for groups in hooks["hooks"].values():
             groups[0]["hooks"][0]["commandWindows"] = (
                 'powershell.exe -File "${PLUGIN_ROOT}\\hooks\\forward.ps1"'
+            )
+        hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+
+        self.assert_rejected("trusted absolute PowerShell path")
+
+    def test_cmd_syntax_is_rejected_for_windows_host_shell(self) -> None:
+        hooks_path = self.root / "plugins" / "lili" / "hooks" / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+        for groups in hooks["hooks"].values():
+            groups[0]["hooks"][0]["commandWindows"] = (
+                '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+                '-File "${PLUGIN_ROOT}\\hooks\\forward.ps1"'
             )
         hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
 

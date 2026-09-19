@@ -182,6 +182,9 @@ jobs:
           $codexBinary = Get-ChildItem -Path "target/codex-cli/node_modules/@openai" -Filter "codex.exe" -Recurse | Select-Object -First 1
           if ($null -eq $codexBinary) { throw "Codex binary was not installed" }
           "CODEX_BIN=$($codexBinary.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check installed Windows hook command
+        shell: pwsh
+        run: python tests/plugin/test_windows_launcher.py
       - name: Run Windows desktop acceptance
         shell: pwsh
         run: ./scripts/windows-acceptance.ps1

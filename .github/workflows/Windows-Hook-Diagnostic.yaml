@@ -28,5 +28,5 @@ jobs:
           $binary = Get-ChildItem -Path target/launcher-cli/node_modules/@openai -Filter codex.exe -Recurse | Select-Object -First 1
           "CODEX_BIN=$($binary.FullName)" >> $env:GITHUB_ENV
       - name: Exercise the declared Windows hook command
-        shell: powershell
-        run: ./tests/plugin/test_windows_launcher.ps1 -CodexBinary $env:CODEX_BIN
+        shell: pwsh
+        run: python tests/plugin/test_windows_launcher.py
