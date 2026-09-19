@@ -44,9 +44,10 @@ function Invoke-DeclaredHook {
         $stderr = $hookProcess.StandardError.ReadToEndAsync()
         $hookProcess.StandardInput.Write($payload)
         $hookProcess.StandardInput.Close()
-        if (-not $hookProcess.WaitForExit(10000)) {
-            $hookProcess.Kill()
-            throw "The declared Windows hook command timed out"
+        if (-not $hookProcess.WaitForExit(30000)) {
+            & (Join-Path $env:SystemRoot "System32/taskkill.exe") /PID $hookProcess.Id /T /F | Out-Null
+            [void]$hookProcess.WaitForExit(5000)
+            throw "The declared Windows hook command timed out: stdout=$($stdout.GetAwaiter().GetResult()); stderr=$($stderr.GetAwaiter().GetResult()); captured=$(Test-Path -LiteralPath $captureFile)"
         }
         return @{
             ExitCode = $hookProcess.ExitCode

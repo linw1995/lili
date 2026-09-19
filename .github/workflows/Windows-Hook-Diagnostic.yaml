@@ -16,6 +16,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Inspect Windows PowerShell runtime
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion
+          [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
       - name: Exercise the declared Windows hook command
         shell: powershell
         run: ./tests/plugin/test_windows_launcher.ps1
