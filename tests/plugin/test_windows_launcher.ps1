@@ -104,6 +104,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 workspace, executable, fixture, plugin, host = map(Path, sys.argv[1:])
@@ -118,8 +119,13 @@ shutil.copytree(plugin, staged)
 error_path = fixture / "hook-stderr.txt"
 hooks_path = staged / "hooks" / "hooks.json"
 hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+windows_command = (
+    "$input | & (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') "
+    "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+    "-Command '$input | & (Join-Path $env:PLUGIN_ROOT \"hooks\\forward.ps1\")'"
+)
 for groups in hooks["hooks"].values():
-    groups[0]["hooks"][0]["commandWindows"] += f' 2> "{error_path}"'
+    groups[0]["hooks"][0]["commandWindows"] = windows_command + f' 2> "{error_path}"'
 hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
 
 runner = CodexRunner(executable.resolve(), host.resolve(), "0.147.0")
@@ -127,6 +133,11 @@ runner.environment.update({"SystemRoot": os.environ["SystemRoot"]})
 runner.verify_version()
 runner.json(["plugin", "marketplace", "add", str(catalog)])
 installed = runner.json(["plugin", "add", "lili@lili-local"])
+subprocess.run(
+    [str(Path(installed["installedPath"]) / "bin" / "x86_64-pc-windows-msvc" / "lili-hook.exe"),
+     "--integration-id", "lili-session-v1", "--plugin-hook", "--json-stdin"],
+    input=b"{}", check=True,
+)
 try:
     result = dispatch_installed_plugin_hook(
         workspace, executable, host, Path(installed["installedPath"]), fixture
