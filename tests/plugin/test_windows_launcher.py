@@ -97,7 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "TMP": str(root),
             }
             # Windows PowerShell must discover its own .NET Framework modules.
-            legacy_environment.pop("PSModulePath", None)
+            legacy_environment = {key.upper(): value for key, value in legacy_environment.items()}
+            legacy_environment.pop("PSMODULEPATH", None)
             powershell = Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
             legacy = subprocess.run(
                 [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
