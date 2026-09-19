@@ -109,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
             payload = {"hook_event_name": "SessionStart", "cwd": str(project), "label": "caf\u00e9"}
             legacy_environment = {
+                **os.environ,
                 **runner.environment,
-                "LOCALAPPDATA": str(application_home),
                 "PLUGIN_ROOT": str(installed_root),
                 "PLUGIN_DATA": str(runner.codex_home / "plugins" / "data" / "lili-lili-local"),
                 "PSExecutionPolicyPreference": "Restricted",
