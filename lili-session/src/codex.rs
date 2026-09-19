@@ -540,8 +540,8 @@ pub fn normalize_lifecycle_json(
         .hook_event_name
         .as_deref()
         .ok_or(NormalizationError::MissingField("hook event name"))?;
-    if hook == PERMISSION_REQUEST_HOOK && input.tool_use_id.is_none() {
-        return Err(NormalizationError::MissingField("tool use identity"));
+    if hook == PERMISSION_REQUEST_HOOK && input.tool_use_id.is_none() && input.tool_name.is_none() {
+        return Err(NormalizationError::MissingField("tool name"));
     }
     let event_id = lifecycle_event_id(&input, hook);
     let (event_type, turn_id, summary) = match hook {
@@ -604,6 +604,10 @@ fn notify_event_id(thread_id: Option<&str>, turn_id: Option<&str>) -> Option<Str
 fn lifecycle_event_id(input: &LifecycleInput, hook: &str) -> Option<String> {
     let session_id = input.session_id.as_deref()?;
     let mut digest = Sha256::new();
+    if hook == PERMISSION_REQUEST_HOOK && input.tool_use_id.is_none() {
+        // Native permission hooks omit tool_use_id; keep their identity separate from legacy IDs.
+        digest.update(b"codex-native-permission-v1\0");
+    }
     update_identity_field(&mut digest, hook.as_bytes());
     update_identity_field(&mut digest, session_id.as_bytes());
 
@@ -613,7 +617,9 @@ fn lifecycle_event_id(input: &LifecycleInput, hook: &str) -> Option<String> {
         }
         PERMISSION_REQUEST_HOOK => {
             update_identity_field(&mut digest, input.turn_id.as_deref()?.as_bytes());
-            update_identity_field(&mut digest, input.tool_use_id.as_deref()?.as_bytes());
+            if let Some(tool_use_id) = input.tool_use_id.as_deref() {
+                update_identity_field(&mut digest, tool_use_id.as_bytes());
+            }
             update_optional_identity_field(&mut digest, input.tool_name.as_deref());
             let tool_input = serde_json::to_vec(input.tool_input.as_ref()?).ok()?;
             update_identity_field(&mut digest, &tool_input);
@@ -1021,9 +1027,14 @@ mod tests {
 
     #[test]
     fn permission_identity_distinguishes_requests_without_retaining_arguments() {
-        let first = normalize_lifecycle_json(LIFECYCLE_FIXTURES[2].0, 42).unwrap();
         let mut changed: serde_json::Value =
             serde_json::from_slice(LIFECYCLE_FIXTURES[2].0).unwrap();
+        changed["tool_use_id"] = serde_json::json!("toolu_01");
+        let first = normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42).unwrap();
+        assert_eq!(
+            first.event_id.as_str(),
+            "codex-hook-e3f17d8a7647adcec1121808eb321e8f2a26bf329116d00a4cead2d83f3bbe22"
+        );
         changed["tool_use_id"] = serde_json::json!("toolu_02");
         let second = normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42).unwrap();
 
@@ -1032,11 +1043,40 @@ mod tests {
         assert!(!normalized.contains("cargo test"));
         assert!(!normalized.contains("tool_input"));
         assert!(!normalized.contains("toolu_02"));
+    }
 
-        changed.as_object_mut().unwrap().remove("tool_use_id");
+    #[test]
+    fn native_permission_identity_uses_tool_fields_without_retaining_arguments() {
+        let original: serde_json::Value = serde_json::from_slice(LIFECYCLE_FIXTURES[2].0).unwrap();
+        let first = normalize_lifecycle_json(LIFECYCLE_FIXTURES[2].0, 42).unwrap();
+        assert_eq!(first.event_type, SessionEventKind::AttentionRequired);
+        let replay = normalize_lifecycle_json(LIFECYCLE_FIXTURES[2].0, 99).unwrap();
+        assert_eq!(first.event_id, replay.event_id);
+
+        for (field, value) in [
+            ("tool_name", serde_json::json!("OtherTool")),
+            (
+                "tool_input",
+                serde_json::json!({"command": "PRIVATE_COMMAND"}),
+            ),
+            ("turn_id", serde_json::json!("another-turn")),
+        ] {
+            let mut changed = original.clone();
+            changed[field] = value;
+            let event =
+                normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42).unwrap();
+            assert_ne!(first.event_id, event.event_id);
+            let normalized = serde_json::to_string(&event).unwrap();
+            assert!(!normalized.contains("PRIVATE_COMMAND"));
+            assert!(!normalized.contains("tool_input"));
+            assert!(!normalized.contains("OtherTool"));
+        }
+
+        let mut missing_tool = original;
+        missing_tool.as_object_mut().unwrap().remove("tool_name");
         assert_eq!(
-            normalize_lifecycle_json(&serde_json::to_vec(&changed).unwrap(), 42),
-            Err(NormalizationError::MissingField("tool use identity"))
+            normalize_lifecycle_json(&serde_json::to_vec(&missing_tool).unwrap(), 42),
+            Err(NormalizationError::MissingField("tool name"))
         );
     }
 
