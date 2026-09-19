@@ -6,11 +6,13 @@ import json
 import os
 import queue
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 from test_local_marketplace import (
@@ -503,20 +505,32 @@ def changed_snapshot(source: Path, destination: Path, version: str) -> None:
     hooks_path.write_text(json.dumps(hooks, indent=2) + "\n", encoding="utf-8")
 
 
-def dispatched_spool_events(codex_home: Path) -> dict[str, list[dict]]:
-    spool = codex_home / "lili" / "spool"
-    pending = sorted(spool.glob("*.pending"))
+def dispatched_spool_events(database_path: Path) -> dict[str, list[dict]]:
+    require(database_path.is_file(), "application spool database is missing")
+    database_uri = database_path.resolve().as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(database_uri, uri=True)) as database:
+            pending = database.execute(
+                "SELECT payload_json FROM inbound_spool WHERE status = 'pending' "
+                "ORDER BY provider, event_id"
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise MarketplaceRoundTripError("application spool database could not be read") from error
     expected_counts = {
         **{event_type: 1 for event_type in EXPECTED_NORMALIZED_EVENTS.values()},
         "turn_started": 2,
     }
     require(
         len(pending) == sum(expected_counts.values()),
-        "trusted hooks produced an unexpected lifecycle event count",
+        "trusted hooks produced an unexpected lifecycle event count: "
+        f"expected {sum(expected_counts.values())}, observed {len(pending)}",
     )
     by_type: dict[str, list[dict]] = {}
-    for path in pending:
-        event = load_json(path).get("event")
+    for (payload,) in pending:
+        try:
+            event = json.loads(payload)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise MarketplaceRoundTripError("spooled hook record contains invalid JSON") from error
         require(isinstance(event, dict), "spooled hook record omitted its normalized event")
         require(event.get("provider") == "codex", "spooled hook provider drifted")
         event_type = event.get("eventType")
@@ -669,7 +683,19 @@ def run_hook_trust_round_trip(
                 "Codex did not complete the deterministic model round trip",
             )
         require(permission_target.is_file(), "permission hook turn mutated the project")
-        dispatched_events = dispatched_spool_events(runner.codex_home)
+        # The runner's clean environment selects the platform default under its isolated home.
+        state_directory = {
+            "darwin": "Library/Application Support",
+            "win32": "AppData/Local",
+        }.get(sys.platform, ".local/state")
+        database_path = (
+            Path(runner.environment["HOME"])
+            / state_directory
+            / "dev.linw1995.lili"
+            / "lili.sqlite3"
+        )
+        dispatched_events = dispatched_spool_events(database_path)
+        require(not (runner.codex_home / "lili").exists(), "hook state leaked into CODEX_HOME")
 
         replace_catalog_plugin(catalog_plugin, changed_root)
         updated = runner.json(["plugin", "add", selector])

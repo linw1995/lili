@@ -1,11 +1,13 @@
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 
@@ -17,7 +19,68 @@ from test_local_marketplace import (
     extract_archive,
     run_round_trip,
 )
-from test_hook_trust import run_hook_trust_round_trip
+from test_hook_trust import (
+    EXPECTED_NORMALIZED_EVENTS,
+    dispatched_spool_events,
+    run_hook_trust_round_trip,
+)
+
+
+class HookSpoolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.database = Path(self.temporary_directory.name) / "lili.sqlite3"
+        migration = WORKSPACE_ROOT / "lili-storage/migrations/00000000000001_create_storage/up.sql"
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.executescript(migration.read_text(encoding="utf-8"))
+            for index, event_type in enumerate(
+                [*EXPECTED_NORMALIZED_EVENTS.values(), "turn_started"]
+            ):
+                event = {
+                    "provider": "codex",
+                    "eventId": f"event-{index}",
+                    "eventType": event_type,
+                    "sourceDiscriminator": "plugin:lili@lili-local",
+                }
+                connection.execute(
+                    "INSERT INTO inbound_spool "
+                    "(provider, event_id, payload_json, priority, occurred_at_ms, "
+                    "inserted_at_ms, status, attempts) VALUES (?, ?, ?, 0, 1000, 1000, 'pending', 0)",
+                    ("codex", event["eventId"], json.dumps(event)),
+                )
+            connection.commit()
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def test_reads_every_lifecycle_event_from_the_application_database(self) -> None:
+        events = dispatched_spool_events(self.database)
+        self.assertEqual(set(events), set(EXPECTED_NORMALIZED_EVENTS))
+        self.assertEqual(len(events["userPromptSubmit"]), 2)
+        self.assertEqual(sum(map(len, events.values())), 6)
+
+    def test_missing_lifecycle_event_is_rejected(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("DELETE FROM inbound_spool WHERE event_id = 'event-0'")
+            connection.commit()
+        with self.assertRaisesRegex(MarketplaceRoundTripError, "event count"):
+            dispatched_spool_events(self.database)
+
+    def test_missing_plugin_attribution_is_rejected(self) -> None:
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute(
+                "UPDATE inbound_spool SET payload_json = "
+                "json_remove(payload_json, '$.sourceDiscriminator') WHERE event_id = 'event-0'"
+            )
+            connection.commit()
+        with self.assertRaisesRegex(MarketplaceRoundTripError, "plugin attribution"):
+            dispatched_spool_events(self.database)
+
+    def test_missing_database_is_not_created(self) -> None:
+        self.database.unlink()
+        with self.assertRaisesRegex(MarketplaceRoundTripError, "database is missing"):
+            dispatched_spool_events(self.database)
+        self.assertFalse(self.database.exists())
 
 
 class LocalMarketplaceRoundTripTests(unittest.TestCase):
