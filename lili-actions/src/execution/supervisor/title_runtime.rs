@@ -398,9 +398,41 @@ mod tests {
         }
     }
 
+    fn run_logging_test_in_isolated_process(test_name: &str) -> bool {
+        const CHILD_TEST: &str = "LILI_ACTIONS_LOG_CAPTURE_TEST";
+        let (_, module) = module_path!().split_once("::").unwrap();
+        let name = format!("{module}::{test_name}");
+        if std::env::var(CHILD_TEST).as_deref() == Ok(name.as_str()) {
+            return false;
+        }
+
+        // Callsite interest is process-wide and can be initialized by unrelated tests.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture", "--color", "never"])
+            .env(CHILD_TEST, &name)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "isolated logging test failed:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains("running 1 test"),
+            "isolated logging test was not selected:\n{stdout}"
+        );
+        true
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_coalesced_execution_logs_once_without_output() {
+        if run_logging_test_in_isolated_process(
+            "failed_coalesced_execution_logs_once_without_output",
+        ) {
+            return;
+        }
         let buffer = LogBuffer::default();
         let writer = buffer.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -408,15 +440,18 @@ mod tests {
             .without_time()
             .with_writer(move || writer.clone())
             .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let supervisor = supervisor(
-            "cat >/dev/null; sleep 0.02; printf 'PRIVATE_OUTPUT'; printf 'PRIVATE_ERROR' >&2",
-            0,
-        );
-        let _ = tokio::join!(
-            supervisor.resolve_title("example", "one"),
-            supervisor.resolve_title("example", "one")
-        );
+        async {
+            let supervisor = supervisor(
+                "cat >/dev/null; sleep 0.02; printf 'PRIVATE_OUTPUT'; printf 'PRIVATE_ERROR' >&2",
+                0,
+            );
+            let _ = tokio::join!(
+                supervisor.resolve_title("example", "one"),
+                supervisor.resolve_title("example", "one")
+            );
+        }
+        .with_subscriber(subscriber)
+        .await;
         let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
         assert_eq!(output.lines().count(), 1);
         assert!(output.contains("invalid_response"));
@@ -426,6 +461,11 @@ mod tests {
 
     #[test]
     fn warnings_have_bounded_metadata_and_only_failure_outcomes() {
+        if run_logging_test_in_isolated_process(
+            "warnings_have_bounded_metadata_and_only_failure_outcomes",
+        ) {
+            return;
+        }
         let buffer = LogBuffer::default();
         let writer = buffer.clone();
         let subscriber = tracing_subscriber::fmt()
