@@ -16,11 +16,11 @@
     "developerName": "Jade Lin",
     "verifiedIdentityRequired": true,
     "verifiedIdentityMustMatchDeveloperName": true,
-    "homepage": "https://github.com/linw1995/lili/blob/master/docs/marketplace.md",
+    "homepage": "https://github.com/linw1995/lili/blob/main/docs/marketplace.md",
     "repository": "https://github.com/linw1995/lili",
-    "supportURL": "https://github.com/linw1995/lili/blob/master/docs/support.md",
-    "privacyPolicyURL": "https://github.com/linw1995/lili/blob/master/docs/privacy-policy.md",
-    "termsOfServiceURL": "https://github.com/linw1995/lili/blob/master/docs/terms-of-service.md",
+    "supportURL": "https://github.com/linw1995/lili/blob/main/docs/support.md",
+    "privacyPolicyURL": "https://github.com/linw1995/lili/blob/main/docs/privacy-policy.md",
+    "termsOfServiceURL": "https://github.com/linw1995/lili/blob/main/docs/terms-of-service.md",
     "license": "Apache-2.0"
   },
   "listing": {

@@ -115,9 +115,9 @@ Platform signing remains an external trust operation. When Tauri or the native t
 
 ## GitHub CD build
 
-Following the same separation used by `linw1995/coco`, [CD](../.github/workflows/CD.yaml) is a thin trigger workflow and [Publish release](../.github/workflows/Publish-Release.yaml) owns the reusable build and publication implementation. Pushes to `master` and manual dispatches exercise the production build without publishing, while a pushed tag matching `v*` publishes a release. Publication refuses a ref that is not a tag or whose name does not exactly match `Cargo.toml`'s workspace version as `v<version>`.
+Following the same separation used by `linw1995/coco`, [CD](../.github/workflows/CD.yaml) is a thin trigger workflow and [Publish release](../.github/workflows/Publish-Release.yaml) owns the reusable build and publication implementation. Manual dispatches on branches exercise the production build without publishing, while a pushed tag matching `v*` publishes a release. Publication refuses a ref that is not a tag or whose name does not exactly match `Cargo.toml`'s workspace version as `v<version>`.
 
-[CI](../.github/workflows/CI.yaml) runs independently for pull requests, manual dispatches, and pushes to `master`. As in Coco, CI and CD do not wait on one another; CD reruns the production release assembly and its compatibility and manifest gates rather than reusing mutable CI binaries.
+[CI](../.github/workflows/CI.yaml) runs independently for pull requests, manual dispatches, and pushes to `main`. As in Coco, CI and CD do not wait on one another; CD reruns the production release assembly and its compatibility and manifest gates rather than reusing mutable CI binaries.
 
 The GitHub CD workflow publishes the macOS desktop release only. It still uses Linux and Windows runners to build the native plugin forwarders required by the universal Marketplace plugin archive:
 

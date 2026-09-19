@@ -179,7 +179,7 @@ def validate_marketplace(workspace_root: Path) -> None:
         "termsOfServiceURL": "terms-of-service.md",
     }
     for field, name in legal_documents.items():
-        expected_url = f"{repository}/blob/master/docs/{name}"
+        expected_url = f"{repository}/blob/main/docs/{name}"
         require(submission["publisher"][field] == expected_url, f"{field} URL drifted")
         require((workspace_root / "docs" / name).is_file(), f"published document is missing: {name}")
 
