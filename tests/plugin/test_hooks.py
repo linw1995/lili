@@ -19,7 +19,7 @@ EXPECTED_EVENTS = {
 }
 EXPECTED_COMMAND = '"${PLUGIN_ROOT}/hooks/forward"'
 EXPECTED_WINDOWS_COMMAND = (
-    "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+    "$env:PSExecutionPolicyPreference = 'Bypass'; "
     "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
 )
 

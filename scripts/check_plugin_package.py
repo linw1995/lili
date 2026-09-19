@@ -19,7 +19,7 @@ EXPECTED_HOOK_EVENTS = {
 HANDLER_FIELDS = {"type", "command", "commandWindows", "timeout", "statusMessage", "async"}
 GROUP_FIELDS = {"matcher", "hooks"}
 WINDOWS_LAUNCHER_COMMAND = (
-    "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+    "$env:PSExecutionPolicyPreference = 'Bypass'; "
     "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
 )
 EXECUTABLE_SUFFIXES = {".bat", ".cmd", ".exe", ".ps1", ".sh"}

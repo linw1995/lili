@@ -17,7 +17,7 @@ def valid_hooks() -> dict:
         "type": "command",
         "command": '"${PLUGIN_ROOT}/hooks/forward"',
         "commandWindows": (
-            "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; "
+            "$env:PSExecutionPolicyPreference = 'Bypass'; "
             "& (Join-Path $env:PLUGIN_ROOT 'hooks\\forward.ps1')"
         ),
         "timeout": 1,
