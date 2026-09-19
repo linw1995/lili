@@ -57,7 +57,6 @@ class PluginLauncherContractTests(unittest.TestCase):
             "Invoke-Expression",
             "Invoke-WebRequest",
             "Start-Process",
-            "ReadToEnd",
             "Get-Content",
         ):
             self.assertNotIn(forbidden, windows)
@@ -66,11 +65,14 @@ class PluginLauncherContractTests(unittest.TestCase):
             'exec "$forwarder" --integration-id lili-session-v1 --plugin-hook --json-stdin',
             posix,
         )
-        self.assertIn("$OutputEncoding = [Text.UTF8Encoding]::new($false)", windows)
+        self.assertIn("$utf8 = [Text.UTF8Encoding]::new($false)", windows)
+        self.assertIn("$startInfo.FileName = $forwarderPath", windows)
         self.assertIn(
-            '$input | & $forwarderPath --integration-id "lili-session-v1" --plugin-hook --json-stdin',
+            "$startInfo.Arguments = '--integration-id lili-session-v1 --plugin-hook --json-stdin'",
             windows,
         )
+        self.assertIn("$startInfo.UseShellExecute = $false", windows)
+        self.assertIn("$forwarderProcess.StandardInput.Write($payload)", windows)
 
     def test_posix_launcher_preserves_stdin_with_spaces_in_root(self) -> None:
         target = SUPPORTED_POSIX_TARGETS.get((platform.system(), platform.machine()))
