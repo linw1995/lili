@@ -136,7 +136,9 @@ finally:
     if error_path.exists():
         print(error_path.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
 '@
-        python -c $pythonSource $workspaceRoot $CodexBinary $fixtureRoot $pluginRoot $codexRoot
+        $pythonScript = Join-Path $fixtureRoot "dispatch.py"
+        [IO.File]::WriteAllText($pythonScript, $pythonSource)
+        python $pythonScript $workspaceRoot $CodexBinary $fixtureRoot $pluginRoot $codexRoot
         if ($LASTEXITCODE -ne 0) {
             throw "Installed Windows hook dispatch failed"
         }
