@@ -1,4 +1,4 @@
-name: Windows hook diagnostic
+name: Plugin archive diagnostic
 
 on:
   push:
@@ -7,26 +7,47 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  launcher:
-    runs-on: windows-latest
-    timeout-minutes: 5
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: 2fa082cc59e7d4f5374b61c67149da5e15a2c97c
+          fetch-depth: 0
           persist-credentials: false
-      - name: Inspect Windows PowerShell runtime
-        shell: powershell
-        run: |
-          $PSVersionTable.PSVersion
-          [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 35452672962
+          pattern: lili-plugin-forwarder-*
+          path: target/plugin-forwarders
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 35452672962
+          name: lili-plugin-supply-chain
+          path: target
       - name: Install reviewed CLI
-        shell: pwsh
         run: |
-          npm install --prefix target/launcher-cli --no-save @openai/codex@0.147.0
-          $binary = Get-ChildItem -Path target/launcher-cli/node_modules/@openai -Filter codex.exe -Recurse | Select-Object -First 1
-          "CODEX_BIN=$($binary.FullName)" >> $env:GITHUB_ENV
-      - name: Exercise the declared Windows hook command
-        shell: pwsh
-        run: python tests/plugin/test_windows_launcher.py
+          npm install --prefix target/codex-cli --no-save @openai/codex@0.147.0
+          binary="$(find target/codex-cli/node_modules/@openai -type f -path '*/vendor/*/bin/codex' -print -quit)"
+          test -n "$binary"
+          echo "CODEX_BIN=$PWD/$binary" >> "$GITHUB_ENV"
+      - name: Assemble plugin archive
+        run: |
+          python3 scripts/check-plugin-assets.py
+          python3 scripts/check_plugin_package.py
+          python3 scripts/check_marketplace_consistency.py
+          python3 scripts/build_plugin_archive.py \
+            --forwarders target/plugin-forwarders \
+            --output target/lili-plugin.zip \
+            --supply-chain target/plugin-supply-chain.json
+      - name: Validate Marketplace lifecycle
+        run: python3 scripts/test_local_marketplace.py --archive "$PWD/target/lili-plugin.zip" --codex "$CODEX_BIN"
+      - name: Validate Marketplace hook trust
+        run: python3 scripts/test_hook_trust.py --archive "$PWD/target/lili-plugin.zip" --codex "$CODEX_BIN"
