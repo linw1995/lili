@@ -17,6 +17,7 @@ hydrate = [
   "leptos/hydrate",
 ]
 ssr = ["leptos/ssr"]
+website = ["hydrate"]
 
 [dependencies]
 leptos.workspace = true

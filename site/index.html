@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en" data-site-assets="./">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="An extensible desktop pet inspired by the pet experience in the ChatGPT desktop app. Custom pets, Session integration, and local actions.">
+    <meta name="theme-color" content="#fafafb">
+    <meta name="color-scheme" content="light">
+    <title>Lili — An extensible desktop pet</title>
+    <link data-trunk rel="rust" href="../lili-ui/Cargo.toml" data-cargo-features="website"
+      data-wasm-opt="z"
+      data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int">
+    <link data-trunk rel="css" href="../web/lili.css" data-target-path="assets">
+    <link data-trunk rel="css" href="theme.css" data-target-path="assets">
+    <link data-trunk rel="css" href="style.css" data-target-path="assets">
+    <link data-trunk rel="css" href="showcase.css" data-target-path="assets">
+    <link data-trunk rel="copy-file" href="../lili-pet/assets/fallback/spritesheet.webp" data-target-path="assets">
+    <link data-trunk rel="copy-file" href="../plugins/lili/assets/logo.png" data-target-path="assets">
+    <link rel="icon" href="./assets/logo.png">
+    <script>
+      // Rust cannot render a recovery control until its module has loaded.
+      const showLoadFailure = () => {
+        if (document.getElementById("lili-website")) return;
+        const status = document.getElementById("site-status");
+        if (!status) return;
+        status.querySelector("p").textContent = "Lili could not load. Please reload the page.";
+        status.querySelector("button").hidden = false;
+      };
+      window.addEventListener("unhandledrejection", showLoadFailure);
+      window.addEventListener("error", showLoadFailure);
+      window.addEventListener("TrunkApplicationStarted", () => document.getElementById("site-status")?.remove());
+    </script>
+  </head>
+  <body>
+    <div id="site-status" role="status"><p>Loading Lili…</p><button hidden onclick="location.reload()">Reload page</button></div>
+    <noscript>Enable JavaScript to explore Lili.</noscript>
+  </body>
+</html>

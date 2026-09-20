@@ -4,6 +4,13 @@
   "license": "Apache-2.0",
   "private": true,
   "scripts": {
-    "build:css": "node scripts/build-css.mjs"
+    "build:css": "node scripts/build-css.mjs",
+    "build:site": "node scripts/build-site.mjs",
+    "preview:site": "npm run build:site && node scripts/serve-site.mjs",
+    "capture:site": "node scripts/capture-site.mjs",
+    "check:site": "npm run build:site && node scripts/check-site.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }

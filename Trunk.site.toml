@@ -1,0 +1,8 @@
+[build]
+target = "site/index.html"
+dist = "target/site-build"
+public_url = "./"
+filehash = false
+
+[watch]
+ignore = ["target", "dist"]
