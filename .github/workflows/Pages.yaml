@@ -59,6 +59,7 @@ jobs:
       - name: Check repository Pages path in Chromium and WebKit
         env:
           LILI_SITE_BASE_PATH: /lili/
+          DEBUG: pw:browser
         run: |
           nix develop --command bash -euo pipefail -c '
             npm ci

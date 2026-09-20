@@ -86,6 +86,7 @@ try {
   const response = await fetch(new URL("media/lili-demo.gif", url));
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /^image\/gif/);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
   console.log(`Exported media/lili-demo.gif: ${delays.length} frames, ${durationMs / 1000} seconds, ${Math.ceil(bytes.length / 1024)} KiB. PNG poster included.`);
 } finally {
   await browser?.close();

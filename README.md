@@ -18,7 +18,7 @@ Lili is named after my cat.
 The website is built for [repository GitHub Pages](docs/website.md#github-pages). To try the interactive demo locally:
 
 ```sh
-npm run preview:site
+nix develop --command npm run preview:site
 ```
 
 Open `http://127.0.0.1:4173`. The entire website is a Leptos application compiled from Rust to WebAssembly. Its landing page and interactive demo share one component tree, reusing the desktop pet renderer, notification card, and preview controller. No native actions run. The animation above is recorded from the same demo during the Pages build and published with the website. See the [website guide](docs/website.md#checks-and-readme-media) to regenerate it locally.
