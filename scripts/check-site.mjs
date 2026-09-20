@@ -69,6 +69,12 @@ try {
       assert.deepEqual(errors, []);
       await page.close();
 
+      const noScript = await browser.newPage({ javaScriptEnabled: false });
+      await noScript.goto(url);
+      await noScript.getByText("Enable JavaScript to explore Lili.", { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await noScript.locator("#site-status").isVisible(), false);
+      await noScript.close();
+
       // A missing import table must show recovery UI even before Rust can mount the page.
       const broken = await browser.newPage();
       const importErrors = [];
