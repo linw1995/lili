@@ -18,6 +18,8 @@ use lili_storage::ApplicationPaths;
 
 const SAMPLE_COUNT: usize = 9;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+// Measure each path without competing SQLite initialization and fsync traffic from this suite.
+static LATENCY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct TempDir(PathBuf);
 
@@ -53,6 +55,7 @@ fn percentile_95(mut samples: Vec<Duration>) -> Duration {
 
 #[tokio::test]
 async fn online_forwarding_p95_stays_within_budget() {
+    let _measurement = LATENCY_TEST_LOCK.lock().await;
     let temp = TempDir::new();
     let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
     let runtime_dir = paths.runtime_root();
@@ -90,6 +93,7 @@ async fn online_forwarding_p95_stays_within_budget() {
 
 #[tokio::test]
 async fn offline_fallback_p95_stays_within_budget() {
+    let _measurement = LATENCY_TEST_LOCK.lock().await;
     let temp = TempDir::new();
     let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
@@ -109,6 +113,7 @@ async fn offline_fallback_p95_stays_within_budget() {
 
 #[tokio::test]
 async fn unresponsive_native_endpoint_falls_back_without_renderer_dependency() {
+    let _measurement = LATENCY_TEST_LOCK.lock().await;
     let temp = TempDir::new();
     let paths = ApplicationPaths::from_root(temp.0.clone()).unwrap();
     let runtime_dir = paths.runtime_root();
