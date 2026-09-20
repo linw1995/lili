@@ -64,7 +64,12 @@ jobs:
           nix develop --command bash -euo pipefail -c '
             npm ci
             npx playwright install --with-deps chromium webkit
-            node scripts/check-site.mjs
+            sudo apt-get install --no-install-recommends --yes gsettings-desktop-schemas
+            test -s /usr/share/glib-2.0/schemas/gschemas.compiled
+            # Match the downloaded browsers to Ubuntu data instead of Nix build-time paths.
+            GSETTINGS_SCHEMA_DIR=/usr/share/glib-2.0/schemas \
+              XDG_DATA_DIRS=/usr/local/share:/usr/share \
+              node scripts/check-site.mjs
           '
       - name: Export README animation
         env:
