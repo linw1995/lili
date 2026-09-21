@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 use lili_core::AppearanceView;
 use lili_core::{
     PetActionFeedbackKind, PetActionFeedbackPresentation, PetLifecycleState, PetNotificationKind,
@@ -12,8 +12,10 @@ use lili_pet::{AnimationScheduler, AnimationState, FrameDescriptor, LookFrame};
 mod appearance;
 mod notification_carousel;
 mod startup;
+#[cfg(any(feature = "website", all(test, feature = "ssr")))]
+mod website;
 pub use appearance::AppearancePage;
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 use appearance::install_appearance_selection_boundary;
 use notification_carousel::NotificationCarousel;
 
@@ -1204,12 +1206,12 @@ struct ReducedMotionListener {
     _callback: wasm_bindgen::closure::Closure<dyn FnMut()>,
 }
 
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 struct ContextMenuHandlers {
     _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
 }
 
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 struct NotificationContextMenuHandler {
     _contextmenu: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MouseEvent)>,
     _keydown: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
@@ -1225,8 +1227,10 @@ thread_local! {
 thread_local! {
     static UI_CLOCK: std::cell::RefCell<Option<UiClock>> =
         const { std::cell::RefCell::new(None) };
+    #[cfg(not(feature = "website"))]
     static CONTEXT_MENU_HANDLERS: std::cell::RefCell<Option<ContextMenuHandlers>> =
         const { std::cell::RefCell::new(None) };
+    #[cfg(not(feature = "website"))]
     static NOTIFICATION_CONTEXT_MENU_HANDLER: std::cell::RefCell<Option<NotificationContextMenuHandler>> =
         const { std::cell::RefCell::new(None) };
     static REDUCED_MOTION_LISTENER: std::cell::RefCell<Option<ReducedMotionListener>> =
@@ -1235,7 +1239,7 @@ thread_local! {
         .and_then(|window| window.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
 }
 
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn hydrate() {
     let path = web_sys::window()
@@ -1285,7 +1289,18 @@ pub fn hydrate() {
     }
 }
 
-#[cfg(feature = "hydrate")]
+#[cfg(feature = "website")]
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
+pub fn mount_website() {
+    let asset_base = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+        .and_then(|element| element.get_attribute("data-site-assets"))
+        .unwrap_or_else(|| "./".to_owned());
+    leptos::mount::mount_to_body(move || view! { <website::Website asset_base/> });
+}
+
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 fn install_notification_context_menu_blocker() {
     use wasm_bindgen::{JsCast, closure::Closure};
     use web_sys::{KeyboardEvent, MouseEvent};
@@ -1324,7 +1339,7 @@ fn install_notification_context_menu_blocker() {
     });
 }
 
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 fn install_context_menu_handlers() {
     use wasm_bindgen::{JsCast, closure::Closure};
     use web_sys::{Element, HtmlElement, MouseEvent};

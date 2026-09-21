@@ -13,6 +13,11 @@
 in {
   default = toolchain.mkDevShell shellArgs;
 
+  website = toolchain.mkDevShell (shellArgs
+    // {
+      packages = shellArgs.packages ++ [pkgs.imagemagick];
+    });
+
   coverage = toolchain.mkDevShell (shellArgs
     // {
       packages = shellArgs.packages ++ toolchain.coverageTools;

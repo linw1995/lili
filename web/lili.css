@@ -1,53 +1,30 @@
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
-  --notification-accent: #0a84ff;
-  --notification-foreground: #f4f7fb;
-  --notification-muted: rgb(244 247 251 / 64%);
-  --notification-edge: rgb(255 255 255 / 25%);
-  --notification-surface: #292e38;
-  --notification-material: rgb(41 46 56 / 92%);
-  --notification-status-edge: rgb(255 255 255 / 11%);
-  --notification-highlight: rgb(255 255 255 / 46%);
-  --notification-inner-highlight: rgb(255 255 255 / 24%);
-  --notification-shadow: rgb(0 0 0 / 30%);
-  --notification-control-foreground: rgb(244 247 251 / 62%);
-  --notification-control-surface: rgb(255 255 255 / 12%);
-  --notification-control-edge: rgb(255 255 255 / 14%);
-  --notification-status-attention: #ffd47c;
-  --notification-status-attention-surface: #564326;
-  --notification-status-failure: #ff9aa5;
-  --notification-status-failure-surface: #4e2c35;
-  --notification-status-completion: #8be6c4;
-  --notification-status-completion-surface: #244b46;
+  /* Use the same palette in native windows and explicitly themed web pages. */
+  --notification-accent: light-dark(#007aff, #0a84ff);
+  --notification-foreground: light-dark(#1d2734, #f4f7fb);
+  --notification-muted: light-dark(rgb(29 39 52 / 64%), rgb(244 247 251 / 64%));
+  --notification-edge: light-dark(rgb(255 255 255 / 78%), rgb(255 255 255 / 25%));
+  --notification-surface: light-dark(#f2f6fc, #292e38);
+  --notification-material: light-dark(rgb(242 246 252 / 92%), rgb(41 46 56 / 92%));
+  --notification-status-edge: light-dark(rgb(35 49 70 / 12%), rgb(255 255 255 / 11%));
+  --notification-highlight: light-dark(rgb(255 255 255 / 96%), rgb(255 255 255 / 46%));
+  --notification-inner-highlight: light-dark(rgb(255 255 255 / 96%), rgb(255 255 255 / 24%));
+  --notification-shadow: light-dark(rgb(57 74 99 / 17%), rgb(0 0 0 / 30%));
+  --notification-control-foreground: light-dark(rgb(29 39 52 / 60%), rgb(244 247 251 / 62%));
+  --notification-control-surface: light-dark(rgb(29 39 52 / 8%), rgb(255 255 255 / 12%));
+  --notification-control-edge: light-dark(rgb(29 39 52 / 12%), rgb(255 255 255 / 14%));
+  --notification-status-attention: light-dark(#a65f00, #ffd47c);
+  --notification-status-attention-surface: light-dark(#fff0d1, #564326);
+  --notification-status-failure: light-dark(#c53d4d, #ff9aa5);
+  --notification-status-failure-surface: light-dark(#f9dfe3, #4e2c35);
+  --notification-status-completion: light-dark(#168267, #8be6c4);
+  --notification-status-completion-surface: light-dark(#dcefe9, #244b46);
   --notification-fade-duration: 460ms;
   --notification-fade-easing: cubic-bezier(0.4, 0, 0.6, 1);
   --notification-fade-opacity: 0;
   --notification-fade-scale: 0.96;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --notification-accent: #007aff;
-    --notification-foreground: #1d2734;
-    --notification-muted: rgb(29 39 52 / 64%);
-    --notification-edge: rgb(255 255 255 / 78%);
-    --notification-surface: #f2f6fc;
-    --notification-material: rgb(242 246 252 / 92%);
-    --notification-status-edge: rgb(35 49 70 / 12%);
-    --notification-highlight: rgb(255 255 255 / 96%);
-    --notification-inner-highlight: rgb(255 255 255 / 96%);
-    --notification-shadow: rgb(57 74 99 / 17%);
-    --notification-control-foreground: rgb(29 39 52 / 60%);
-    --notification-control-surface: rgb(29 39 52 / 8%);
-    --notification-control-edge: rgb(29 39 52 / 12%);
-    --notification-status-attention: #a65f00;
-    --notification-status-attention-surface: #fff0d1;
-    --notification-status-failure: #c53d4d;
-    --notification-status-failure-surface: #f9dfe3;
-    --notification-status-completion: #168267;
-    --notification-status-completion-surface: #dcefe9;
-  }
 }
 
 html,

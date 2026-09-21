@@ -114,7 +114,7 @@ extern "C" {
 #[cfg(not(feature = "hydrate"))]
 fn close_appearance_window() {}
 
-#[cfg(feature = "hydrate")]
+#[cfg(all(feature = "hydrate", not(feature = "website")))]
 pub(crate) fn install_appearance_selection_boundary() {
     install_appearance_selection_boundary_js();
 }
@@ -187,8 +187,7 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
     let preview_reduced_motion = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
     start_appearance_lifecycle(
-        appearance,
-        selection_in_flight,
+        Some((appearance, selection_in_flight)),
         preview,
         preview_frame,
         preview_reduced_motion,
@@ -369,121 +368,10 @@ pub fn AppearancePage(appearance: AppearanceView) -> impl IntoView {
                             </div>
 
                             <div class="appearance-stage" aria-live="polite">
-                                <div
-                                    class="appearance-scene"
-                                    id="appearance-scene"
-                                    data-placement=move || scene_placement(preview.get().scene())
-                                    data-scene=move || scene_token(preview.get().scene())
-                                    data-animation=move || animation_token(preview.get().animation())
-                                >
-                                    <div class="appearance-notifications" id="appearance-notifications">
-                                        <Show
-                                            when=move || preview.get().scene().spec().notification().is_some()
-                                            fallback=|| view! {
-                                                <div class="appearance-preview-empty">"No pending notifications"</div>
-                                            }
-                                        >
-                                            {move || {
-                                                let notification = preview_notification(preview.get().scene())
-                                                    .expect("notification preview scene must provide a notification");
-                                                view! {
-                                                    <NotificationPreviewCard
-                                                        notification
-                                                        wall_clock=preview_wall_clock
-                                                        reduced_motion=preview_reduced_motion
-                                                    />
-                                                }
-                                            }}
-                                        </Show>
-                                    </div>
-                                    <div
-                                        class="appearance-pet"
-                                        id="appearance-pet"
-                                        role="button"
-                                        tabindex="0"
-                                        aria-label="Pet preview: click to wave, double-click to jump, drag to run"
-                                        aria-keyshortcuts="Enter Space"
-                                        on:pointerdown=move |event| {
-                                            #[cfg(feature = "hydrate")]
-                                            if event.is_primary() && event.button() == 0 {
-                                                event.prevent_default();
-                                                super::capture_pointer(&event);
-                                                preview.update(|preview| preview.press(
-                                                    f64::from(event.client_x()),
-                                                    f64::from(event.client_y()),
-                                                    event.time_stamp().max(0.0) as u64,
-                                                ));
-                                            }
-                                            #[cfg(not(feature = "hydrate"))]
-                                            let _ = event;
-                                        }
-                                        on:pointermove=move |event| {
-                                            #[cfg(feature = "hydrate")]
-                                            if event.is_primary() {
-                                                let (gaze_x, gaze_y) = preview_gaze_offset(&event);
-                                                preview.update(|preview| preview.move_to(
-                                                    f64::from(event.client_x()),
-                                                    f64::from(event.client_y()),
-                                                    event.time_stamp().max(0.0) as u64,
-                                                    gaze_x,
-                                                    gaze_y,
-                                                ));
-                                            }
-                                            #[cfg(not(feature = "hydrate"))]
-                                            let _ = event;
-                                        }
-                                        on:pointerup=move |event| {
-                                            #[cfg(feature = "hydrate")]
-                                            if event.is_primary() {
-                                                preview.update(|preview| preview.release(false));
-                                                super::release_pointer(&event);
-                                            }
-                                            #[cfg(not(feature = "hydrate"))]
-                                            let _ = event;
-                                        }
-                                        on:pointercancel=move |event| {
-                                            #[cfg(feature = "hydrate")]
-                                            if event.is_primary() {
-                                                preview.update(|preview| preview.release(true));
-                                                super::release_pointer(&event);
-                                            }
-                                            #[cfg(not(feature = "hydrate"))]
-                                            let _ = event;
-                                        }
-                                        on:lostpointercapture=move |_| {
-                                            #[cfg(feature = "hydrate")]
-                                            preview.update(|preview| preview.release(true));
-                                        }
-                                        on:pointerleave=move |_| {
-                                            #[cfg(feature = "hydrate")]
-                                            preview.update(|preview| preview.gaze = None);
-                                        }
-                                        on:keydown=move |event| {
-                                            #[cfg(feature = "hydrate")]
-                                            if matches!(event.key().as_str(), "Enter" | " ") {
-                                                event.prevent_default();
-                                                preview.update(|preview| {
-                                                    preview.clicks = ClickDisambiguator::default();
-                                                    preview.interaction.trigger_wave(preview.now_ms);
-                                                });
-                                            }
-                                            #[cfg(not(feature = "hydrate"))]
-                                            let _ = event;
-                                        }
-                                    >
-                                        <img
-                                            class="appearance-pet-atlas"
-                                            src=selected_asset_url
-                                            alt=""
-                                            aria-hidden="true"
-                                            draggable="false"
-                                            data-frame-row=move || preview_frame.get().row
-                                            data-frame-column=move || preview_frame.get().column
-                                            style:animation="none"
-                                            style:transform=move || frame_transform(preview_frame.get())
-                                        />
-                                        </div>
-                                    </div>
+                                <PetPreviewScene
+                                    preview preview_frame preview_wall_clock preview_reduced_motion
+                                    selected_asset_url=Signal::derive(selected_asset_url)
+                                />
                             </div>
                             </Show>
                             </div>
@@ -571,6 +459,168 @@ fn appearance_scene_button(
             <span class="appearance-scene-glyph" aria-hidden="true">{scene_glyph(scene)}</span>
             <span>{scene_label(scene)}</span>
         </button>
+    }
+}
+
+#[component]
+fn PetPreviewScene(
+    preview: RwSignal<AppearancePreviewController>,
+    preview_frame: RwSignal<AtlasFrame>,
+    preview_wall_clock: RwSignal<u64>,
+    preview_reduced_motion: RwSignal<bool>,
+    selected_asset_url: Signal<String>,
+) -> impl IntoView {
+    view! {
+        <div
+            class="appearance-scene"
+            id="appearance-scene"
+            data-placement=move || scene_placement(preview.get().scene())
+            data-scene=move || scene_token(preview.get().scene())
+            data-animation=move || animation_token(preview.get().animation())
+        >
+            <div class="appearance-notifications" id="appearance-notifications">
+                <Show
+                    when=move || preview.get().scene().spec().notification().is_some()
+                    fallback=|| view! {
+                        <div class="appearance-preview-empty">"No pending notifications"</div>
+                    }
+                >
+                    {move || {
+                        let notification = preview_notification(preview.get().scene())
+                            .expect("notification preview scene must provide a notification");
+                        view! {
+                            <NotificationPreviewCard
+                                notification
+                                wall_clock=preview_wall_clock
+                                reduced_motion=preview_reduced_motion
+                            />
+                        }
+                    }}
+                </Show>
+            </div>
+            <div
+                class="appearance-pet"
+                id="appearance-pet"
+                role="button"
+                tabindex="0"
+                aria-label="Pet preview: click to wave, double-click to jump, drag to run"
+                aria-keyshortcuts="Enter Space"
+                on:pointerdown=move |event| {
+                    #[cfg(feature = "hydrate")]
+                    if event.is_primary() && event.button() == 0 {
+                        event.prevent_default();
+                        super::capture_pointer(&event);
+                        preview.update(|preview| preview.press(
+                            f64::from(event.client_x()),
+                            f64::from(event.client_y()),
+                            event.time_stamp().max(0.0) as u64,
+                        ));
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = event;
+                }
+                on:pointermove=move |event| {
+                    #[cfg(feature = "hydrate")]
+                    if event.is_primary() {
+                        let (gaze_x, gaze_y) = preview_gaze_offset(&event);
+                        preview.update(|preview| preview.move_to(
+                            f64::from(event.client_x()),
+                            f64::from(event.client_y()),
+                            event.time_stamp().max(0.0) as u64,
+                            gaze_x,
+                            gaze_y,
+                        ));
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = event;
+                }
+                on:pointerup=move |event| {
+                    #[cfg(feature = "hydrate")]
+                    if event.is_primary() {
+                        preview.update(|preview| preview.release(false));
+                        super::release_pointer(&event);
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = event;
+                }
+                on:pointercancel=move |event| {
+                    #[cfg(feature = "hydrate")]
+                    if event.is_primary() {
+                        preview.update(|preview| preview.release(true));
+                        super::release_pointer(&event);
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = event;
+                }
+                on:lostpointercapture=move |_| {
+                    #[cfg(feature = "hydrate")]
+                    preview.update(|preview| preview.release(true));
+                }
+                on:pointerleave=move |_| {
+                    #[cfg(feature = "hydrate")]
+                    preview.update(|preview| preview.gaze = None);
+                }
+                on:keydown=move |event| {
+                    #[cfg(feature = "hydrate")]
+                    if matches!(event.key().as_str(), "Enter" | " ") {
+                        event.prevent_default();
+                        preview.update(|preview| {
+                            preview.clicks = ClickDisambiguator::default();
+                            preview.interaction.trigger_wave(preview.now_ms);
+                        });
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = event;
+                }
+            >
+                <img
+                    class="appearance-pet-atlas"
+                    src=selected_asset_url
+                    alt=""
+                    aria-hidden="true"
+                    draggable="false"
+                    data-frame-row=move || preview_frame.get().row
+                    data-frame-column=move || preview_frame.get().column
+                    style:animation="none"
+                    style:transform=move || frame_transform(preview_frame.get())
+                />
+                </div>
+            </div>
+    }
+}
+
+#[cfg(any(feature = "website", all(test, feature = "ssr")))]
+#[component]
+pub(crate) fn PetShowcase(asset_url: String) -> impl IntoView {
+    let asset_url = StoredValue::new(asset_url);
+    let preview = RwSignal::new(AppearancePreviewController::new(PreviewScene::Review));
+    let preview_frame = RwSignal::new(preview.get_untracked().frame());
+    let preview_wall_clock = RwSignal::new(0_u64);
+    #[cfg(feature = "hydrate")]
+    let preview_reduced_motion = RwSignal::new(super::system_prefers_reduced_motion());
+    #[cfg(not(feature = "hydrate"))]
+    let preview_reduced_motion = RwSignal::new(false);
+    #[cfg(feature = "hydrate")]
+    start_appearance_lifecycle(None, preview, preview_frame, preview_reduced_motion);
+    let scenes = PreviewScene::all()
+        .iter()
+        .copied()
+        .map(|scene| appearance_scene_button(scene, preview, preview_frame))
+        .collect_view();
+    view! {
+        <section class="pet-showcase" aria-label="Interactive Lili demo">
+            <div class="showcase-caption"><span>"PET PREVIEW"</span><span>"LIVE DEMO"</span></div>
+            <div class="showcase-stage" aria-live="polite">
+                <PetPreviewScene preview preview_frame preview_wall_clock preview_reduced_motion
+                    selected_asset_url=Signal::derive(move || asset_url.get_value())/>
+            </div>
+            <div class="showcase-controls">
+                <p>"Try a state"</p>
+                <div class="appearance-scene-buttons" role="group" aria-label="Preview scenes">{scenes}</div>
+                <p class="showcase-hint">"Click to wave · Double-click to jump · Drag to run"</p>
+                <p class="showcase-note">"Sample notifications. No native actions run here."</p>
+            </div>
+        </section>
     }
 }
 
@@ -821,8 +871,7 @@ const fn scene_glyph(scene: PreviewScene) -> &'static str {
 
 #[cfg(feature = "hydrate")]
 fn start_appearance_lifecycle(
-    appearance: RwSignal<AppearanceView>,
-    selection_in_flight: RwSignal<bool>,
+    selection: Option<(RwSignal<AppearanceView>, RwSignal<bool>)>,
     preview: RwSignal<AppearancePreviewController>,
     preview_frame: RwSignal<AtlasFrame>,
     preview_reduced_motion: RwSignal<bool>,
@@ -839,6 +888,12 @@ fn start_appearance_lifecycle(
         return;
     }
 
+    // The public showcase has no desktop selection source to poll or mutate.
+    let refresh_selection = move || {
+        if let Some((appearance, selection_in_flight)) = selection {
+            start_appearance_selection_refresh(appearance, selection_in_flight);
+        }
+    };
     let mut lifecycle = AppearanceLifecycle {
         _visibility_callback: None,
         _shown_callback: None,
@@ -847,7 +902,7 @@ fn start_appearance_lifecycle(
     if appearance_window_is_native() {
         let shown_callback = Closure::<dyn FnMut()>::new(move || {
             start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
-            start_appearance_selection_refresh(appearance, selection_in_flight);
+            refresh_selection();
         });
         let hidden_callback = Closure::<dyn FnMut()>::new(move || {
             stop_appearance_preview_clock();
@@ -865,7 +920,7 @@ fn start_appearance_lifecycle(
         lifecycle._hidden_callback = Some(hidden_callback);
         if appearance_window_is_visible() {
             start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
-            start_appearance_selection_refresh(appearance, selection_in_flight);
+            refresh_selection();
         }
     } else {
         let visibility_callback = Closure::<dyn FnMut()>::new({
@@ -876,7 +931,7 @@ fn start_appearance_lifecycle(
                     stop_appearance_selection_refresh();
                 } else {
                     start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
-                    start_appearance_selection_refresh(appearance, selection_in_flight);
+                    refresh_selection();
                 }
             }
         });
@@ -887,7 +942,7 @@ fn start_appearance_lifecycle(
         lifecycle._visibility_callback = Some(visibility_callback);
         if !document.hidden() {
             start_appearance_preview_clock(preview, preview_frame, preview_reduced_motion);
-            start_appearance_selection_refresh(appearance, selection_in_flight);
+            refresh_selection();
         }
     }
     APPEARANCE_LIFECYCLE.with(|stored| {
@@ -1128,6 +1183,31 @@ mod tests {
     use lili_core::{AppearancePetView, PetId};
 
     use super::*;
+
+    #[test]
+    fn showcase_renders_shared_elements_without_configuration_chrome() {
+        let html =
+            view! { <PetShowcase asset_url="assets/spritesheet.webp".to_owned()/> }.to_html();
+
+        assert!(html.contains("class=\"pet-showcase\""));
+        assert!(html.contains("class=\"appearance-pet-atlas\""));
+        assert!(html.contains("notification-card-preview"));
+        assert!(html.contains("assets/spritesheet.webp"));
+        assert_eq!(html.matches("aria-pressed=").count(), 7);
+        for chrome in [
+            "appearance-window-frame",
+            "appearance-sidebar",
+            "appearance-pet-list",
+            "lili-appearance",
+            "Pet Studio",
+        ] {
+            assert!(
+                !html.contains(chrome),
+                "unexpected configuration element: {chrome}"
+            );
+        }
+        assert!(!html.contains("/pet-assets/"));
+    }
 
     #[test]
     fn appearance_page_renders_the_focused_pet_surface() {

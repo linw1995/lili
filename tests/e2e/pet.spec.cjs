@@ -500,9 +500,9 @@ test("notification glass surfaces stay opaque and follow the system color scheme
       const colorValues = style.backgroundColor.match(/[\d.]+/g) ?? [];
       return {
         backgroundColor: style.backgroundColor,
+        backgroundRgb: colorValues.slice(0, 3).map(Number),
         backgroundAlpha: colorValues.length >= 4 ? Number(colorValues[3]) : 1,
         foreground: style.color,
-        surface: style.getPropertyValue("--notification-surface").trim(),
       };
     });
 
@@ -511,8 +511,8 @@ test("notification glass surfaces stay opaque and follow the system color scheme
   await page.emulateMedia({ colorScheme: "dark" });
   const dark = await readTheme();
 
-  expect(light.surface).toBe("#f2f6fc");
-  expect(dark.surface).toBe("#292e38");
+  expect(light.backgroundRgb).toEqual([242, 246, 252]);
+  expect(dark.backgroundRgb).toEqual([41, 46, 56]);
   expect(light.backgroundAlpha).toBeGreaterThan(0.9);
   expect(dark.backgroundAlpha).toBeGreaterThan(0.9);
   expect(light.backgroundAlpha).toBeLessThan(1);

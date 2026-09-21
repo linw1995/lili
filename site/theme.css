@@ -1,0 +1,12 @@
+:root {
+  color-scheme: light;
+  --site-background: #fafafb;
+  --site-surface: #ffffff;
+  --site-stage: #f0f1f5;
+  --site-ink: #20212a;
+  --site-muted: #676975;
+  --site-line: #e3e4eb;
+  --site-accent: #594bd6;
+  --site-accent-hover: #483bc0;
+  --site-accent-soft: #efedfc;
+}
