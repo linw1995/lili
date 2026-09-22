@@ -6,7 +6,7 @@ Lili is named after my cat.
 
 [![Lili pet and notification demo](https://linw1995.github.io/lili/media/lili-demo.gif)](https://linw1995.github.io/lili/)
 
-[Website and interactive demo](https://linw1995.github.io/lili/) · [Build and deploy](docs/website.md)
+[Website and interactive demo](https://linw1995.github.io/lili/)
 
 ## Make it your own
 
@@ -14,14 +14,6 @@ Lili is named after my cat.
 - **Custom pets.** Install compatible Pet v2 packages and select a companion from the tray.
 - **Session integration.** Connect supported Codex completion, attention, and failure events to pet states and notifications.
 - **Custom actions.** Bind pet clicks, double clicks, and notification activation to your own executables with structured context.
-
-The website is built for [repository GitHub Pages](docs/website.md#github-pages). To try the interactive demo locally:
-
-```sh
-nix develop --command npm run preview:site
-```
-
-Open `http://127.0.0.1:4173`. The entire website is a Leptos application compiled from Rust to WebAssembly. Its landing page and interactive demo share one component tree, reusing the desktop pet renderer, notification card, and preview controller. No native actions run. The animation above is recorded from the same demo during the Pages build and published with the website. See the [website guide](docs/website.md#checks-and-readme-media) to regenerate it locally.
 
 Optional Pet v2 packages are discovered under Lili's platform-native application data directory at `pets/<pet-id>`. Lili includes an embedded default, so no external package is required; invalid application-owned packages are skipped. The desktop runtime does not scan `CODEX_HOME`.
 
