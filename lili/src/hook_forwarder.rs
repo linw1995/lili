@@ -254,6 +254,9 @@ async fn process_payload_with_source(
 
 fn recognized_hook_event(payload: &[u8]) -> Option<&'static str> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("agent-turn-complete") {
+        return Some("agent-turn-complete");
+    }
     match value.get("hook_event_name")?.as_str()? {
         "SessionStart" => Some("SessionStart"),
         "UserPromptSubmit" => Some("UserPromptSubmit"),

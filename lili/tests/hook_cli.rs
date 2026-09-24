@@ -46,7 +46,7 @@ fn version_matches_the_workspace_release() {
     assert!(output.stderr.is_empty());
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn coexistence_logs_suppressed_lili_failure_without_hook_output() {
     let temp = TempDir::new();
@@ -79,6 +79,55 @@ fn coexistence_logs_suppressed_lili_failure_without_hook_output() {
     let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
     assert_eq!(entry["exitCode"], 3);
     assert_eq!(entry["reason"], "provider payload is malformed JSON");
+    assert!(!log.contains(private_text));
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn legacy_notify_failure_logs_its_event_name_without_message_content() {
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let private_text = "private assistant marker";
+    let payload = format!(
+        r#"{{"type":"agent-turn-complete","thread-id":"session-1","last-assistant-message":"{private_text}"}}"#
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
+        .arg("--json-stdin")
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+
+    #[cfg(target_os = "macos")]
+    let application_root = home
+        .join("Library")
+        .join("Application Support")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    #[cfg(target_os = "linux")]
+    let application_root = home
+        .join("state")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    let log_path = ApplicationPaths::from_root(application_root)
+        .unwrap()
+        .hook_failures_path();
+    let log = fs::read_to_string(log_path).unwrap();
+    let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(entry["exitCode"], 3);
+    assert_eq!(entry["hookEvent"], "agent-turn-complete");
+    assert_eq!(entry["reason"], "provider payload is missing turn identity");
     assert!(!log.contains(private_text));
 }
 
