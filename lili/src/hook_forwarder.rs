@@ -40,11 +40,12 @@ pub enum HookOutcome {
     Spooled,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HookResult {
     pub exit_code: HookExitCode,
     pub outcome: Option<HookOutcome>,
-    pub diagnostic: Option<&'static str>,
+    pub diagnostic: Option<String>,
+    pub hook_event: Option<&'static str>,
 }
 
 impl HookResult {
@@ -53,15 +54,22 @@ impl HookResult {
             exit_code: HookExitCode::Success,
             outcome: Some(outcome),
             diagnostic: None,
+            hook_event: None,
         }
     }
 
-    fn failure(exit_code: HookExitCode, diagnostic: &'static str) -> Self {
+    fn failure(exit_code: HookExitCode, diagnostic: impl Into<String>) -> Self {
         Self {
             exit_code,
             outcome: None,
-            diagnostic: Some(diagnostic),
+            diagnostic: Some(diagnostic.into()),
+            hook_event: None,
         }
+    }
+
+    fn with_hook_event(mut self, hook_event: Option<&'static str>) -> Self {
+        self.hook_event = hook_event;
+        self
     }
 
     fn isolated_success() -> Self {
@@ -69,6 +77,7 @@ impl HookResult {
             exit_code: HookExitCode::Success,
             outcome: None,
             diagnostic: None,
+            hook_event: None,
         }
     }
 }
@@ -168,11 +177,9 @@ async fn process_payload_with_source(
 ) -> HookResult {
     let mut event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
-        Err(_) => {
-            return HookResult::failure(
-                HookExitCode::InvalidInput,
-                "hook payload is invalid or unsupported",
-            );
+        Err(error) => {
+            return HookResult::failure(HookExitCode::InvalidInput, error.to_string())
+                .with_hook_event(recognized_hook_event(payload));
         }
     };
     if let Some(plugin_id) = plugin_id {
@@ -186,7 +193,8 @@ async fn process_payload_with_source(
             return HookResult::failure(
                 HookExitCode::InvalidInput,
                 "plugin invocation requires a supported Codex lifecycle event",
-            );
+            )
+            .with_hook_event(recognized_hook_event(payload));
         }
     }
 
@@ -215,7 +223,8 @@ async fn process_payload_with_source(
         Ok(SpoolEnqueueOutcome::DroppedByLimit) => HookResult::failure(
             HookExitCode::DeliveryFailed,
             "hook event was dropped by the offline spool limit",
-        ),
+        )
+        .with_hook_event(recognized_hook_event(payload)),
         Err(error) => {
             let diagnostic = match error {
                 SpoolError::Database(message) if message.contains("locked") => {
@@ -229,7 +238,20 @@ async fn process_payload_with_source(
                 _ => "hook event could not be delivered or spooled",
             };
             HookResult::failure(HookExitCode::DeliveryFailed, diagnostic)
+                .with_hook_event(recognized_hook_event(payload))
         }
+    }
+}
+
+fn recognized_hook_event(payload: &[u8]) -> Option<&'static str> {
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    match value.get("hook_event_name")?.as_str()? {
+        "SessionStart" => Some("SessionStart"),
+        "UserPromptSubmit" => Some("UserPromptSubmit"),
+        "PermissionRequest" => Some("PermissionRequest"),
+        "Stop" => Some("Stop"),
+        "SessionEnd" => Some("SessionEnd"),
+        _ => None,
     }
 }
 

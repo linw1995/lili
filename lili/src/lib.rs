@@ -3,6 +3,7 @@ pub mod acceptance_marketplace;
 mod desktop_acceptance;
 mod desktop_smoke;
 mod diagnostics;
+pub mod hook_failure_log;
 pub mod hook_forwarder;
 mod integration_cli;
 mod ipc_signer;

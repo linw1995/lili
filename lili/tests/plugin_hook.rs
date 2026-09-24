@@ -270,6 +270,41 @@ fn versioned_plugin_matrix_recovers_bounded_spool_and_deduplicates() {
     assert_eq!(metrics.malformed_drops, 0);
 }
 
+#[test]
+fn invalid_hook_writes_only_failure_metadata() {
+    let Some(target) = supported_target() else {
+        return;
+    };
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    let codex_home = temp.0.join("codex home");
+    let plugin_root = codex_home
+        .join("plugins/cache/lili-local/lili")
+        .join(env!("CARGO_PKG_VERSION"));
+    let launcher = install_plugin_runtime(&plugin_root, target);
+    let private_text = "private prompt marker";
+    let payload = format!(
+        r#"{{"hook_event_name":"UserPromptSubmit","session_id":"session-1","prompt":"{private_text}"}}"#
+    );
+
+    let output = invoke(&launcher, &plugin_root, &codex_home, &home, &payload);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("missing turn identity"));
+
+    let log_path = application_paths(&home).hook_failures_path();
+    let log = fs::read_to_string(&log_path).unwrap();
+    let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(entry["exitCode"], 3);
+    assert_eq!(entry["hookEvent"], "UserPromptSubmit");
+    assert_eq!(entry["reason"], "provider payload is missing turn identity");
+    assert!(!log.contains(private_text));
+    assert_eq!(
+        fs::metadata(log_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 fn install_plugin_runtime(plugin_root: &Path, target: &str) -> PathBuf {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/lili");
     let manifest = plugin_root.join(".codex-plugin/plugin.json");
