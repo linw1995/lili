@@ -46,6 +46,42 @@ fn version_matches_the_workspace_release() {
     assert!(output.stderr.is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn coexistence_logs_suppressed_lili_failure_without_hook_output() {
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let private_text = "private prompt marker";
+    let output = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
+        .args(["--coexist-notify-json", "[\"/usr/bin/true\"]", private_text])
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    #[cfg(target_os = "macos")]
+    let application_root = home
+        .join("Library")
+        .join("Application Support")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    #[cfg(target_os = "linux")]
+    let application_root = home
+        .join("state")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    let log_path = ApplicationPaths::from_root(application_root)
+        .unwrap()
+        .hook_failures_path();
+    let log = fs::read_to_string(log_path).unwrap();
+    let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(entry["exitCode"], 3);
+    assert_eq!(entry["reason"], "provider payload is malformed JSON");
+    assert!(!log.contains(private_text));
+}
+
 #[test]
 fn argv_mode_spools_without_emitting_approval_output() {
     let temp = TempDir::new();

@@ -11,8 +11,12 @@ use crate::hook_forwarder::HookResult;
 const MAX_LOG_BYTES: u64 = 128 * 1024;
 
 pub fn record(result: &HookResult) -> io::Result<()> {
-    let Some(reason) = result.diagnostic.as_deref() else {
-        return Ok(());
+    let (exit_code, reason) = match result.suppressed_failure.as_ref() {
+        Some((exit_code, reason)) => (*exit_code, reason.as_str()),
+        None => match result.diagnostic.as_deref() {
+            Some(reason) => (result.exit_code, reason),
+            None => return Ok(()),
+        },
     };
     let paths = ApplicationPaths::resolve().map_err(io::Error::other)?;
     paths.ensure_layout().map_err(io::Error::other)?;
@@ -35,7 +39,7 @@ pub fn record(result: &HookResult) -> io::Result<()> {
         .as_millis();
     let entry = serde_json::json!({
         "timestampMs": timestamp_ms,
-        "exitCode": result.exit_code.value(),
+        "exitCode": exit_code.value(),
         "hookEvent": result.hook_event.unwrap_or("unknown"),
         "reason": reason,
     });

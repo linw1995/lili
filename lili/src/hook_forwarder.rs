@@ -46,6 +46,7 @@ pub struct HookResult {
     pub outcome: Option<HookOutcome>,
     pub diagnostic: Option<String>,
     pub hook_event: Option<&'static str>,
+    pub suppressed_failure: Option<(HookExitCode, String)>,
 }
 
 impl HookResult {
@@ -55,6 +56,7 @@ impl HookResult {
             outcome: Some(outcome),
             diagnostic: None,
             hook_event: None,
+            suppressed_failure: None,
         }
     }
 
@@ -64,6 +66,7 @@ impl HookResult {
             outcome: None,
             diagnostic: Some(diagnostic.into()),
             hook_event: None,
+            suppressed_failure: None,
         }
     }
 
@@ -72,12 +75,18 @@ impl HookResult {
         self
     }
 
-    fn isolated_success() -> Self {
+    fn isolated_success(failure: Self) -> Self {
         Self {
             exit_code: HookExitCode::Success,
             outcome: None,
             diagnostic: None,
-            hook_event: None,
+            hook_event: failure.hook_event,
+            suppressed_failure: Some((
+                failure.exit_code,
+                failure
+                    .diagnostic
+                    .unwrap_or_else(|| "hook failed without a diagnostic".to_owned()),
+            )),
         }
     }
 }
@@ -415,7 +424,7 @@ fn isolate_coexistence_result(original_started: bool, lili_result: HookResult) -
     if lili_result.exit_code == HookExitCode::Success {
         lili_result
     } else if original_started {
-        HookResult::isolated_success()
+        HookResult::isolated_success(lili_result)
     } else {
         lili_result
     }
@@ -582,10 +591,15 @@ mod tests {
 
     #[test]
     fn coexistence_failures_do_not_mask_the_other_delivery() {
-        let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed");
+        let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed")
+            .with_hook_event(Some("Stop"));
+        let isolated = isolate_coexistence_result(true, lili_failure);
+        assert_eq!(isolated.exit_code, HookExitCode::Success);
+        assert_eq!(isolated.diagnostic, None);
+        assert_eq!(isolated.hook_event, Some("Stop"));
         assert_eq!(
-            isolate_coexistence_result(true, lili_failure).exit_code,
-            HookExitCode::Success
+            isolated.suppressed_failure,
+            Some((HookExitCode::DeliveryFailed, "failed".to_owned()))
         );
         let lili_success = HookResult::success(HookOutcome::Delivered);
         assert_eq!(
