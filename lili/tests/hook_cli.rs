@@ -131,6 +131,43 @@ fn legacy_notify_failure_logs_its_event_name_without_message_content() {
     assert!(!log.contains(private_text));
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn invalid_database_path_does_not_block_failure_log() {
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    #[cfg(target_os = "macos")]
+    let application_root = home
+        .join("Library")
+        .join("Application Support")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    #[cfg(target_os = "linux")]
+    let application_root = home
+        .join("state")
+        .join(lili_storage::APPLICATION_IDENTIFIER);
+    let paths = ApplicationPaths::from_root(application_root).unwrap();
+    fs::create_dir_all(paths.database_path()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lili-hook"))
+        .args(["--json-argv", payload()])
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+
+    let log = fs::read_to_string(paths.hook_failures_path()).unwrap();
+    let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(entry["exitCode"], 4);
+    assert!(
+        entry["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty())
+    );
+}
+
 #[test]
 fn argv_mode_spools_without_emitting_approval_output() {
     let temp = TempDir::new();

@@ -19,7 +19,9 @@ pub fn record(result: &HookResult) -> io::Result<()> {
         },
     };
     let paths = ApplicationPaths::resolve().map_err(io::Error::other)?;
-    paths.ensure_layout().map_err(io::Error::other)?;
+    paths
+        .ensure_hook_failure_log_layout()
+        .map_err(io::Error::other)?;
 
     let mut options = OpenOptions::new();
     options.create(true).append(true).write(true);
