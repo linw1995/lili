@@ -40,11 +40,13 @@ pub enum HookOutcome {
     Spooled,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HookResult {
     pub exit_code: HookExitCode,
     pub outcome: Option<HookOutcome>,
-    pub diagnostic: Option<&'static str>,
+    pub diagnostic: Option<String>,
+    pub hook_event: Option<&'static str>,
+    pub suppressed_failure: Option<(HookExitCode, String)>,
 }
 
 impl HookResult {
@@ -53,22 +55,38 @@ impl HookResult {
             exit_code: HookExitCode::Success,
             outcome: Some(outcome),
             diagnostic: None,
+            hook_event: None,
+            suppressed_failure: None,
         }
     }
 
-    fn failure(exit_code: HookExitCode, diagnostic: &'static str) -> Self {
+    fn failure(exit_code: HookExitCode, diagnostic: impl Into<String>) -> Self {
         Self {
             exit_code,
             outcome: None,
-            diagnostic: Some(diagnostic),
+            diagnostic: Some(diagnostic.into()),
+            hook_event: None,
+            suppressed_failure: None,
         }
     }
 
-    fn isolated_success() -> Self {
+    fn with_hook_event(mut self, hook_event: Option<&'static str>) -> Self {
+        self.hook_event = hook_event;
+        self
+    }
+
+    fn isolated_success(failure: Self) -> Self {
         Self {
             exit_code: HookExitCode::Success,
             outcome: None,
             diagnostic: None,
+            hook_event: failure.hook_event,
+            suppressed_failure: Some((
+                failure.exit_code,
+                failure
+                    .diagnostic
+                    .unwrap_or_else(|| "hook failed without a diagnostic".to_owned()),
+            )),
         }
     }
 }
@@ -168,11 +186,9 @@ async fn process_payload_with_source(
 ) -> HookResult {
     let mut event = match normalize_hook_json(payload, now_ms) {
         Ok(event) => event,
-        Err(_) => {
-            return HookResult::failure(
-                HookExitCode::InvalidInput,
-                "hook payload is invalid or unsupported",
-            );
+        Err(error) => {
+            return HookResult::failure(HookExitCode::InvalidInput, error.to_string())
+                .with_hook_event(recognized_hook_event(payload));
         }
     };
     if let Some(plugin_id) = plugin_id {
@@ -186,7 +202,8 @@ async fn process_payload_with_source(
             return HookResult::failure(
                 HookExitCode::InvalidInput,
                 "plugin invocation requires a supported Codex lifecycle event",
-            );
+            )
+            .with_hook_event(recognized_hook_event(payload));
         }
     }
 
@@ -215,7 +232,8 @@ async fn process_payload_with_source(
         Ok(SpoolEnqueueOutcome::DroppedByLimit) => HookResult::failure(
             HookExitCode::DeliveryFailed,
             "hook event was dropped by the offline spool limit",
-        ),
+        )
+        .with_hook_event(recognized_hook_event(payload)),
         Err(error) => {
             let diagnostic = match error {
                 SpoolError::Database(message) if message.contains("locked") => {
@@ -229,7 +247,23 @@ async fn process_payload_with_source(
                 _ => "hook event could not be delivered or spooled",
             };
             HookResult::failure(HookExitCode::DeliveryFailed, diagnostic)
+                .with_hook_event(recognized_hook_event(payload))
         }
+    }
+}
+
+fn recognized_hook_event(payload: &[u8]) -> Option<&'static str> {
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("agent-turn-complete") {
+        return Some("agent-turn-complete");
+    }
+    match value.get("hook_event_name")?.as_str()? {
+        "SessionStart" => Some("SessionStart"),
+        "UserPromptSubmit" => Some("UserPromptSubmit"),
+        "PermissionRequest" => Some("PermissionRequest"),
+        "Stop" => Some("Stop"),
+        "SessionEnd" => Some("SessionEnd"),
+        _ => None,
     }
 }
 
@@ -393,7 +427,7 @@ fn isolate_coexistence_result(original_started: bool, lili_result: HookResult) -
     if lili_result.exit_code == HookExitCode::Success {
         lili_result
     } else if original_started {
-        HookResult::isolated_success()
+        HookResult::isolated_success(lili_result)
     } else {
         lili_result
     }
@@ -560,10 +594,15 @@ mod tests {
 
     #[test]
     fn coexistence_failures_do_not_mask_the_other_delivery() {
-        let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed");
+        let lili_failure = HookResult::failure(HookExitCode::DeliveryFailed, "failed")
+            .with_hook_event(Some("Stop"));
+        let isolated = isolate_coexistence_result(true, lili_failure);
+        assert_eq!(isolated.exit_code, HookExitCode::Success);
+        assert_eq!(isolated.diagnostic, None);
+        assert_eq!(isolated.hook_event, Some("Stop"));
         assert_eq!(
-            isolate_coexistence_result(true, lili_failure).exit_code,
-            HookExitCode::Success
+            isolated.suppressed_failure,
+            Some((HookExitCode::DeliveryFailed, "failed".to_owned()))
         );
         let lili_success = HookResult::success(HookOutcome::Delivered);
         assert_eq!(

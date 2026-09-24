@@ -72,6 +72,16 @@ impl ApplicationPaths {
         self.runtime_root().join("endpoint")
     }
 
+    pub fn hook_failures_path(&self) -> PathBuf {
+        self.runtime_root().join("hook-failures.log")
+    }
+
+    pub fn ensure_hook_failure_log_layout(&self) -> Result<(), StorageError> {
+        ensure_private_directory(&self.root)?;
+        ensure_private_directory(&self.runtime_root())?;
+        harden_existing_file(&self.hook_failures_path())
+    }
+
     pub fn ensure_layout(&self) -> Result<(), StorageError> {
         for path in [
             self.root.clone(),
@@ -86,6 +96,7 @@ impl ApplicationPaths {
             self.database_path().with_extension("sqlite3-wal"),
             self.database_path().with_extension("sqlite3-shm"),
             self.credentials_path(),
+            self.hook_failures_path(),
         ] {
             harden_existing_file(&path)?;
         }

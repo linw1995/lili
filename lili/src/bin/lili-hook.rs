@@ -6,8 +6,9 @@ async fn main() {
         return;
     }
     let result = lili_lib::hook_forwarder::run_from_environment().await;
-    if let Some(diagnostic) = result.diagnostic {
+    if let Some(diagnostic) = result.diagnostic.as_deref() {
         eprintln!("{diagnostic}");
     }
+    let _ = lili_lib::hook_failure_log::record(&result);
     std::process::exit(i32::from(result.exit_code.value()));
 }
