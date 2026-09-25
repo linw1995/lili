@@ -76,7 +76,7 @@ pub(crate) fn install_atlas(asset_id: &str, bytes: &[u8]) -> Result<bool, image:
     Ok(true)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn contains(x: f64, y: f64) -> bool {
     let Some((x, y)) = sprite_point(x, y) else {
         return false;
