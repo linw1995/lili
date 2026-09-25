@@ -2257,10 +2257,9 @@ async fn commit_window_position(
         .lock()
         .map_err(|_| "window drag state is unavailable")? = None;
     #[cfg(target_os = "linux")]
-    {
-        pet_hit_region::set_dragging(false);
-        refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
-    }
+    pet_hit_region::set_dragging(false);
+    // Refresh after pointer-up dispatch so changing the input region cannot swallow the release.
+    refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
     if !persist {
         return Ok(true);
     }
