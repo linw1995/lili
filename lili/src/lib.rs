@@ -13,6 +13,7 @@ mod loopback;
 #[cfg(target_os = "macos")]
 mod macos_panel;
 mod notification_hit_region;
+mod pet_hit_region;
 mod platform_pinning;
 #[cfg(target_os = "windows")]
 mod windows_notification_hit_region;
@@ -298,6 +299,7 @@ fn run_desktop(smoke: bool, acceptance: bool, action_only_acceptance: bool) {
             focus_notification_window,
             focus_pet_window,
             set_notification_hit_region,
+            set_pet_hit_frame,
             run_pet_context_action,
             complete_desktop_acceptance,
             mark_title_fallback_visible,
@@ -466,7 +468,8 @@ fn register_loopback_capability(
         .permission("allow-move-window-to")
         .permission("allow-commit-window-position")
         .permission("allow-open-pet-context-menu")
-        .permission("allow-focus-notification-window");
+        .permission("allow-focus-notification-window")
+        .permission("allow-set-pet-hit-frame");
     let capability = if acceptance {
         capability.permission("allow-complete-desktop-acceptance")
     } else if smoke {
@@ -864,9 +867,16 @@ fn apply_notification_hit_region(
 
 #[cfg(not(target_os = "macos"))]
 fn configure_desktop_companion_window(
-    _window: &tauri::WebviewWindow,
+    window: &tauri::WebviewWindow,
     _app: tauri::AppHandle,
 ) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    return linux_notification_hit_region::configure_pet(window);
+
+    #[cfg(target_os = "windows")]
+    return windows_notification_hit_region::configure_pet(window);
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     Ok(())
 }
 
@@ -928,6 +938,12 @@ fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
         tauri::WindowEvent::CloseRequested { api, .. } => handle_pet_close(app, api),
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
             handle_pet_move(app);
+            if let Some(window) = app.get_webview_window("pet") {
+                #[cfg(target_os = "macos")]
+                let _ = macos_panel::refresh_pet_hit_region(&window);
+                #[cfg(target_os = "windows")]
+                windows_notification_hit_region::refresh_pet(&window);
+            }
         }
         tauri::WindowEvent::Focused(true) => position_notification_window(app),
         _ => {}
@@ -2021,6 +2037,58 @@ fn set_notification_hit_region(
 }
 
 #[tauri::command]
+async fn set_pet_hit_frame(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    asset_id: String,
+    row: u8,
+    column: u8,
+) -> Result<bool, String> {
+    if window.label() != "pet" || row >= lili_pet::ATLAS_ROWS || column >= lili_pet::ATLAS_COLUMNS {
+        return Ok(false);
+    }
+    let state = app.state::<PetContextActions>().state.clone();
+    if state.snapshot().await.pet_asset_id.as_deref() != Some(&asset_id) {
+        return Ok(false);
+    }
+    let needs_atlas = pet_hit_region::set_frame(&asset_id, row, column);
+    refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
+    if needs_atlas {
+        let asset = state
+            .approved_pet_asset(&asset_id)
+            .await
+            .ok_or_else(|| "selected pet asset is unavailable".to_owned())?;
+        let installed = tokio::task::spawn_blocking(move || {
+            pet_hit_region::install_atlas(&asset_id, asset.bytes())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        if installed {
+            refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(true)
+}
+
+fn refresh_pet_hit_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos_panel::refresh_pet_hit_region(window);
+
+    #[cfg(target_os = "linux")]
+    return linux_notification_hit_region::update_pet(window);
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_notification_hit_region::refresh_pet(window);
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    Ok(())
+}
+
+#[tauri::command]
 fn run_pet_context_action(
     app: tauri::AppHandle,
     actions: tauri::State<'_, PetContextActions>,
@@ -2069,7 +2137,13 @@ fn begin_window_drag(
     screen_x: i32,
     screen_y: i32,
 ) -> Result<bool, String> {
-    begin_window_drag_from(&window, &state, screen_x, screen_y)
+    let started = begin_window_drag_from(&window, &state, screen_x, screen_y)?;
+    #[cfg(target_os = "linux")]
+    {
+        pet_hit_region::set_dragging(true);
+        refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
+    }
+    Ok(started)
 }
 
 fn begin_window_drag_from(
@@ -2175,11 +2249,20 @@ async fn commit_window_position(
     window: tauri::WebviewWindow,
     persistence: tauri::State<'_, DesktopPersistence>,
     drag_state: tauri::State<'_, WindowDragState>,
+    persist: bool,
 ) -> Result<bool, String> {
     *drag_state
         .0
         .lock()
         .map_err(|_| "window drag state is unavailable")? = None;
+    #[cfg(target_os = "linux")]
+    {
+        pet_hit_region::set_dragging(false);
+        refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
+    }
+    if !persist {
+        return Ok(true);
+    }
     let Some(store) = &persistence.store else {
         return Ok(false);
     };

@@ -24,6 +24,7 @@ use crate::notification_hit_region::{
     NotificationHitRegionMode, WINDOW_HEIGHT as NOTIFICATION_WINDOW_HEIGHT,
     contains as notification_hit_region_contains,
 };
+use crate::pet_hit_region;
 
 const PANEL_CLASS_NAME: &CStr = c"LiliPetPanel";
 const CURRENT_PROCESS: u32 = 2;
@@ -54,11 +55,6 @@ pub struct ContextMenuEvent {
 type ContextMenuHandler = Arc<dyn Fn(ContextMenuEvent) + Send + Sync>;
 type ContextMenuDismissHandler = Arc<dyn Fn() + Send + Sync>;
 
-const PET_SPRITE_HEIGHT: f64 = 208.0;
-const PET_SPRITE_WIDTH: f64 = 192.0;
-const PET_WINDOW_HEIGHT: f64 = 360.0;
-const PET_WINDOW_WIDTH: f64 = 320.0;
-
 #[derive(Clone, Copy, Debug)]
 struct NotificationHitRegion {
     window_number: isize,
@@ -80,6 +76,7 @@ struct ContextMenuState {
 }
 
 static CONTEXT_MENU_STATE: OnceLock<Mutex<ContextMenuState>> = OnceLock::new();
+static PET_DRAGGING: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
         const { std::cell::RefCell::new(None) };
@@ -107,6 +104,8 @@ pub fn configure(
     });
     drop(state);
     install_context_menu_monitor();
+    install_notification_global_monitor();
+    refresh_mouse_passthrough();
     Ok(())
 }
 
@@ -119,6 +118,15 @@ pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 pub fn configure_settings(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
     register_context_menu_suppression(window_number)
+}
+
+pub fn refresh_pet_hit_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    if MainThreadMarker::new().is_some() {
+        refresh_mouse_passthrough();
+        Ok(())
+    } else {
+        window.run_on_main_thread(refresh_mouse_passthrough)
+    }
 }
 
 pub fn update_notification_hit_region(
@@ -138,10 +146,10 @@ pub fn update_notification_hit_region(
     hit_region.below_pet = below_pet;
     drop(state);
     if MainThreadMarker::new().is_some() {
-        refresh_notification_mouse_passthrough();
+        refresh_mouse_passthrough();
         Ok(())
     } else {
-        window.run_on_main_thread(refresh_notification_mouse_passthrough)
+        window.run_on_main_thread(refresh_mouse_passthrough)
     }
 }
 
@@ -290,7 +298,7 @@ fn register_notification_hit_region(window_number: isize) -> tauri::Result<()> {
         below_pet: false,
     });
     install_notification_global_monitor();
-    refresh_notification_mouse_passthrough();
+    refresh_mouse_passthrough();
     Ok(())
 }
 
@@ -304,7 +312,7 @@ fn install_notification_global_monitor() {
         | NSEventMask::RightMouseDragged
         | NSEventMask::OtherMouseDragged;
     let global_block = RcBlock::new(move |_event: NonNull<NSEvent>| {
-        refresh_notification_mouse_passthrough();
+        refresh_mouse_passthrough();
     });
     if let Some(monitor) =
         NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global_block)
@@ -339,6 +347,39 @@ fn refresh_notification_mouse_passthrough() {
         point.x,
         NOTIFICATION_WINDOW_HEIGHT - point.y,
     ));
+}
+
+fn refresh_pet_mouse_passthrough() {
+    let tracking_available = CONTEXT_MENU_MONITOR.with(|monitor| monitor.borrow().is_some())
+        && NOTIFICATION_GLOBAL_MONITOR.with(|monitor| monitor.borrow().is_some());
+    let window_number = CONTEXT_MENU_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.pet.as_ref().map(|pet| pet.window_number));
+    let (Some(window_number), Some(mtm)) = (window_number, MainThreadMarker::new()) else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(mtm);
+    let Some(window) = application.windowWithWindowNumber(window_number) else {
+        return;
+    };
+    window.setAcceptsMouseMovedEvents(true);
+    if !tracking_available {
+        window.setIgnoresMouseEvents(false);
+        return;
+    }
+    if NSEvent::pressedMouseButtons() & 1 == 0 {
+        PET_DRAGGING.store(false, Ordering::Release);
+    }
+    let point = window.convertPointFromScreen(NSEvent::mouseLocation());
+    window.setIgnoresMouseEvents(
+        !PET_DRAGGING.load(Ordering::Acquire) && !pet_sprite_contains(point.x, point.y),
+    );
+}
+
+fn refresh_mouse_passthrough() {
+    refresh_notification_mouse_passthrough();
+    refresh_pet_mouse_passthrough();
 }
 
 pub fn hide_dock_icon() {
@@ -469,6 +510,10 @@ fn install_context_menu_monitor() {
         let event = unsafe { event.as_ref() };
         let window_number = event.windowNumber();
         let event_type = event.r#type();
+        if event_type == NSEventType::LeftMouseUp {
+            PET_DRAGGING.store(false, Ordering::Release);
+            return event as *const NSEvent as *mut NSEvent;
+        }
         if matches!(
             event_type,
             NSEventType::MouseMoved
@@ -476,7 +521,7 @@ fn install_context_menu_monitor() {
                 | NSEventType::RightMouseDragged
                 | NSEventType::OtherMouseDragged
         ) {
-            refresh_notification_mouse_passthrough();
+            refresh_mouse_passthrough();
             return event as *const NSEvent as *mut NSEvent;
         }
         let Some((suppressed, open_handler, dismiss_handler)) =
@@ -508,6 +553,16 @@ fn install_context_menu_monitor() {
         else {
             return event as *const NSEvent as *mut NSEvent;
         };
+        if event_type == NSEventType::LeftMouseDown {
+            let pet_window_number = CONTEXT_MENU_STATE
+                .get()
+                .and_then(|state| state.lock().ok())
+                .and_then(|state| state.pet.as_ref().map(|pet| pet.window_number));
+            PET_DRAGGING.store(
+                pet_window_number == Some(window_number) && event_hits_pet_sprite(event),
+                Ordering::Release,
+            );
+        }
         if let Some(handler) = dismiss_handler {
             handler();
         }
@@ -528,6 +583,7 @@ fn install_context_menu_monitor() {
         std::ptr::null_mut()
     });
     let mask = NSEventMask::LeftMouseDown
+        | NSEventMask::LeftMouseUp
         | NSEventMask::RightMouseDown
         | NSEventMask::RightMouseUp
         | NSEventMask::MouseMoved
@@ -606,10 +662,7 @@ fn event_hits_pet_sprite(event: &NSEvent) -> bool {
 }
 
 fn pet_sprite_contains(x: f64, y: f64) -> bool {
-    let min_x = (PET_WINDOW_WIDTH - PET_SPRITE_WIDTH) / 2.0;
-    let min_y = (PET_WINDOW_HEIGHT - PET_SPRITE_HEIGHT) / 2.0;
-    (min_x..=min_x + PET_SPRITE_WIDTH).contains(&x)
-        && (min_y..=min_y + PET_SPRITE_HEIGHT).contains(&y)
+    pet_hit_region::contains(x, pet_hit_region::WINDOW_HEIGHT - y)
 }
 
 #[cfg(test)]
@@ -622,12 +675,13 @@ mod tests {
     };
 
     #[test]
-    fn pet_hit_region_is_centered_and_includes_its_edges() {
-        assert!(pet_sprite_contains(64.0, 76.0));
-        assert!(pet_sprite_contains(256.0, 284.0));
+    fn pet_hit_region_uses_bottom_left_window_coordinates() {
+        assert!(pet_sprite_contains(64.0, 284.0));
+        assert!(pet_sprite_contains(255.9, 76.1));
         assert!(pet_sprite_contains(160.0, 180.0));
         assert!(!pet_sprite_contains(63.9, 180.0));
-        assert!(!pet_sprite_contains(160.0, 284.1));
+        assert!(!pet_sprite_contains(256.0, 180.0));
+        assert!(!pet_sprite_contains(160.0, 76.0));
     }
 
     #[test]

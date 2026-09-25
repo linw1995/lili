@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-pet-hit-frame"
+description = "Enables the set_pet_hit_frame command without any pre-configured scope."
+commands.allow = ["set_pet_hit_frame"]
+
+[[permission]]
+identifier = "deny-set-pet-hit-frame"
+description = "Denies the set_pet_hit_frame command without any pre-configured scope."
+commands.deny = ["set_pet_hit_frame"]
