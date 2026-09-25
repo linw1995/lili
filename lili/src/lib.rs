@@ -938,6 +938,7 @@ fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
         tauri::WindowEvent::CloseRequested { api, .. } => handle_pet_close(app, api),
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
             handle_pet_move(app);
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(window) = app.get_webview_window("pet") {
                 #[cfg(target_os = "macos")]
                 let _ = macos_panel::refresh_pet_hit_region(&window);
