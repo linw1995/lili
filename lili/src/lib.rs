@@ -937,17 +937,21 @@ fn handle_pet_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
     match event {
         tauri::WindowEvent::CloseRequested { api, .. } => handle_pet_close(app, api),
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
-            handle_pet_move(app);
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if let Some(window) = app.get_webview_window("pet") {
-                #[cfg(target_os = "macos")]
-                let _ = macos_panel::refresh_pet_hit_region(&window);
-                #[cfg(target_os = "windows")]
-                windows_notification_hit_region::refresh_pet(&window);
-            }
+            handle_pet_position_changed(app);
         }
         tauri::WindowEvent::Focused(true) => position_notification_window(app),
         _ => {}
+    }
+}
+
+fn handle_pet_position_changed(app: &tauri::AppHandle) {
+    handle_pet_move(app);
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(window) = app.get_webview_window("pet") {
+        #[cfg(target_os = "macos")]
+        let _ = macos_panel::refresh_pet_hit_region(&window);
+        #[cfg(target_os = "windows")]
+        windows_notification_hit_region::refresh_pet(&window);
     }
 }
 
@@ -2045,31 +2049,62 @@ async fn set_pet_hit_frame(
     row: u8,
     column: u8,
 ) -> Result<bool, String> {
-    if window.label() != "pet" || row >= lili_pet::ATLAS_ROWS || column >= lili_pet::ATLAS_COLUMNS {
+    if !valid_pet_hit_frame(&window, row, column) {
         return Ok(false);
     }
     let state = app.state::<PetContextActions>().state.clone();
     if state.snapshot().await.pet_asset_id.as_deref() != Some(&asset_id) {
         return Ok(false);
     }
-    let needs_atlas = pet_hit_region::set_frame(&asset_id, row, column);
-    refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
-    if needs_atlas {
-        let asset = state
-            .approved_pet_asset(&asset_id)
-            .await
-            .ok_or_else(|| "selected pet asset is unavailable".to_owned())?;
-        let installed = tokio::task::spawn_blocking(move || {
-            pet_hit_region::install_atlas(&asset_id, asset.bytes())
-        })
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
-        if installed {
-            refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
-        }
-    }
+    apply_pet_hit_frame(&state, &window, asset_id, row, column).await?;
     Ok(true)
+}
+
+async fn apply_pet_hit_frame(
+    state: &AppState,
+    window: &tauri::WebviewWindow,
+    asset_id: String,
+    row: u8,
+    column: u8,
+) -> Result<(), String> {
+    let needs_atlas = pet_hit_region::set_frame(&asset_id, row, column);
+    refresh_pet_hit_region(window).map_err(|error| error.to_string())?;
+    if needs_atlas {
+        install_pet_hit_atlas(state, window, asset_id).await?;
+    }
+    Ok(())
+}
+
+fn valid_pet_hit_frame(window: &tauri::WebviewWindow, row: u8, column: u8) -> bool {
+    window.label() == "pet" && row < lili_pet::ATLAS_ROWS && column < lili_pet::ATLAS_COLUMNS
+}
+
+async fn install_pet_hit_atlas(
+    state: &AppState,
+    window: &tauri::WebviewWindow,
+    asset_id: String,
+) -> Result<(), String> {
+    let asset = state
+        .approved_pet_asset(&asset_id)
+        .await
+        .ok_or_else(|| "selected pet asset is unavailable".to_owned())?;
+    let installed = tokio::task::spawn_blocking(move || {
+        pet_hit_region::install_atlas(&asset_id, asset.bytes())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    refresh_installed_pet_hit_atlas(window, installed)
+}
+
+fn refresh_installed_pet_hit_atlas(
+    window: &tauri::WebviewWindow,
+    installed: bool,
+) -> Result<(), String> {
+    if installed {
+        refresh_pet_hit_region(window).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn refresh_pet_hit_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
@@ -2252,6 +2287,17 @@ async fn commit_window_position(
     drag_state: tauri::State<'_, WindowDragState>,
     persist: bool,
 ) -> Result<bool, String> {
+    finish_window_drag(&window, &drag_state)?;
+    if !persist {
+        return Ok(true);
+    }
+    persist_window_position(&window, &persistence)
+}
+
+fn finish_window_drag(
+    window: &tauri::WebviewWindow,
+    drag_state: &WindowDragState,
+) -> Result<(), String> {
     *drag_state
         .0
         .lock()
@@ -2259,14 +2305,18 @@ async fn commit_window_position(
     #[cfg(target_os = "linux")]
     pet_hit_region::set_dragging(false);
     // Refresh after pointer-up dispatch so changing the input region cannot swallow the release.
-    refresh_pet_hit_region(&window).map_err(|error| error.to_string())?;
-    if !persist {
-        return Ok(true);
-    }
+    refresh_pet_hit_region(window).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn persist_window_position(
+    window: &tauri::WebviewWindow,
+    persistence: &DesktopPersistence,
+) -> Result<bool, String> {
     let Some(store) = &persistence.store else {
         return Ok(false);
     };
-    let placement = current_window_placement(&window)
+    let placement = current_window_placement(window)
         .ok_or_else(|| "window placement could not be determined".to_owned())?;
     store
         .save_window_placement(&placement)

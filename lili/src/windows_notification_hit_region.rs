@@ -151,25 +151,29 @@ unsafe extern "system" fn notification_mouse_hook(
 ) -> LRESULT {
     // The hook only wakes hit testing; it never suppresses or records system mouse input.
     if code >= 0 {
-        match wparam.0 as u32 {
-            WM_LBUTTONDOWN => {
-                let hits_pet = NOTIFICATION_HIT_REGION_STATE
-                    .get()
-                    .and_then(|state| state.lock().ok())
-                    .and_then(|state| mouse_hits_pet(&state.pet))
-                    .unwrap_or(false);
-                PET_DRAGGING.store(hits_pet, Ordering::Release);
-            }
-            WM_LBUTTONUP => {
-                PET_DRAGGING.store(false, Ordering::Release);
-                return unsafe { CallNextHookEx(None, code, wparam, lparam) };
-            }
-            WM_MOUSEMOVE => {}
-            _ => return unsafe { CallNextHookEx(None, code, wparam, lparam) },
-        }
-        refresh_mouse_passthrough();
+        handle_mouse_hook_message(wparam.0 as u32);
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn handle_mouse_hook_message(message: u32) {
+    match message {
+        WM_LBUTTONDOWN => {
+            PET_DRAGGING.store(mouse_down_hits_pet(), Ordering::Release);
+            refresh_mouse_passthrough();
+        }
+        WM_LBUTTONUP => PET_DRAGGING.store(false, Ordering::Release),
+        WM_MOUSEMOVE => refresh_mouse_passthrough(),
+        _ => {}
+    }
+}
+
+fn mouse_down_hits_pet() -> bool {
+    NOTIFICATION_HIT_REGION_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| mouse_hits_pet(&state.pet))
+        .unwrap_or(false)
 }
 
 fn refresh_mouse_passthrough() {

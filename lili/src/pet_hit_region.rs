@@ -117,28 +117,43 @@ pub(crate) fn rectangles() -> Vec<cairo::RectangleInt> {
     let Some(atlas) = state.atlas.as_ref() else {
         return vec![sprite_rectangle()];
     };
+    frame_rectangles(atlas, state.row, state.column)
+}
+
+#[cfg(target_os = "linux")]
+fn frame_rectangles(atlas: &AtlasAlpha, row: u8, column: u8) -> Vec<cairo::RectangleInt> {
     let mut rectangles = Vec::new();
     for y in 0..lili_pet::CELL_HEIGHT as usize {
-        let mut x = 0;
-        while x < lili_pet::CELL_WIDTH as usize {
-            if !atlas.contains(state.row, state.column, x, y) {
-                x += 1;
-                continue;
-            }
-            let start = x;
-            while x < lili_pet::CELL_WIDTH as usize && atlas.contains(state.row, state.column, x, y)
-            {
-                x += 1;
-            }
-            rectangles.push(cairo::RectangleInt::new(
-                SPRITE_X as i32 + start as i32,
-                SPRITE_Y as i32 + y as i32,
-                (x - start) as i32,
-                1,
-            ));
-        }
+        append_row_rectangles(&mut rectangles, atlas, row, column, y);
     }
     rectangles
+}
+
+#[cfg(target_os = "linux")]
+fn append_row_rectangles(
+    rectangles: &mut Vec<cairo::RectangleInt>,
+    atlas: &AtlasAlpha,
+    row: u8,
+    column: u8,
+    y: usize,
+) {
+    let mut x = 0;
+    while x < lili_pet::CELL_WIDTH as usize {
+        if !atlas.contains(row, column, x, y) {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        while x < lili_pet::CELL_WIDTH as usize && atlas.contains(row, column, x, y) {
+            x += 1;
+        }
+        rectangles.push(cairo::RectangleInt::new(
+            SPRITE_X as i32 + start as i32,
+            SPRITE_Y as i32 + y as i32,
+            (x - start) as i32,
+            1,
+        ));
+    }
 }
 
 #[cfg(target_os = "linux")]
