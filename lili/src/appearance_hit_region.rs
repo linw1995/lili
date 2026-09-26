@@ -3,10 +3,12 @@ const TOP_INSET: f64 = 32.0;
 const BOTTOM_INSET: f64 = 64.0;
 const CORNER_RADIUS: f64 = 20.0;
 // Transparent window edges still need to receive native resize gestures.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const RESIZE_EDGE: f64 = 10.0;
 const COMPACT_WIDTH: f64 = 560.0;
 const COMPACT_HEIGHT: f64 = 600.0;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn contains(width: f64, height: f64, x: f64, y: f64) -> bool {
     if !(0.0..width).contains(&x) || !(0.0..height).contains(&y) {
         return false;
@@ -21,10 +23,12 @@ fn compact(width: f64, height: f64) -> bool {
     width <= COMPACT_WIDTH || height <= COMPACT_HEIGHT
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn resize_edge(width: f64, height: f64, x: f64, y: f64) -> bool {
     x < RESIZE_EDGE || x >= width - RESIZE_EDGE || y < RESIZE_EDGE || y >= height - RESIZE_EDGE
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn frame_contains(width: f64, height: f64, x: f64, y: f64) -> bool {
     let left = HORIZONTAL_INSET;
     let right = width - HORIZONTAL_INSET;
