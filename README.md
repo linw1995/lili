@@ -37,4 +37,4 @@ Read the [plugin overview](docs/marketplace.md), [support guide](docs/support.md
 
 ## License
 
-Lili is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Licenses for distributed Rust dependencies are listed in `THIRD_PARTY_NOTICES.html`.
+Lili is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Licenses for distributed Rust dependencies are generated during release assembly and included as `THIRD_PARTY_NOTICES.html` in release archives and under `legal/` in application bundles.

@@ -42,6 +42,7 @@ in {
     runtimeInputs =
       toolchain.buildTools
       ++ [
+        pkgs.cargo-about
         pkgs.coreutils
         pkgs.findutils
         pkgs.gnutar
