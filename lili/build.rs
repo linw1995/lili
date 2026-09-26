@@ -10,6 +10,7 @@ fn main() {
             "focus_notification_window",
             "focus_pet_window",
             "set_notification_hit_region",
+            "set_pet_hit_frame",
             "run_pet_context_action",
             "complete_desktop_smoke",
             "mark_title_fallback_visible",

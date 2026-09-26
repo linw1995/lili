@@ -2738,6 +2738,7 @@ dependencies = [
  "gio",
  "gtk",
  "hmac",
+ "image",
  "lili-actions",
  "lili-app-state",
  "lili-core",

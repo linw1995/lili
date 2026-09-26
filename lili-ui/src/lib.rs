@@ -97,6 +97,16 @@ pub fn App(
                     reduced_motion,
                 },
             );
+            Effect::new(move |previous: Option<(Option<String>, AtlasFrame)>| {
+                let asset_id = presentation.get().pet_asset_id;
+                let current = (asset_id.clone(), frame.get());
+                if previous.as_ref() != Some(&current)
+                    && let Some(asset_id) = asset_id
+                {
+                    set_native_pet_hit_frame(&asset_id, current.1.row, current.1.column);
+                }
+                current
+            });
         } else {
             start_notification_clock(wall_clock, presentation, reduced_motion);
         }
@@ -166,9 +176,8 @@ pub fn App(
                     let dragged = pointer.write().release();
                     controller.update(|controller| controller.end_drag(animation_clock_ms()));
                     gaze.set(None);
-                    if dragged {
-                        commit_native_window_position();
-                    } else if clicks.write().release(event.time_stamp().max(0.0) as u64)
+                    commit_native_window_position(dragged);
+                    if !dragged && clicks.write().release(event.time_stamp().max(0.0) as u64)
                         == ClickDecision::Double
                     {
                         controller.update(|controller| controller.trigger_jump(animation_clock_ms()));
@@ -183,9 +192,7 @@ pub fn App(
                     let dragged = pointer.write().cancel();
                     controller.update(|controller| controller.end_drag(animation_clock_ms()));
                     gaze.set(None);
-                    if dragged {
-                        commit_native_window_position();
-                    }
+                    commit_native_window_position(dragged);
                 }
                 on:pointerleave=move |_| {
                     if !pointer.get_untracked().pressed() {
@@ -1027,7 +1034,7 @@ fn install_ui_clock(
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-export function commitNativeWindowPosition() {
+export function commitNativeWindowPosition(persist) {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;
   const generation = windowDragGeneration;
@@ -1043,7 +1050,7 @@ export function commitNativeWindowPosition() {
       }
     }
     if (generation === windowDragGeneration) {
-      await invoke('commit_window_position');
+      await invoke('commit_window_position', { persist });
     }
   })().catch(() => {});
 }
@@ -1109,7 +1116,7 @@ extern "C" {
     fn begin_native_window_drag(screen_x: i32, screen_y: i32);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = commitNativeWindowPosition)]
-    fn commit_native_window_position();
+    fn commit_native_window_position(persist: bool);
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = moveNativeWindowTo)]
     fn move_native_window_to(screen_x: i32, screen_y: i32);
@@ -1163,6 +1170,26 @@ export function setNativeNotificationHitRegion(mode) {
   if (!invoke) return;
   void invoke('set_notification_hit_region', { mode }).catch(() => {});
 }
+
+let pendingPetHitFrame = null;
+let sendingPetHitFrame = false;
+export function setNativePetHitFrame(assetId, row, column) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  pendingPetHitFrame = { assetId, row, column };
+  if (sendingPetHitFrame) return;
+  sendingPetHitFrame = true;
+  void (async () => {
+    while (pendingPetHitFrame) {
+      const frame = pendingPetHitFrame;
+      pendingPetHitFrame = null;
+      try {
+        await invoke('set_pet_hit_frame', frame);
+      } catch (_) {}
+    }
+    sendingPetHitFrame = false;
+  })();
+}
 "#)]
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = activateNativeNotification)]
@@ -1185,6 +1212,9 @@ extern "C" {
 
     #[wasm_bindgen::prelude::wasm_bindgen(js_name = setNativeNotificationHitRegion)]
     fn set_native_notification_hit_region(mode: &str);
+
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = setNativePetHitFrame)]
+    fn set_native_pet_hit_frame(asset_id: &str, row: u8, column: u8);
 }
 
 #[cfg(feature = "hydrate")]
