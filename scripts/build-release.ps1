@@ -15,9 +15,10 @@ cargo build --locked --release --package lili --features release-tools --bin lil
 
 $bundleRoot = Join-Path $buildTarget "release/bundle"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $bundleRoot
+bash scripts/generate-third-party-notices.sh
 for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
-        cargo tauri build --bundles nsis -- --locked
+        cargo tauri build --config lili/tauri.release.conf.json --bundles nsis -- --locked
         break
     }
     catch {
@@ -48,7 +49,7 @@ Copy-Item "lili-pet/assets/fallback/pet.json", "lili-pet/assets/fallback/sprites
 Copy-Item "README.md" "$releaseRoot/"
 Copy-Item "docs/build.md", "docs/configuration.md", "docs/security-and-operations.md" "$releaseRoot/docs/"
 Copy-Item "examples/actions.toml" "$releaseRoot/examples/"
-Copy-Item "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.html" "$releaseRoot/"
+Copy-Item "LICENSE", "NOTICE", "target/THIRD_PARTY_NOTICES.html" "$releaseRoot/"
 
 $forwarderSignatureKind = "platform-standard"
 $forwarderSignature = Get-AuthenticodeSignature "$buildTarget/release/lili-hook.exe"

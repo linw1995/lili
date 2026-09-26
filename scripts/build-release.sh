@@ -26,7 +26,8 @@ cargo build --locked --release --package lili --features release-tools \
   "$build_target/release/lili-hook" \
   "$workspace/lili-session/tests/fixtures/codex"
 rm -rf -- "$build_target/release/bundle"
-cargo tauri build --bundles "$bundles" -- --locked
+bash scripts/generate-third-party-notices.sh
+cargo tauri build --config lili/tauri.release.conf.json --bundles "$bundles" -- --locked
 if [[ "$(uname -s)" == "Linux" ]]; then
   check_elf_runtime() {
     local binary="$1"
@@ -76,7 +77,7 @@ cp lili-pet/assets/fallback/pet.json lili-pet/assets/fallback/spritesheet.webp "
 cp README.md "$release_root/"
 cp docs/build.md docs/configuration.md docs/security-and-operations.md "$release_root/docs/"
 cp examples/actions.toml "$release_root/examples/"
-cp LICENSE NOTICE THIRD_PARTY_NOTICES.html "$release_root/"
+cp LICENSE NOTICE target/THIRD_PARTY_NOTICES.html "$release_root/"
 
 signature_kind="platform-standard"
 forwarder_signature_kind="platform-standard"
