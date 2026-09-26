@@ -20,6 +20,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSPoint};
 
+use crate::appearance_hit_region;
 use crate::notification_hit_region::{
     NotificationHitRegionMode, WINDOW_HEIGHT as NOTIFICATION_WINDOW_HEIGHT,
     contains as notification_hit_region_contains,
@@ -73,10 +74,13 @@ struct ContextMenuState {
     pet: Option<PetContextMenuRegistration>,
     suppressed_windows: HashSet<isize>,
     notification_hit_region: Option<NotificationHitRegion>,
+    settings_window_number: Option<isize>,
+    settings_window: Option<tauri::WebviewWindow>,
 }
 
 static CONTEXT_MENU_STATE: OnceLock<Mutex<ContextMenuState>> = OnceLock::new();
 static PET_DRAGGING: AtomicBool = AtomicBool::new(false);
+static SETTINGS_DRAGGING: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static CONTEXT_MENU_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<AnyObject>>> =
         const { std::cell::RefCell::new(None) };
@@ -117,10 +121,20 @@ pub fn configure_auxiliary(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 
 pub fn configure_settings(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let window_number = configure_panel(window)?;
-    register_context_menu_suppression(window_number)
+    register_context_menu_suppression(window_number)?;
+    let mut state = CONTEXT_MENU_STATE
+        .get_or_init(|| Mutex::new(ContextMenuState::default()))
+        .lock()
+        .map_err(|_| tauri::Error::AssetNotFound("settings hit region".to_owned()))?;
+    state.settings_window_number = Some(window_number);
+    state.settings_window = Some(window.clone());
+    drop(state);
+    install_notification_global_monitor();
+    refresh_mouse_passthrough();
+    Ok(())
 }
 
-pub fn refresh_pet_hit_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+pub fn refresh_mouse_hit_regions(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     if MainThreadMarker::new().is_some() {
         refresh_mouse_passthrough();
         Ok(())
@@ -380,6 +394,51 @@ fn refresh_pet_mouse_passthrough() {
 fn refresh_mouse_passthrough() {
     refresh_notification_mouse_passthrough();
     refresh_pet_mouse_passthrough();
+    refresh_settings_mouse_passthrough();
+}
+
+fn refresh_settings_mouse_passthrough() {
+    let tracking_available = CONTEXT_MENU_MONITOR.with(|monitor| monitor.borrow().is_some())
+        && NOTIFICATION_GLOBAL_MONITOR.with(|monitor| monitor.borrow().is_some());
+    let window_number = CONTEXT_MENU_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.settings_window_number);
+    let (Some(window_number), Some(mtm)) = (window_number, MainThreadMarker::new()) else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(mtm);
+    let Some(window) = application.windowWithWindowNumber(window_number) else {
+        return;
+    };
+    window.setAcceptsMouseMovedEvents(true);
+    if !tracking_available {
+        window.setIgnoresMouseEvents(false);
+        return;
+    }
+    if let Some(ignores_mouse_events) = settings_ignores_mouse_events(&window) {
+        window.setIgnoresMouseEvents(ignores_mouse_events);
+    }
+}
+
+fn settings_ignores_mouse_events(window: &NSWindow) -> Option<bool> {
+    let primary_pressed = NSEvent::pressedMouseButtons() & 1 != 0;
+    if !primary_pressed {
+        SETTINGS_DRAGGING.store(false, Ordering::Release);
+    } else if !SETTINGS_DRAGGING.load(Ordering::Acquire) {
+        return None;
+    }
+    let frame = window.frame();
+    let point = window.convertPointFromScreen(NSEvent::mouseLocation());
+    Some(
+        !SETTINGS_DRAGGING.load(Ordering::Acquire)
+            && !appearance_hit_region::contains(
+                frame.size.width,
+                frame.size.height,
+                point.x,
+                frame.size.height - point.y,
+            ),
+    )
 }
 
 pub fn hide_dock_icon() {
@@ -512,6 +571,8 @@ fn install_context_menu_monitor() {
         let event_type = event.r#type();
         if event_type == NSEventType::LeftMouseUp {
             PET_DRAGGING.store(false, Ordering::Release);
+            SETTINGS_DRAGGING.store(false, Ordering::Release);
+            schedule_settings_mouse_passthrough_refresh();
             return event as *const NSEvent as *mut NSEvent;
         }
         if matches!(
@@ -554,12 +615,22 @@ fn install_context_menu_monitor() {
             return event as *const NSEvent as *mut NSEvent;
         };
         if event_type == NSEventType::LeftMouseDown {
-            let pet_window_number = CONTEXT_MENU_STATE
+            let (pet_window_number, settings_window_number) = CONTEXT_MENU_STATE
                 .get()
                 .and_then(|state| state.lock().ok())
-                .and_then(|state| state.pet.as_ref().map(|pet| pet.window_number));
+                .map(|state| {
+                    (
+                        state.pet.as_ref().map(|pet| pet.window_number),
+                        state.settings_window_number,
+                    )
+                })
+                .unwrap_or_default();
             PET_DRAGGING.store(
                 pet_window_number == Some(window_number) && event_hits_pet_sprite(event),
+                Ordering::Release,
+            );
+            SETTINGS_DRAGGING.store(
+                settings_window_number == Some(window_number),
                 Ordering::Release,
             );
         }
@@ -593,6 +664,19 @@ fn install_context_menu_monitor() {
     let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
     if let Some(monitor) = monitor {
         CONTEXT_MENU_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
+}
+
+fn schedule_settings_mouse_passthrough_refresh() {
+    let window = CONTEXT_MENU_STATE
+        .get()
+        .and_then(|state| state.lock().ok())
+        .and_then(|state| state.settings_window.clone());
+    if let Some(window) = window {
+        tauri::async_runtime::spawn(async move {
+            tokio::task::yield_now().await;
+            let _ = window.run_on_main_thread(refresh_mouse_passthrough);
+        });
     }
 }
 

@@ -1,5 +1,6 @@
 #[cfg(feature = "acceptance")]
 pub mod acceptance_marketplace;
+mod appearance_hit_region;
 mod desktop_acceptance;
 mod desktop_smoke;
 mod diagnostics;
@@ -661,14 +662,22 @@ fn create_appearance_window(
     .on_navigation(move |url| url.origin() == allowed_origin)
     .build()?;
     configure_appearance_window(&window)?;
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             if let Some(window) = app_handle.get_webview_window(APPEARANCE_WINDOW_LABEL) {
                 let _ = window.eval(APPEARANCE_WINDOW_HIDDEN_SCRIPT);
                 let _ = window.hide();
             }
         }
+        tauri::WindowEvent::Moved(_)
+        | tauri::WindowEvent::Resized(_)
+        | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+            if let Some(window) = app_handle.get_webview_window(APPEARANCE_WINDOW_LABEL) {
+                let _ = refresh_appearance_hit_region(&window);
+            }
+        }
+        _ => {}
     });
     Ok(window)
 }
@@ -678,6 +687,7 @@ fn open_appearance_window(app: &tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
     window.show().map_err(|error| error.to_string())?;
+    refresh_appearance_hit_region(&window).map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     let _ = window.eval(APPEARANCE_WINDOW_SHOWN_SCRIPT);
     Ok(true)
@@ -806,8 +816,35 @@ fn configure_appearance_window(window: &tauri::WebviewWindow) -> tauri::Result<(
     macos_panel::configure_settings(window)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn configure_appearance_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    linux_notification_hit_region::configure_appearance(window)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_appearance_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    windows_notification_hit_region::configure_appearance(window)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn configure_appearance_window(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    Ok(())
+}
+
+fn refresh_appearance_hit_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos_panel::refresh_mouse_hit_regions(window);
+
+    #[cfg(target_os = "linux")]
+    return linux_notification_hit_region::update_appearance(window);
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_notification_hit_region::refresh_appearance(window);
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     Ok(())
 }
 
@@ -949,7 +986,7 @@ fn handle_pet_position_changed(app: &tauri::AppHandle) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Some(window) = app.get_webview_window("pet") {
         #[cfg(target_os = "macos")]
-        let _ = macos_panel::refresh_pet_hit_region(&window);
+        let _ = macos_panel::refresh_mouse_hit_regions(&window);
         #[cfg(target_os = "windows")]
         windows_notification_hit_region::refresh_pet(&window);
     }
@@ -2109,7 +2146,7 @@ fn refresh_installed_pet_hit_atlas(
 
 fn refresh_pet_hit_region(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
-    return macos_panel::refresh_pet_hit_region(window);
+    return macos_panel::refresh_mouse_hit_regions(window);
 
     #[cfg(target_os = "linux")]
     return linux_notification_hit_region::update_pet(window);
